@@ -15,48 +15,50 @@ Open it at **[gauravdraj.github.io/contrails](https://gauravdraj.github.io/contr
 - Private aircraft detection via registration patterns
 - Squawk alerts for 7500 / 7600 / 7700
 - Airport markers with runway overlays
-- FIDS-style arrival/departure boards (requires local dev server + FlightRadar24 API)
+- FIDS-style arrival/departure boards via FlightRadar24
 - Filter toggles: private, ground, trails, airports, labels
 - Bottom sheet aircraft list sorted by distance
 - Mobile-first dark UI, works well as a home screen shortcut
 
-## Usage
+## Architecture
 
-### GitHub Pages
+The frontend is a single `index.html` served via GitHub Pages. A [Cloudflare Worker](worker/) handles API proxying:
 
-Deploy this repo with GitHub Pages (Settings → Pages → Deploy from branch). The map is a single `index.html` that calls the adsb.lol API directly — no build step, no server required.
+| Worker endpoint | Proxies to | Purpose |
+|---|---|---|
+| `/adsb/*` | api.adsb.lol/v2 | Live aircraft positions |
+| `/route/*` | api.adsb.lol/api/0 | Route lookups |
+| `/schedule/<IATA>` | FlightRadar24 API | Airport schedule boards (cached 2 min) |
 
-Pass coordinates via URL params to center the map on a specific location:
+## Local Development
 
-```
-https://gauravdraj.github.io/contrails/?lat=51.5074&lng=-0.1278
-```
-
-Without params it uses your browser's geolocation.
-
-### Local Development
-
-The dev server proxies adsb.lol to avoid CORS issues and optionally serves FR24 schedule data:
+The dev server proxies adsb.lol locally so you can work on the HTML without the worker:
 
 ```bash
 python3 server.py
 # Open http://localhost:8766/?lat=51.5074&lng=-0.1278
 ```
 
-For airport schedule boards, install the optional dependency:
+## Deploying the Worker
+
+Requires a free [Cloudflare](https://dash.cloudflare.com/sign-up) account and Node.js:
 
 ```bash
-pip install FlightRadar24
+cd worker
+npx wrangler deploy
 ```
+
+Then set the `WORKER_URL` constant in `index.html` to your worker's URL.
 
 ## Files
 
 | File | Purpose |
 |------|---------|
 | `index.html` | The entire app — map, UI, aircraft rendering |
-| `server.py` | Dev server with API proxy and optional FR24 schedules |
+| `server.py` | Local dev server with adsb.lol proxy |
 | `airports.json` | Airport positions (IATA, lat, lng, name) |
 | `runways.json` | Runway endpoints for overlay lines |
+| `worker/` | Cloudflare Worker — API proxy + FR24 schedules |
 
 ## Credits
 

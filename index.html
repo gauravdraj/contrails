@@ -165,13 +165,18 @@ body.noscroll { touch-action: none; }
 <script>
 (function() {
   const isLocal = location.hostname === "localhost" || location.hostname === "127.0.0.1";
+  const WORKER_URL = "https://contrails-api.therealgraj.workers.dev";
+  var workerOk = true;
+  function corsProxy(url) { return "https://corsproxy.io/?" + encodeURIComponent(url); }
   function adsbUrl(path) {
     if (isLocal) return "/api/adsb" + path;
-    return "https://corsproxy.io/?" + encodeURIComponent("https://api.adsb.lol/v2" + path);
+    if (workerOk) return WORKER_URL + "/adsb" + path;
+    return corsProxy("https://api.adsb.lol/v2" + path);
   }
   function routeUrl(path) {
     if (isLocal) return "/api/adsb-route" + path;
-    return "https://corsproxy.io/?" + encodeURIComponent("https://api.adsb.lol/api/0" + path);
+    if (workerOk) return WORKER_URL + "/route" + path;
+    return corsProxy("https://api.adsb.lol/api/0" + path);
   }
   const REFRESH_MS = 3000;
   const RADIUS_KM = 50;
@@ -350,8 +355,13 @@ body.noscroll { touch-action: none; }
       var resp = await fetch(url);
       if (!resp.ok) throw new Error("HTTP " + resp.status);
       var data = await resp.json();
+      workerOk = true;
       processAircraft(data.ac || []);
     } catch (err) {
+      if (workerOk && !isLocal) {
+        workerOk = false;
+        return fetchAircraft();
+      }
       document.getElementById("status-text").textContent = "Error: " + err.message;
     }
   }
@@ -997,13 +1007,8 @@ body.noscroll { touch-action: none; }
       tabs[t].classList.toggle("active", tabs[t].getAttribute("data-dir") === "arrivals");
     document.getElementById("fids").classList.add("open");
 
-    if (!isLocal) {
-      document.getElementById("fids-body").innerHTML =
-        '<div class="fids-empty">Schedule boards require the local dev server<br><span style="color:#556677;font-size:12px;margin-top:8px;display:inline-block">Run python3 server.py and pip install FlightRadar24</span></div>';
-      return;
-    }
-
-    fetch("/api/fr24/schedule/" + encodeURIComponent(iata))
+    var schedUrl = (isLocal ? "/api/fr24/schedule/" : WORKER_URL + "/schedule/") + encodeURIComponent(iata);
+    fetch(schedUrl)
       .then(function(r) { return r.json(); })
       .then(function(data) {
         if (data.error) {
