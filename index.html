@@ -192,7 +192,8 @@ body.noscroll { touch-action: none; }
   let refreshTimer = null;
   const markerMap = {};
   const extraState = {};
-  const CORR_DUR = 400;
+  var lastFetchTs = 0;
+  var fetchInterval = REFRESH_MS;
   const filters = { private: true, ground: true, trails: true, airports: true, labels: true };
   const SQUAWK_ALERT = { "7700": "EMERGENCY", "7600": "RADIO FAILURE", "7500": "HIJACK" };
 
@@ -367,6 +368,9 @@ body.noscroll { touch-action: none; }
   }
 
   function processAircraft(ac) {
+    var now = Date.now();
+    if (lastFetchTs) fetchInterval = fetchInterval * 0.7 + (now - lastFetchTs) * 0.3;
+    lastFetchTs = now;
     aircraft = [];
     for (var i = 0; i < ac.length; i++) {
       var s = ac[i];
@@ -410,6 +414,7 @@ body.noscroll { touch-action: none; }
         squawk: squawk,
         emergency: emerg,
         seen: s.seen != null ? s.seen : null,
+        seenPos: s.seen_pos != null ? s.seen_pos : null,
         roll: s.roll != null ? Math.round(s.roll * 10) / 10 : null
       });
     }
@@ -422,15 +427,20 @@ body.noscroll { touch-action: none; }
       return (a.distKm || 999) - (b.distKm || 999);
     });
 
-    var now = Date.now();
     for (var j = 0; j < aircraft.length; j++) {
       var a = aircraft[j];
       if (!posHistory[a.icao24]) posHistory[a.icao24] = [];
       var h = posHistory[a.icao24];
       var lastPt = h.length ? h[h.length - 1] : null;
-      var moved = !lastPt || Math.abs(lastPt[0] - a.lat) > 0.0005 || Math.abs(lastPt[1] - a.lng) > 0.0005;
-      if (moved) h.push([a.lat, a.lng, now, a.altFt, a.ground]);
-      if (h.length > 20) h.splice(0, h.length - 20);
+      var reportTs = now - Math.max(0, (a.seenPos || 0) * 1000);
+      if (lastPt && reportTs <= lastPt[2]) reportTs = lastPt[2] + 1;
+      var moved = !lastPt ||
+        Math.abs(lastPt[0] - a.lat) > 1e-5 ||
+        Math.abs(lastPt[1] - a.lng) > 1e-5 ||
+        lastPt[4] !== a.ground ||
+        reportTs - lastPt[2] > Math.max(1500, fetchInterval * 0.9);
+      if (moved) h.push([a.lat, a.lng, reportTs, a.altFt, a.ground]);
+      if (h.length > 40) h.splice(0, h.length - 40);
     }
 
     renderMap();
@@ -723,15 +733,22 @@ body.noscroll { touch-action: none; }
       var existing = markerMap[a.icao24];
 
       var prev = extraState[a.icao24];
-      var corrFrom = (prev && existing) ? existing.getLatLng() : null;
-      extraState[a.icao24] = {
-        baseLat: a.lat, baseLng: a.lng,
+      var samples = prev && prev.samples ? prev.samples.slice() : [];
+      var reportTs = now - Math.max(0, (a.seenPos || 0) * 1000);
+      var lastSample = samples.length ? samples[samples.length - 1] : null;
+      if (lastSample && reportTs <= lastSample.ts) reportTs = lastSample.ts + 1;
+      samples.push({
+        lat: a.lat,
+        lng: a.lng,
+        ts: reportTs,
         spdMs: (a.speedKts || 0) * 0.514444,
-        trackRad: (a.track || 0) * Math.PI / 180,
-        baseTs: now,
-        corrFromLat: corrFrom ? corrFrom.lat : null,
-        corrFromLng: corrFrom ? corrFrom.lng : null,
-        corrTs: corrFrom ? now : 0
+        trackRad: (a.track || 0) * Math.PI / 180
+      });
+      if (samples.length > 6) samples.splice(0, samples.length - 6);
+
+      extraState[a.icao24] = {
+        samples: samples,
+        renderDelay: Math.min(Math.max(fetchInterval * 0.85, 1200), 5000)
       };
 
       if (existing) {
@@ -770,29 +787,36 @@ body.noscroll { touch-action: none; }
       var marker = markerMap[id];
       if (!marker) continue;
       var st = extraState[id];
-      var dt = (now - st.baseTs) / 1000;
-      if (dt > 10) continue;
+      var samples = st.samples;
+      if (!samples || !samples.length) continue;
 
-      var targetLat = st.baseLat, targetLng = st.baseLng;
-      if (st.spdMs >= 0.5) {
-        var distM = st.spdMs * dt;
-        targetLat += distM * Math.cos(st.trackRad) / 111320;
-        targetLng += distM * Math.sin(st.trackRad) / (111320 * Math.cos(st.baseLat * Math.PI / 180));
+      var renderTs = now - st.renderDelay;
+      var pos = [samples[0].lat, samples[0].lng];
+
+      if (samples.length > 1 && renderTs > samples[0].ts) {
+        var last = samples[samples.length - 1];
+        if (renderTs >= last.ts) {
+          pos = [last.lat, last.lng];
+        } else {
+          for (var i = 1; i < samples.length; i++) {
+            var prev = samples[i - 1];
+            var next = samples[i];
+            if (renderTs <= next.ts) {
+              var span = Math.max(1, next.ts - prev.ts);
+              var t = (renderTs - prev.ts) / span;
+              pos = [
+                prev.lat + (next.lat - prev.lat) * t,
+                prev.lng + (next.lng - prev.lng) * t
+              ];
+              break;
+            }
+          }
+        }
       }
 
-      var inCorr = st.corrFromLat != null && (now - st.corrTs) < CORR_DUR;
-      if (inCorr) {
-        var t = (now - st.corrTs) / CORR_DUR;
-        t = t * t * (3 - 2 * t);
-        marker.setLatLng([
-          st.corrFromLat + (targetLat - st.corrFromLat) * t,
-          st.corrFromLng + (targetLng - st.corrFromLng) * t
-        ]);
-      } else if (st.spdMs >= 0.5) {
-        var cur = marker.getLatLng();
-        if (Math.abs(targetLat - cur.lat) > 5e-6 || Math.abs(targetLng - cur.lng) > 5e-6) {
-          marker.setLatLng([targetLat, targetLng]);
-        }
+      var cur = marker.getLatLng();
+      if (Math.abs(pos[0] - cur.lat) > 5e-6 || Math.abs(pos[1] - cur.lng) > 5e-6) {
+        marker.setLatLng(pos);
       }
     }
     requestAnimationFrame(animateMarkers);
