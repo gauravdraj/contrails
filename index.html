@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <title>Contrails</title>
+<link id="app-favicon" rel="icon" type="image/svg+xml" sizes="any" href="favicon.svg?v=1.3">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -23,6 +24,7 @@ body.noscroll { touch-action: none; }
   transition: background 0.15s;
 }
 .card:active { background: #151d2e; }
+.card.selected { background: #101a2a; box-shadow: inset 3px 0 0 #5bbcf5; }
 .card .main { flex: 1; }
 .card .callsign { font-size: 16px; font-weight: 700; letter-spacing: 0.5px; }
 .card .callsign.unknown { color: #667; font-style: italic; }
@@ -44,15 +46,33 @@ body.noscroll { touch-action: none; }
 #list-sheet { position: fixed; inset: 0; z-index: 1200; display: none; flex-direction: column; }
 #list-sheet.open { display: flex; }
 #list-backdrop { flex: 1; min-height: 60px; }
-#list-panel { max-height: 80vh; max-height: 80dvh; background: #0d1320; border-radius: 12px 12px 0 0; border-top: 1px solid #1e2a3a; box-shadow: 0 -4px 24px rgba(0,0,0,0.5); display: flex; flex-direction: column; overflow: hidden; }
-#list-header { display: flex; justify-content: space-between; align-items: center; padding: 10px 16px; border-bottom: 1px solid #1a2233; font-size: 13px; color: #8899aa; }
+#list-panel { max-height: 58vh; max-height: 58dvh; background: #0d1320; border-radius: 18px 18px 0 0; border-top: 1px solid #1e2a3a; box-shadow: 0 -4px 24px rgba(0,0,0,0.5); display: flex; flex-direction: column; overflow: hidden; }
+#list-grabber { width: 42px; height: 4px; border-radius: 999px; background: #2a3a4f; margin: 10px auto 2px; flex-shrink: 0; }
+#list-header { display: flex; justify-content: space-between; align-items: center; padding: 8px 16px 10px; border-bottom: 1px solid #1a2233; font-size: 13px; color: #8899aa; }
 #list-header .count { color: #5bbcf5; font-weight: 600; }
 #list-header #status-time { color: #556677; margin-left: 8px; }
 #list-close { background: none; border: none; color: #667; font-size: 24px; cursor: pointer; line-height: 1; padding: 0 4px; flex-shrink: 0; }
 #list-close:hover { color: #e0e6ed; }
 
-#filter-bar { display: flex; gap: 6px; padding: 6px 14px; background: #0d1320; border-bottom: 1px solid #1a2233; overflow-x: auto; flex-shrink: 0; -webkit-overflow-scrolling: touch; }
-#filter-bar::-webkit-scrollbar { display: none; }
+#map-controls {
+  position: fixed;
+  left: 10px;
+  right: 10px;
+  bottom: calc(74px + env(safe-area-inset-bottom, 0px));
+  z-index: 980;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border-radius: 16px;
+  border: 1px solid rgba(58, 80, 104, 0.8);
+  background: rgba(13, 19, 32, 0.9);
+  box-shadow: 0 8px 26px rgba(0,0,0,0.35);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+.control-row { display: flex; gap: 6px; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.control-row::-webkit-scrollbar { display: none; }
 .ftag { font-size: 11px; padding: 4px 10px; border-radius: 12px; border: 1px solid #2a3a4f; color: #667; background: transparent; cursor: pointer; white-space: nowrap; -webkit-tap-highlight-color: transparent; }
 .ftag.on { color: #5bbcf5; border-color: #5bbcf5; background: #0f1e33; }
 
@@ -120,6 +140,44 @@ body.noscroll { touch-action: none; }
 .fids-times .ft-actual { color: #e0e6ed; font-weight: 600; }
 .fids-empty { padding: 40px; text-align: center; color: #556677; font-size: 14px; }
 .fids-empty .spinner { width: 24px; height: 24px; border: 2px solid #1e2a3a; border-top-color: #5bbcf5; border-radius: 50%; animation: spin 0.8s linear infinite; display: inline-block; }
+
+#version-badge {
+  position: fixed;
+  right: 12px;
+  bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+  z-index: 950;
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(90, 120, 150, 0.35);
+  background: rgba(10, 14, 23, 0.72);
+  color: #7f92a6;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  pointer-events: none;
+}
+
+@media (min-width: 760px) {
+  #map-controls {
+    top: 12px;
+    bottom: auto;
+    left: 12px;
+    right: auto;
+    width: min(520px, calc(100% - 24px));
+  }
+
+  #list-panel {
+    max-height: 80vh;
+    max-height: 80dvh;
+    border-radius: 12px 12px 0 0;
+  }
+
+  #list-grabber {
+    display: none;
+  }
+}
 </style>
 </head>
 <body>
@@ -128,20 +186,30 @@ body.noscroll { touch-action: none; }
   <div id="map"></div>
 </div>
 <div id="alert-bar"></div>
+<div id="version-badge"></div>
+<div id="map-controls">
+  <div class="control-row" id="visibility-controls">
+    <button class="ftag on" data-f="private">Private</button>
+    <button class="ftag on" data-f="ground">Ground</button>
+    <button class="ftag on" data-f="trails">Trails</button>
+    <button class="ftag on" data-f="airports">Airports</button>
+    <button class="ftag on" data-f="labels">Labels</button>
+  </div>
+  <div class="control-row" id="radius-controls">
+    <button class="ftag" data-radius="10">10 km</button>
+    <button class="ftag" data-radius="25">25 km</button>
+    <button class="ftag" data-radius="50">50 km</button>
+    <button class="ftag" data-radius="100">100 km</button>
+  </div>
+</div>
 <button id="list-toggle"><span class="count">0</span> aircraft</button>
 <div id="list-sheet">
   <div id="list-backdrop"></div>
   <div id="list-panel">
+    <div id="list-grabber"></div>
     <div id="list-header">
       <div><span id="status-text">Waiting for data...</span><span id="status-time"></span></div>
       <button id="list-close">&times;</button>
-    </div>
-    <div id="filter-bar">
-      <button class="ftag on" data-f="private">Private</button>
-      <button class="ftag on" data-f="ground">Ground</button>
-      <button class="ftag on" data-f="trails">Trails</button>
-      <button class="ftag on" data-f="airports">Airports</button>
-      <button class="ftag on" data-f="labels">Labels</button>
     </div>
     <div id="panel"></div>
   </div>
@@ -162,11 +230,20 @@ body.noscroll { touch-action: none; }
 </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet-doubletapdrag@0.1.2/Leaflet.DoubleTapDrag.js"></script>
+<script src="https://unpkg.com/leaflet-doubletapdragzoom@0.3.2/Leaflet.DoubleTapDragZoom.js"></script>
 <script>
 (function() {
+  const APP_VERSION = "v1.3";
   const isLocal = location.hostname === "localhost" || location.hostname === "127.0.0.1";
+  const isIOSDevice = /iP(ad|hone|od)/.test(navigator.userAgent) ||
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  const isIOSSafari = isIOSDevice && /WebKit/i.test(navigator.userAgent) &&
+    !/CriOS|FxiOS|EdgiOS/i.test(navigator.userAgent);
   const WORKER_URL = "https://contrails-api.therealgraj.workers.dev";
   var workerOk = true;
+  document.getElementById("version-badge").textContent = APP_VERSION;
+  document.getElementById("app-favicon").setAttribute("href", "favicon.svg?v=" + APP_VERSION);
   function corsProxy(url) { return "https://corsproxy.io/?" + encodeURIComponent(url); }
   function adsbUrl(path) {
     if (isLocal) return "/api/adsb" + path;
@@ -179,21 +256,28 @@ body.noscroll { touch-action: none; }
     return corsProxy("https://api.adsb.lol/api/0" + path);
   }
   const REFRESH_MS = 3000;
-  const RADIUS_KM = 50;
+  const DEFAULT_RADIUS_KM = 50;
+  const RADIUS_OPTIONS = [10, 25, 50, 100];
   const CARDINALS = ["N","NE","E","SE","S","SW","W","NW"];
   const posHistory = {};
   const routeCache = {};
 
-  let map, userMarker, aircraftLayer, trailLayer, airportLayer, runwayLayer;
-  let airportsFetched = false;
+  let map, userMarker, aircraftLayer, trailLayer, airportLayer, runwayLayer, focusLayer;
+  let focusCircle = null, focusMask = null;
+  let airportData = null;
   let runwayData = null;
   let userLat = null, userLng = null;
   let aircraft = [];
   let refreshTimer = null;
+  let selectedAircraftId = null;
+  let ignoreMapClickUntil = 0;
+  let radiusKm = DEFAULT_RADIUS_KM;
+  let applyingRadiusLock = false;
   const markerMap = {};
   const extraState = {};
   var lastFetchTs = 0;
   var fetchInterval = REFRESH_MS;
+  var trailBreakPending = {};
   const filters = { private: true, ground: true, trails: true, airports: true, labels: true };
   const SQUAWK_ALERT = { "7700": "EMERGENCY", "7600": "RADIO FAILURE", "7500": "HIJACK" };
 
@@ -234,15 +318,28 @@ body.noscroll { touch-action: none; }
   const params = new URLSearchParams(window.location.search);
   const paramLat = parseFloat(params.get("lat"));
   const paramLng = parseFloat(params.get("lng"));
+  radiusKm = parseRadiusParam(params.get("radius"));
 
   function cardinalDir(deg) { return CARDINALS[Math.round(deg / 45) % 8]; }
 
+  function parseRadiusParam(value) {
+    var parsed = parseInt(value, 10);
+    return RADIUS_OPTIONS.indexOf(parsed) >= 0 ? parsed : DEFAULT_RADIUS_KM;
+  }
+
   const REG_PATTERNS = /^(N\d|C-[FGFI]|G-|D-|F-|I-|EC-|HB-|OE-|PH-|SE-|OH-|OY-|LN-|EI-|CS-|SX-|TC-|VH-|ZK-|PP-|PT-|PR-|JA|B-|HL|VT-|9V-|A[267]-|SU-|5[ABHNXY]-|ZS-|VP-|V[5HPQR]-|RP-|HS-|9M-|PK-|XA-|XB-|LV-|CC-|TI-|HP-|HK-|YV-)/i;
+  const ANON_HEX_CALLSIGN = /^~[0-9a-f]{4,}$/i;
+  const HEXLIKE_CALLSIGN = /^(?:~)?[0-9a-f]{6}$/i;
+  function isLikelyPrivateClass(type, category) {
+    var cls = sizeClass(type, category);
+    return cls === "bizjet" || cls === "light" || cls === "turboprop";
+  }
   function isPrivate(callsign, type, category) {
-    if (callsign && REG_PATTERNS.test(callsign)) return true;
-    if (callsign && !airlineName(callsign)) {
-      var cls = sizeClass(type, category);
-      if (cls === "bizjet" || cls === "light" || cls === "turboprop") return true;
+    if (callsign && (REG_PATTERNS.test(callsign) || ANON_HEX_CALLSIGN.test(callsign))) return true;
+    if (!callsign) return isLikelyPrivateClass(type, category);
+    if (!airlineName(callsign)) {
+      if (HEXLIKE_CALLSIGN.test(callsign)) return true;
+      if (isLikelyPrivateClass(type, category)) return true;
     }
     return false;
   }
@@ -314,8 +411,17 @@ body.noscroll { touch-action: none; }
       zoom: 11,
       zoomControl: false,
       attributionControl: false,
-      preferCanvas: true
+      preferCanvas: true,
+      zoomSnap: isIOSSafari ? 0.1 : 1,
+      doubleClickZoom: !isIOSSafari,
+      doubleTapDragZoom: isIOSSafari ? false : "center",
+      doubleTapDragZoomOptions: { reverse: true }
     });
+    map.createPane("airportTooltipPane");
+    map.getPane("airportTooltipPane").style.zIndex = 700;
+    map.createPane("focusMaskPane");
+    map.getPane("focusMaskPane").style.zIndex = 680;
+    map.getPane("focusMaskPane").style.pointerEvents = "none";
     L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
       maxZoom: 18
     }).addTo(map);
@@ -331,7 +437,20 @@ body.noscroll { touch-action: none; }
       if (_autoPanning) { _autoPanning = false; return; }
       map.closePopup();
     });
+    map.on("zoomend", function() {
+      renderMap();
+      restrictMapToRadius();
+    });
+    map.on("click", function() {
+      if (Date.now() < ignoreMapClickUntil) return;
+      if (!selectedAircraftId) return;
+      selectedAircraftId = null;
+      _lastPanelHtml = "";
+      renderMap();
+      renderPanel();
+    });
 
+    focusLayer = L.layerGroup().addTo(map);
     trailLayer = L.layerGroup().addTo(map);
     runwayLayer = L.layerGroup().addTo(map);
     airportLayer = L.layerGroup().addTo(map);
@@ -339,18 +458,241 @@ body.noscroll { touch-action: none; }
     L.control.attribution({ position: "bottomleft", prefix: false })
       .addAttribution('&copy; <a href="https://carto.com/">CARTO</a> | <a href="https://adsb.lol">adsb.lol</a>')
       .addTo(map);
+    installIOSOneFingerZoom();
+    map.on("moveend", function() {
+      if (!applyingRadiusLock) restrictMapToRadius();
+    });
+  }
+
+  function clampZoom(zoom) {
+    var min = map && map.getMinZoom() != null ? map.getMinZoom() : 0;
+    var max = map && map.getMaxZoom() != null ? map.getMaxZoom() : 18;
+    return Math.max(min, Math.min(max, zoom));
+  }
+
+  function installIOSOneFingerZoom() {
+    if (!isIOSSafari || !map) return;
+    var el = map.getContainer();
+    var lastTap = null;
+    var gesture = null;
+
+    function resetGesture() {
+      if (map.dragging && !map.dragging.enabled()) map.dragging.enable();
+      gesture = null;
+    }
+
+    function onTouchStart(e) {
+      if (e.touches.length !== 1) {
+        resetGesture();
+        return;
+      }
+      var touch = e.touches[0];
+      var now = Date.now();
+      var point = { x: touch.clientX, y: touch.clientY };
+      if (lastTap && now - lastTap.ts < 350 && Math.hypot(point.x - lastTap.x, point.y - lastTap.y) < 28) {
+        if (map.dragging && map.dragging.enabled()) map.dragging.disable();
+        ignoreMapClickUntil = now + 500;
+        var anchorPoint = map.mouseEventToContainerPoint({ clientX: touch.clientX, clientY: touch.clientY });
+        gesture = {
+          anchorLatLng: map.containerPointToLatLng(anchorPoint),
+          startY: touch.clientY,
+          startZoom: map.getZoom(),
+          moved: false
+        };
+        lastTap = null;
+        e.preventDefault();
+        e.stopPropagation();
+      } else {
+        lastTap = { ts: now, x: point.x, y: point.y };
+      }
+    }
+
+    function onTouchMove(e) {
+      if (!gesture || e.touches.length !== 1) return;
+      var dy = e.touches[0].clientY - gesture.startY;
+      if (Math.abs(dy) > 6) gesture.moved = true;
+      var targetZoom = clampZoom(gesture.startZoom + dy / 90);
+      map.setZoomAround(gesture.anchorLatLng, targetZoom, { animate: false });
+      e.preventDefault();
+      e.stopPropagation();
+    }
+
+    function onTouchEnd(e) {
+      if (!gesture) return;
+      if (!gesture.moved) {
+        map.setZoomAround(gesture.anchorLatLng, clampZoom(Math.round(gesture.startZoom + 1)), { animate: true });
+      }
+      ignoreMapClickUntil = Date.now() + 500;
+      if (e) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+      resetGesture();
+    }
+
+    el.addEventListener("touchstart", onTouchStart, { passive: false });
+    el.addEventListener("touchmove", onTouchMove, { passive: false });
+    el.addEventListener("touchend", onTouchEnd, { passive: false });
+    el.addEventListener("touchcancel", resetGesture, { passive: true });
+  }
+
+  function syncUrlState() {
+    params.set("radius", String(radiusKm));
+    var query = params.toString();
+    history.replaceState(null, "", query ? "?" + query : location.pathname);
+  }
+
+  function updateRadiusChips() {
+    var chips = document.querySelectorAll("[data-radius]");
+    for (var i = 0; i < chips.length; i++) {
+      chips[i].classList.toggle("on", parseInt(chips[i].getAttribute("data-radius"), 10) === radiusKm);
+    }
+  }
+
+  function updateFilterButtons() {
+    var btns = document.querySelectorAll("[data-f]");
+    for (var i = 0; i < btns.length; i++) {
+      var key = btns[i].getAttribute("data-f");
+      btns[i].classList.toggle("on", !!filters[key]);
+    }
+  }
+
+  function circleRing(lat, lng, radiusKm, points) {
+    var ring = [];
+    var earthKm = 6371;
+    var phi1 = lat * Math.PI / 180;
+    var lambda1 = lng * Math.PI / 180;
+    var angular = radiusKm / earthKm;
+    for (var i = 0; i <= points; i++) {
+      var bearing = 2 * Math.PI * i / points;
+      var sinPhi1 = Math.sin(phi1);
+      var cosPhi1 = Math.cos(phi1);
+      var sinAngular = Math.sin(angular);
+      var cosAngular = Math.cos(angular);
+      var sinPhi2 = sinPhi1 * cosAngular + cosPhi1 * sinAngular * Math.cos(bearing);
+      var phi2 = Math.asin(sinPhi2);
+      var lambda2 = lambda1 + Math.atan2(
+        Math.sin(bearing) * sinAngular * cosPhi1,
+        cosAngular - sinPhi1 * sinPhi2
+      );
+      ring.push([
+        phi2 * 180 / Math.PI,
+        ((lambda2 * 180 / Math.PI + 540) % 360) - 180
+      ]);
+    }
+    return ring;
+  }
+
+  function clampCenterToRadius(latlng) {
+    if (!map || userLat == null || userLng == null) return latlng;
+    var origin = L.latLng(userLat, userLng);
+    var dist = map.distance(origin, latlng);
+    var radiusM = radiusKm * 1000;
+    if (!isFinite(dist) || dist <= radiusM) return latlng;
+    var scale = radiusM / dist * 0.995;
+    return L.latLng(
+      userLat + (latlng.lat - userLat) * scale,
+      userLng + (latlng.lng - userLng) * scale
+    );
+  }
+
+  function restrictMapToRadius() {
+    if (!map || userLat == null || userLng == null) return;
+    var center = map.getCenter();
+    var clamped = clampCenterToRadius(center);
+    if (Math.abs(clamped.lat - center.lat) < 1e-7 && Math.abs(clamped.lng - center.lng) < 1e-7) return;
+    applyingRadiusLock = true;
+    map.panTo(clamped, { animate: false });
+    applyingRadiusLock = false;
+  }
+
+  function updateFocusView(fitView) {
+    if (!map || userLat == null || userLng == null || !focusLayer) return;
+    var center = [userLat, userLng];
+    var radiusM = radiusKm * 1000;
+    var innerRing = circleRing(userLat, userLng, radiusKm, 96);
+    var outerRing = [[-89.9, -179.9], [-89.9, 179.9], [89.9, 179.9], [89.9, -179.9]];
+
+    if (!focusMask) {
+      focusMask = L.polygon([outerRing, innerRing], {
+        stroke: false,
+        fillColor: "#000",
+        fillOpacity: 0.62,
+        interactive: false,
+        fillRule: "evenodd",
+        pane: "focusMaskPane"
+      }).addTo(focusLayer);
+    } else {
+      focusMask.setLatLngs([outerRing, innerRing]);
+    }
+
+    if (!focusCircle) {
+      focusCircle = L.circle(center, {
+        radius: radiusM,
+        color: "#5bbcf5",
+        weight: 1.6,
+        opacity: 0.9,
+        fill: false,
+        interactive: false,
+        pane: "focusMaskPane"
+      }).addTo(focusLayer);
+    } else {
+      focusCircle.setLatLng(center);
+      focusCircle.setRadius(radiusM);
+    }
+
+    var bounds = focusCircle.getBounds();
+    var minZoom = map.getBoundsZoom(bounds, false, [18, 18]);
+    if (isFinite(minZoom)) {
+      map.setMinZoom(minZoom);
+      if (map.getZoom() < minZoom) map.setZoom(minZoom, { animate: false });
+    }
+    map.options.maxBoundsViscosity = 1.0;
+    map.setMaxBounds(bounds.pad(0.04));
+    if (fitView) {
+      applyingRadiusLock = true;
+      map.fitBounds(bounds, { padding: [18, 18], animate: false });
+      applyingRadiusLock = false;
+    }
+    restrictMapToRadius();
+  }
+
+  function setRadiusKm(nextRadius) {
+    if (nextRadius === radiusKm) return;
+    radiusKm = nextRadius;
+    syncUrlState();
+    updateRadiusChips();
+    resetInterpolationSamples();
+    updateFocusView(true);
+    renderAirports();
+    renderRunways();
+    renderMap();
+    renderPanel();
+    updateStatus();
+    updateAlerts();
+    fetchAircraft();
   }
 
   function updateUserPosition(lat, lng) {
+    var movedKm = userLat != null && userLng != null ? haversineKm(userLat, userLng, lat, lng) : 0;
     userLat = lat;
     userLng = lng;
     if (userMarker) userMarker.setLatLng([lat, lng]);
+    refreshAircraftProximity();
+    if (movedKm > 0.05) resetInterpolationSamples();
+    updateFocusView(false);
+    renderAirports();
+    renderRunways();
+    renderMap();
+    renderPanel();
+    updateStatus();
+    updateAlerts();
   }
 
   // --- Data fetching ---
   async function fetchAircraft() {
     if (userLat === null) return;
-    var url = adsbUrl("/lat/" + userLat.toFixed(4) + "/lon/" + userLng.toFixed(4) + "/dist/" + RADIUS_KM);
+    var url = adsbUrl("/lat/" + userLat.toFixed(4) + "/lon/" + userLng.toFixed(4) + "/dist/" + radiusKm);
 
     try {
       var resp = await fetch(url);
@@ -384,10 +726,10 @@ body.noscroll { touch-action: none; }
       if (isGround && heading == null) continue;
 
       var callsign = (s.flight || "").trim() || null;
-      var brg = s.dir != null ? s.dir : 0;
       var priv = isPrivate(callsign, s.t || null, s.category || null);
       var squawk = s.squawk || null;
       var emerg = s.emergency && s.emergency !== "none" ? s.emergency : null;
+      var metrics = proximityMetrics(s.lat, s.lon, s.dir != null ? s.dir : 0);
 
       aircraft.push({
         icao24: s.hex,
@@ -401,9 +743,9 @@ body.noscroll { touch-action: none; }
         speedKts: s.gs != null ? Math.round(s.gs) : null,
         track: heading,
         vRate: s.baro_rate != null ? s.baro_rate / 60 : null,
-        distKm: s.dst != null ? Math.round(s.dst * 10) / 10 : null,
-        bearingDeg: brg,
-        cardinal: cardinalDir(brg),
+        distKm: metrics.distKm,
+        bearingDeg: metrics.bearingDeg,
+        cardinal: metrics.cardinal,
         private: priv,
         mach: s.mach || null,
         ias: s.ias != null ? Math.round(s.ias) : null,
@@ -419,13 +761,7 @@ body.noscroll { touch-action: none; }
       });
     }
 
-    aircraft.sort(function(a, b) {
-      if (a.emergency && !b.emergency) return -1;
-      if (!a.emergency && b.emergency) return 1;
-      if (a.ground && !b.ground) return 1;
-      if (!a.ground && b.ground) return -1;
-      return (a.distKm || 999) - (b.distKm || 999);
-    });
+    sortAircraftList();
 
     for (var j = 0; j < aircraft.length; j++) {
       var a = aircraft[j];
@@ -434,13 +770,16 @@ body.noscroll { touch-action: none; }
       var lastPt = h.length ? h[h.length - 1] : null;
       var reportTs = now - Math.max(0, (a.seenPos || 0) * 1000);
       if (lastPt && reportTs <= lastPt[2]) reportTs = lastPt[2] + 1;
+      var breakBefore = !!trailBreakPending[a.icao24] && !!lastPt;
+      if (trailBreakPending[a.icao24]) delete trailBreakPending[a.icao24];
       var moved = !lastPt ||
+        breakBefore ||
         Math.abs(lastPt[0] - a.lat) > 1e-5 ||
         Math.abs(lastPt[1] - a.lng) > 1e-5 ||
         lastPt[4] !== a.ground ||
         reportTs - lastPt[2] > Math.max(1500, fetchInterval * 0.9);
-      if (moved) h.push([a.lat, a.lng, reportTs, a.altFt, a.ground]);
-      if (h.length > 40) h.splice(0, h.length - 40);
+      if (moved) h.push([a.lat, a.lng, reportTs, a.altFt, a.ground, breakBefore]);
+      if (h.length > 120) h.splice(0, h.length - 120);
     }
 
     renderMap();
@@ -492,31 +831,108 @@ body.noscroll { touch-action: none; }
     return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   }
 
+  function bearingDegrees(lat1, lon1, lat2, lon2) {
+    var phi1 = lat1 * Math.PI / 180;
+    var phi2 = lat2 * Math.PI / 180;
+    var dLon = (lon2 - lon1) * Math.PI / 180;
+    var y = Math.sin(dLon) * Math.cos(phi2);
+    var x = Math.cos(phi1) * Math.sin(phi2) -
+      Math.sin(phi1) * Math.cos(phi2) * Math.cos(dLon);
+    return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+  }
+
+  function roundTenths(value) {
+    return Math.round(value * 10) / 10;
+  }
+
+  function proximityMetrics(lat, lng, fallbackBearing) {
+    var bearing = fallbackBearing != null ? fallbackBearing : 0;
+    var distKm = null;
+    if (userLat != null && userLng != null) {
+      distKm = haversineKm(userLat, userLng, lat, lng);
+      bearing = bearingDegrees(userLat, userLng, lat, lng);
+    }
+    return {
+      distKm: distKm != null ? roundTenths(distKm) : null,
+      bearingDeg: bearing,
+      cardinal: cardinalDir(bearing)
+    };
+  }
+
+  function updateAircraftProximity(a) {
+    var metrics = proximityMetrics(a.lat, a.lng, a.bearingDeg);
+    a.distKm = metrics.distKm;
+    a.bearingDeg = metrics.bearingDeg;
+    a.cardinal = metrics.cardinal;
+  }
+
+  function sortAircraftList() {
+    aircraft.sort(function(a, b) {
+      if (a.emergency && !b.emergency) return -1;
+      if (!a.emergency && b.emergency) return 1;
+      if (a.ground && !b.ground) return 1;
+      if (!a.ground && b.ground) return -1;
+      var distA = a.distKm != null ? a.distKm : 999;
+      var distB = b.distKm != null ? b.distKm : 999;
+      return distA - distB;
+    });
+  }
+
+  function refreshAircraftProximity() {
+    if (userLat == null || userLng == null || !aircraft.length) return;
+    for (var i = 0; i < aircraft.length; i++) updateAircraftProximity(aircraft[i]);
+    sortAircraftList();
+  }
+
+  function resetInterpolationSamples() {
+    for (var id in extraState) {
+      if (extraState[id] && extraState[id].samples) {
+        extraState[id].samples = extraState[id].samples.slice(-1);
+      }
+    }
+  }
+
   async function fetchAirports() {
-    if (airportsFetched || !userLat) return;
-    airportsFetched = true;
+    if (userLat == null || userLng == null) return;
+    if (airportData) {
+      renderAirports();
+      return;
+    }
     try {
       var resp = await fetch("airports.json");
       if (!resp.ok) return;
-      var all = await resp.json();
-      for (var i = 0; i < all.length; i++) {
-        var ap = all[i];
-        var dist = haversineKm(userLat, userLng, ap[1], ap[2]);
-        if (dist > RADIUS_KM) continue;
-        var iata = ap[0], name = ap[3] || iata;
-        (function(code, apName) {
-          var m = L.circleMarker([ap[1], ap[2]], {
-            radius: 6, fillColor: "#2a3f55", fillOpacity: 1,
-            color: "#8aa0b8", weight: 2
-          })
-          .bindTooltip(code, { permanent: true, direction: "right", offset: [8, 0], className: "airport-label", interactive: true })
-          .on("click", function() { window.openFids(code, apName); })
-          .addTo(airportLayer);
-          var el = m.getTooltip() && m.getTooltip().getElement();
-          if (el) el.addEventListener("click", function() { window.openFids(code, apName); });
-        })(iata, name);
-      }
+      airportData = await resp.json();
+      renderAirports();
     } catch (e) { console.warn("Airport fetch failed:", e); }
+  }
+
+  function renderAirports() {
+    airportLayer.clearLayers();
+    if (!airportData || !filters.airports || userLat == null || userLng == null) return;
+    for (var i = 0; i < airportData.length; i++) {
+      var ap = airportData[i];
+      var dist = haversineKm(userLat, userLng, ap[1], ap[2]);
+      if (dist > radiusKm) continue;
+      var iata = ap[0], name = ap[3] || iata;
+      (function(code, apName, lat, lng) {
+        var m = L.circleMarker([lat, lng], {
+          radius: 6, fillColor: "#2a3f55", fillOpacity: 1,
+          color: "#8aa0b8", weight: 2
+        })
+        .bindTooltip(code, {
+          permanent: true,
+          direction: "right",
+          offset: [8, 0],
+          className: "airport-label",
+          interactive: true,
+          pane: "airportTooltipPane"
+        })
+        .on("click", function() { window.openFids(code, apName); })
+        .addTo(airportLayer);
+        var el = m.getTooltip() && m.getTooltip().getElement();
+        if (el) el.addEventListener("click", function() { window.openFids(code, apName); });
+      })(iata, name, ap[1], ap[2]);
+    }
   }
 
   async function fetchRunways() {
@@ -531,13 +947,13 @@ body.noscroll { touch-action: none; }
 
   function renderRunways() {
     runwayLayer.clearLayers();
-    if (!runwayData || !filters.airports) return;
+    if (!runwayData || !filters.airports || userLat == null || userLng == null) return;
     for (var iata in runwayData) {
       var rwys = runwayData[iata];
       for (var j = 0; j < rwys.length; j++) {
         var r = rwys[j];
         var dist = haversineKm(userLat, userLng, (r[0]+r[3])/2, (r[1]+r[4])/2);
-        if (dist > RADIUS_KM) continue;
+        if (dist > radiusKm) continue;
         L.polyline([[r[0],r[1]], [r[3],r[4]]], {
           color: "#7a8a9f", weight: 2.5, opacity: 0.7, dashArray: "8,5"
         }).bindTooltip(r[6], {
@@ -565,6 +981,7 @@ body.noscroll { touch-action: none; }
     var alerts = [];
     for (var i = 0; i < aircraft.length; i++) {
       var a = aircraft[i];
+      if (isFiltered(a)) continue;
       var label = SQUAWK_ALERT[a.squawk];
       if (label || a.emergency) {
         var name = a.callsign || a.icao24;
@@ -606,6 +1023,106 @@ body.noscroll { touch-action: none; }
   const GROUND_TRAIL_MS = 15000;
   const trailLines = {};
 
+  function trailWindowMs(a) {
+    if (a.ground) return GROUND_TRAIL_MS;
+    var zoom = map ? map.getZoom() : 11;
+    if (zoom <= 8) return 16000;
+    if (zoom <= 9) return 24000;
+    if (zoom <= 10) return 34000;
+    if (zoom <= 11) return 46000;
+    if (zoom <= 12) return 62000;
+    return 82000;
+  }
+
+  function trailStyle(ageNorm, isSelected) {
+    var opacityFloor = isSelected ? 0.28 : 0.12;
+    var opacitySpan = isSelected ? 0.62 : 0.58;
+    var exponent = isSelected ? 1.15 : 1.65;
+    return {
+      opacity: opacityFloor + opacitySpan * Math.pow(1 - ageNorm, exponent),
+      weight: isSelected ? 3.3 : 2.5
+    };
+  }
+
+  function displayedAircraftLatLng(id, fallback) {
+    var marker = markerMap[id];
+    if (marker) {
+      var ll = marker.getLatLng();
+      if (ll) return [ll.lat, ll.lng];
+    }
+    return fallback;
+  }
+
+  function localMetersFor(lat, lng) {
+    var metersPerLat = 111320;
+    var metersPerLng = Math.max(1, 111320 * Math.cos(userLat * Math.PI / 180));
+    return {
+      x: (lng - userLng) * metersPerLng,
+      y: (lat - userLat) * metersPerLat
+    };
+  }
+
+  function localMetersToLatLng(x, y) {
+    var metersPerLat = 111320;
+    var metersPerLng = Math.max(1, 111320 * Math.cos(userLat * Math.PI / 180));
+    return [
+      userLat + y / metersPerLat,
+      userLng + x / metersPerLng
+    ];
+  }
+
+  function clipSegmentToRadius(startLatLng, endLatLng) {
+    if (userLat == null || userLng == null) return [startLatLng, endLatLng];
+    var radiusM = radiusKm * 1000 + 5;
+    var start = localMetersFor(startLatLng[0], startLatLng[1]);
+    var end = localMetersFor(endLatLng[0], endLatLng[1]);
+    var insideStart = start.x * start.x + start.y * start.y <= radiusM * radiusM;
+    var insideEnd = end.x * end.x + end.y * end.y <= radiusM * radiusM;
+    var dx = end.x - start.x;
+    var dy = end.y - start.y;
+    var quadA = dx * dx + dy * dy;
+    if (quadA < 1e-6) return insideStart || insideEnd ? [startLatLng, endLatLng] : null;
+
+    var quadB = 2 * (start.x * dx + start.y * dy);
+    var quadC = start.x * start.x + start.y * start.y - radiusM * radiusM;
+    var disc = quadB * quadB - 4 * quadA * quadC;
+    var cuts = [];
+    if (disc >= 0) {
+      var sqrtDisc = Math.sqrt(disc);
+      var t1 = (-quadB - sqrtDisc) / (2 * quadA);
+      var t2 = (-quadB + sqrtDisc) / (2 * quadA);
+      if (t1 >= 0 && t1 <= 1) cuts.push(t1);
+      if (t2 >= 0 && t2 <= 1 && Math.abs(t2 - t1) > 1e-6) cuts.push(t2);
+      cuts.sort(function(a, b) { return a - b; });
+    }
+
+    function pointAt(t) {
+      return localMetersToLatLng(start.x + dx * t, start.y + dy * t);
+    }
+
+    if (insideStart && insideEnd) return [startLatLng, endLatLng];
+    if (insideStart) return cuts.length ? [startLatLng, pointAt(cuts[cuts.length - 1])] : null;
+    if (insideEnd) return cuts.length ? [pointAt(cuts[0]), endLatLng] : null;
+    if (cuts.length >= 2) return [pointAt(cuts[0]), pointAt(cuts[cuts.length - 1])];
+    return null;
+  }
+
+  function syncTrailEndpoint(id, latlng) {
+    var segs = trailLines[id];
+    if (!segs || !segs.length) return;
+    var trail = posHistory[id];
+    if (!trail || !trail.length) return;
+    if (trail[trail.length - 1][5]) return;
+    var lastSeg = segs[segs.length - 1];
+    var latlngs = lastSeg.getLatLngs();
+    if (!latlngs || latlngs.length < 2) return;
+    var clipped = clipSegmentToRadius(
+      [latlngs[0].lat, latlngs[0].lng],
+      [latlng.lat, latlng.lng]
+    );
+    if (clipped) lastSeg.setLatLngs(clipped);
+  }
+
   function renderTrails() {
     if (!filters.trails) {
       if (trailLayer.getLayers().length) trailLayer.clearLayers();
@@ -623,36 +1140,52 @@ body.noscroll { touch-action: none; }
       if (!trail || trail.length < 2) continue;
 
       var startIdx = 0;
-      if (a.ground) {
+      var isSelected = selectedAircraftId === a.icao24;
+      var trailMs = trailWindowMs(a);
+      if (!isSelected) {
         for (var k = trail.length - 1; k >= 0; k--) {
-          if (now - trail[k][2] > GROUND_TRAIL_MS) { startIdx = k + 1; break; }
+          if (now - trail[k][2] > trailMs) { startIdx = k + 1; break; }
         }
-        if (trail.length - startIdx < 2) continue;
       }
+      if (trail.length - startIdx < 2) continue;
+
+      var ageSpan = isSelected ? Math.max(1, now - trail[startIdx][2]) : trailMs;
+      var segments = [];
+      for (var j = Math.max(1, startIdx); j < trail.length; j++) {
+        if (trail[j][5]) continue;
+        var segGround = trail[j][4];
+        var color = segGround ? GROUND_COLOR : altColor(trail[j][3]);
+        var ageNorm = Math.max(0, Math.min(1, (now - trail[j][2]) / ageSpan));
+        var style = trailStyle(ageNorm, isSelected);
+        var endLatLng = [trail[j][0], trail[j][1]];
+        if (j === trail.length - 1 && !trail[j][5]) {
+          endLatLng = displayedAircraftLatLng(a.icao24, endLatLng);
+        }
+        var clippedSeg = clipSegmentToRadius([trail[j-1][0], trail[j-1][1]], endLatLng);
+        if (!clippedSeg) continue;
+        segments.push({
+          latlngs: clippedSeg,
+          color: color,
+          opacity: style.opacity,
+          weight: style.weight
+        });
+      }
+      if (!segments.length) continue;
 
       activeIds[a.icao24] = true;
-      var n = trail.length;
       var segs = trailLines[a.icao24] || (trailLines[a.icao24] = []);
-      var needed = n - Math.max(1, startIdx);
-
-      while (segs.length > needed) {
+      while (segs.length > segments.length) {
         trailLayer.removeLayer(segs.shift());
       }
 
-      var si = 0;
-      for (var j = Math.max(1, startIdx); j < n; j++, si++) {
-        var segGround = trail[j][4];
-        var color = segGround ? GROUND_COLOR : altColor(trail[j][3]);
-        var age = (j - startIdx) / (n - 1 - startIdx);
-        var opacity = 0.3 + 0.5 * age;
-        var latlngs = [[trail[j-1][0], trail[j-1][1]], [trail[j][0], trail[j][1]]];
-
+      for (var si = 0; si < segments.length; si++) {
+        var seg = segments[si];
         if (si < segs.length) {
-          segs[si].setLatLngs(latlngs);
-          segs[si].setStyle({ color: color, opacity: opacity });
+          segs[si].setLatLngs(seg.latlngs);
+          segs[si].setStyle({ color: seg.color, opacity: seg.opacity, weight: seg.weight });
         } else {
-          var line = L.polyline(latlngs, {
-            color: color, weight: 2.5, opacity: opacity,
+          var line = L.polyline(seg.latlngs, {
+            color: seg.color, weight: seg.weight, opacity: seg.opacity,
             lineCap: "round", lineJoin: "round"
           }).addTo(trailLayer);
           segs.push(line);
@@ -715,9 +1248,19 @@ body.noscroll { touch-action: none; }
     marker.bindTooltip(text, { permanent: true, direction: "top", offset: [0, -yOffset], className: "plane-label" });
   }
 
+  function setSelectedAircraft(id) {
+    if (selectedAircraftId === id) return;
+    ignoreMapClickUntil = Date.now() + 250;
+    selectedAircraftId = id;
+    _lastPanelHtml = "";
+    renderMap();
+    renderPanel();
+  }
+
   function isFiltered(a) {
     if (!filters.ground && a.ground) return true;
     if (!filters.private && a.private) return true;
+    if (a.distKm == null || a.distKm > radiusKm) return true;
     return false;
   }
 
@@ -728,6 +1271,7 @@ body.noscroll { touch-action: none; }
       var a = aircraft[i];
       if (isFiltered(a)) continue;
       seen[a.icao24] = true;
+      var isSelected = selectedAircraftId === a.icao24;
       var icon = planeIcon(a.track, a.aircraftType, a.private, a.category, a.altFt, a.ground);
       var label = a.callsign || a.icao24;
       var existing = markerMap[a.icao24];
@@ -754,6 +1298,7 @@ body.noscroll { touch-action: none; }
       if (existing) {
         existing.setIcon(icon);
         existing.setPopupContent(buildPopup(a));
+        existing.setZIndexOffset(isSelected ? 1000 : 0);
         if (filters.labels) {
           if (existing.getTooltip()) {
             existing.setTooltipContent(label);
@@ -765,6 +1310,10 @@ body.noscroll { touch-action: none; }
         }
       } else {
         var marker = L.marker([a.lat, a.lng], { icon: icon }).bindPopup(buildPopup(a));
+        marker.on("click", (function(id) {
+          return function() { setSelectedAircraft(id); };
+        })(a.icao24));
+        marker.setZIndexOffset(isSelected ? 1000 : 0);
         if (filters.labels) {
           bindPlaneLabel(marker, label, icon.options.iconSize[1] / 2);
         }
@@ -779,6 +1328,7 @@ body.noscroll { touch-action: none; }
         delete extraState[id];
       }
     }
+    if (selectedAircraftId && !seen[selectedAircraftId]) selectedAircraftId = null;
   }
 
   function animateMarkers() {
@@ -818,13 +1368,14 @@ body.noscroll { touch-action: none; }
       if (Math.abs(pos[0] - cur.lat) > 5e-6 || Math.abs(pos[1] - cur.lng) > 5e-6) {
         marker.setLatLng(pos);
       }
+      syncTrailEndpoint(id, marker.getLatLng());
     }
     requestAnimationFrame(animateMarkers);
   }
 
   function renderMap() {
-    renderTrails();
     renderMarkers();
+    renderTrails();
   }
 
   function vertLabel(rate) {
@@ -858,6 +1409,7 @@ body.noscroll { touch-action: none; }
     for (var i = 0; i < visible.length; i++) {
       var a = visible[i];
       var name = a.callsign || a.icao24;
+      var selectedClass = selectedAircraftId === a.icao24 ? " selected" : "";
       var nameClass = a.callsign ? "" : " unknown";
       var privTag = a.private ? '<span class="priv-tag">PRIVATE</span>' : "";
       var alName = !a.private ? airlineName(a.callsign) : null;
@@ -875,7 +1427,7 @@ body.noscroll { touch-action: none; }
         routeHtml = '<div class="route-line">' + routeCache[a.callsign].display + "</div>";
       }
 
-      html += '<div class="card"' + emergClass + ' onclick="flyTo(' + a.lat + "," + a.lng + ')">' +
+      html += "<div class=\"card" + selectedClass + "\"" + emergClass + " onclick=\"flyTo('" + a.icao24 + "'," + a.lat + "," + a.lng + ")\">" +
         '<div class="main">' +
           '<div class="callsign' + nameClass + '">' + name + privTag + alTag + "</div>" +
           routeHtml +
@@ -887,7 +1439,8 @@ body.noscroll { touch-action: none; }
     if (html !== _lastPanelHtml) { panel.innerHTML = html; _lastPanelHtml = html; }
   }
 
-  window.flyTo = function(lat, lng) {
+  window.flyTo = function(id, lat, lng) {
+    setSelectedAircraft(id);
     document.getElementById("list-sheet").classList.remove("open");
     map.flyTo([lat, lng], 13, { duration: 0.5 });
   };
@@ -909,17 +1462,41 @@ body.noscroll { touch-action: none; }
     document.getElementById("loading-text").textContent = msg;
   }
 
+  function scheduleTrailBreaks() {
+    trailBreakPending = {};
+    for (var id in posHistory) trailBreakPending[id] = true;
+  }
+
+  function handlePageResume() {
+    if (!map) return;
+    lastFetchTs = 0;
+    fetchInterval = REFRESH_MS;
+    scheduleTrailBreaks();
+    resetInterpolationSamples();
+    fetchAircraft();
+  }
+
   // --- Init ---
   function boot(lat, lng) {
     document.getElementById("loading").style.display = "none";
+    syncUrlState();
+    updateFilterButtons();
+    updateRadiusChips();
     initMap(lat, lng);
     updateUserPosition(lat, lng);
+    updateFocusView(true);
     fetchAircraft();
     fetchAirports();
     fetchRunways();
     refreshTimer = setInterval(fetchAircraft, REFRESH_MS);
     requestAnimationFrame(animateMarkers);
     startGeolocation();
+    document.addEventListener("visibilitychange", function() {
+      if (!document.hidden) handlePageResume();
+    });
+    window.addEventListener("pageshow", function(e) {
+      if (e.persisted) handlePageResume();
+    });
   }
 
   // --- List sheet ---
@@ -942,16 +1519,22 @@ body.noscroll { touch-action: none; }
 
   // --- Filter toggles ---
   (function() {
-    var btns = document.querySelectorAll("#filter-bar .ftag");
+    var btns = document.querySelectorAll("#map-controls .ftag");
     for (var i = 0; i < btns.length; i++) {
       btns[i].addEventListener("click", function() {
+        var nextRadius = parseInt(this.getAttribute("data-radius"), 10);
+        if (RADIUS_OPTIONS.indexOf(nextRadius) >= 0) {
+          setRadiusKm(nextRadius);
+          return;
+        }
         var f = this.getAttribute("data-f");
         filters[f] = !filters[f];
-        this.classList.toggle("on", filters[f]);
+        updateFilterButtons();
         if (f === "airports") {
           if (filters.airports) {
             if (airportLayer) map.addLayer(airportLayer);
             if (runwayLayer) map.addLayer(runwayLayer);
+            renderAirports();
             renderRunways();
           } else {
             if (airportLayer) map.removeLayer(airportLayer);
@@ -960,8 +1543,12 @@ body.noscroll { touch-action: none; }
         }
         renderMap();
         renderPanel();
+        updateStatus();
+        updateAlerts();
       });
     }
+    updateFilterButtons();
+    updateRadiusChips();
   })();
 
   if (!isNaN(paramLat) && !isNaN(paramLng)) {
