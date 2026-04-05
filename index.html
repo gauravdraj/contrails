@@ -2,180 +2,823 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#07101b">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>Contrails</title>
-<link id="app-favicon" rel="icon" type="image/svg+xml" sizes="any" href="favicon.svg?v=1.3">
+<link id="app-favicon" rel="icon" type="image/svg+xml" sizes="any" href="favicon.svg?v=1.6">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <style>
+:root {
+  --bg-base: #08111e;
+  --bg-base-soft: rgba(8, 17, 30, 0.78);
+  --bg-surface: rgba(10, 19, 33, 0.86);
+  --bg-surface-strong: rgba(10, 19, 33, 0.94);
+  --bg-card: rgba(15, 26, 42, 0.88);
+  --bg-card-strong: rgba(18, 31, 49, 0.96);
+  --bg-chip: rgba(255, 255, 255, 0.04);
+  --border-soft: rgba(137, 164, 191, 0.16);
+  --border-strong: rgba(126, 182, 223, 0.26);
+  --text-strong: #f1f7fd;
+  --text-main: #d5e0eb;
+  --text-muted: #8da4bc;
+  --text-soft: #5e7389;
+  --accent: #69c7ff;
+  --accent-soft: rgba(105, 199, 255, 0.16);
+  --danger: #f87171;
+  --danger-soft: rgba(248, 113, 113, 0.14);
+  --success: #4ade80;
+  --radius-xl: 24px;
+  --radius-lg: 18px;
+  --radius-md: 14px;
+  --radius-sm: 10px;
+  --shadow-lg: 0 24px 60px rgba(0, 0, 0, 0.34);
+  --shadow-md: 0 12px 30px rgba(0, 0, 0, 0.28);
+}
+
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; background: #0a0e17; color: #e0e6ed; overflow: hidden; }
+html, body {
+  height: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  background:
+    radial-gradient(circle at top, rgba(42, 105, 148, 0.12), transparent 36%),
+    linear-gradient(180deg, #07101b 0%, #0a1320 100%);
+  color: var(--text-main);
+  overflow: hidden;
+  font-variant-numeric: tabular-nums;
+}
 body.noscroll { touch-action: none; }
 
 #app { height: 100%; height: 100dvh; }
 #map { height: 100%; }
-#panel { overflow-y: auto; padding: 0 0 env(safe-area-inset-bottom, 0px); flex: 1; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
+.leaflet-container,
+.leaflet-pane,
+.leaflet-map-pane,
+.leaflet-tile-container,
+.leaflet-tile-pane,
+.leaflet-overlay-pane {
+  background: #07101b;
+}
+.leaflet-tile { background: #07101b; }
+#panel {
+  overflow-y: auto;
+  padding: 12px 12px calc(18px + env(safe-area-inset-bottom, 0px));
+  flex: 1;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+}
+#panel::-webkit-scrollbar, #fids-body::-webkit-scrollbar { width: 0; height: 0; }
 
 .card {
-  padding: 12px 14px;
-  border-bottom: 1px solid #1a2233;
+  margin-bottom: 10px;
+  padding: 14px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md);
+  background: linear-gradient(180deg, rgba(17, 28, 45, 0.96) 0%, rgba(11, 20, 34, 0.92) 100%);
+  box-shadow: var(--shadow-md);
   display: flex;
   justify-content: space-between;
-  align-items: center;
-  transition: background 0.15s;
+  align-items: flex-start;
+  gap: 12px;
+  transition: transform 0.15s ease, border-color 0.15s ease, background 0.15s ease;
 }
-.card:active { background: #151d2e; }
-.card.selected { background: #101a2a; box-shadow: inset 3px 0 0 #5bbcf5; }
-.card .main { flex: 1; }
-.card .callsign { font-size: 16px; font-weight: 700; letter-spacing: 0.5px; }
-.card .callsign.unknown { color: #667; font-style: italic; }
-.card .callsign .priv-tag { font-size: 10px; font-weight: 500; color: #8899aa; background: #1a2233; border-radius: 3px; padding: 1px 5px; margin-left: 6px; vertical-align: middle; letter-spacing: 0; }
-.card .details { font-size: 13px; color: #8899aa; margin-top: 3px; }
-.card .distance { font-size: 14px; font-weight: 600; text-align: right; white-space: nowrap; padding-left: 12px; }
-.card .bearing-tag { font-size: 11px; color: #5bbcf5; background: #182538; border-radius: 4px; padding: 2px 6px; margin-left: 6px; }
+.card:last-child { margin-bottom: 0; }
+.card:active {
+  transform: scale(0.995);
+  background: linear-gradient(180deg, rgba(21, 35, 55, 0.98) 0%, rgba(13, 24, 39, 0.94) 100%);
+}
+.card.selected {
+  border-color: rgba(105, 199, 255, 0.36);
+  box-shadow: inset 3px 0 0 var(--accent), var(--shadow-md);
+  background: linear-gradient(180deg, rgba(18, 33, 54, 0.98) 0%, rgba(14, 27, 44, 0.96) 100%);
+}
+.card.emergency {
+  border-color: rgba(248, 113, 113, 0.32);
+  box-shadow: inset 3px 0 0 var(--danger), var(--shadow-md);
+}
+.card .main { flex: 1; min-width: 0; }
+.card .callsign {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  color: var(--text-strong);
+}
+.card .callsign.unknown { color: var(--text-soft); font-style: italic; }
+.card .callsign .priv-tag {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 999px;
+  padding: 2px 7px;
+  margin-left: 6px;
+  vertical-align: middle;
+  letter-spacing: 0.04em;
+}
+.card .details {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 5px;
+  line-height: 1.45;
+}
+.card .distance {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: right;
+  white-space: nowrap;
+  color: var(--text-strong);
+  padding-left: 10px;
+}
+.card .distance-num { font-size: 16px; letter-spacing: -0.02em; }
+.card .distance-unit { color: var(--text-muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
+.card .bearing-tag {
+  font-size: 10px;
+  color: var(--accent);
+  background: rgba(105, 199, 255, 0.12);
+  border: 1px solid rgba(105, 199, 255, 0.18);
+  border-radius: 999px;
+  padding: 4px 7px;
+  letter-spacing: 0.06em;
+}
+.card .route-line {
+  font-size: 12px;
+  color: var(--accent);
+  margin-top: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.card .airline-name {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-weight: 400;
+  margin-left: 6px;
+  letter-spacing: 0;
+}
+.panel-empty {
+  padding: 28px 18px;
+  text-align: center;
+  color: var(--text-muted);
+  border: 1px dashed var(--border-soft);
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.03);
+}
 
-.vert-up { color: #4ade80; }
-.vert-down { color: #f87171; }
-.vert-level { color: #667; }
+.vert-up { color: var(--success); }
+.vert-down { color: var(--danger); }
+.vert-level { color: var(--text-soft); }
 
-#alert-bar { display: none; padding: 8px 14px; background: #4a0e0e; color: #f87171; font-size: 13px; font-weight: 600; text-align: center; animation: alertPulse 1s ease-in-out infinite alternate; position: fixed; top: 0; left: 0; right: 0; z-index: 1000; }
-@keyframes alertPulse { from { background: #4a0e0e; } to { background: #6b1414; } }
+#alert-bar {
+  display: none;
+  position: fixed;
+  top: calc(10px + env(safe-area-inset-top, 0px));
+  left: 12px;
+  right: 12px;
+  z-index: 1005;
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(248, 113, 113, 0.24);
+  background: linear-gradient(180deg, rgba(74, 14, 14, 0.86) 0%, rgba(48, 11, 11, 0.92) 100%);
+  color: #ffd6d6;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
+  box-shadow: var(--shadow-md);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
 
-#list-toggle { position: fixed; bottom: calc(20px + env(safe-area-inset-bottom, 0px)); left: 50%; transform: translateX(-50%); z-index: 1000; background: rgba(17,24,37,0.92); color: #e0e6ed; border: 1px solid #2a3a4f; border-radius: 20px; padding: 10px 20px; font-size: 14px; font-weight: 600; cursor: pointer; box-shadow: 0 2px 12px rgba(0,0,0,0.5); -webkit-tap-highlight-color: transparent; backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); font-family: inherit; }
-#list-toggle:active { background: rgba(24,37,56,0.95); }
-#list-toggle .count { color: #5bbcf5; }
-#list-sheet { position: fixed; inset: 0; z-index: 1200; display: none; flex-direction: column; }
-#list-sheet.open { display: flex; }
-#list-backdrop { flex: 1; min-height: 60px; }
-#list-panel { max-height: 58vh; max-height: 58dvh; background: #0d1320; border-radius: 18px 18px 0 0; border-top: 1px solid #1e2a3a; box-shadow: 0 -4px 24px rgba(0,0,0,0.5); display: flex; flex-direction: column; overflow: hidden; }
-#list-grabber { width: 42px; height: 4px; border-radius: 999px; background: #2a3a4f; margin: 10px auto 2px; flex-shrink: 0; }
-#list-header { display: flex; justify-content: space-between; align-items: center; padding: 8px 16px 10px; border-bottom: 1px solid #1a2233; font-size: 13px; color: #8899aa; }
-#list-header .count { color: #5bbcf5; font-weight: 600; }
-#list-header #status-time { color: #556677; margin-left: 8px; }
-#list-close { background: none; border: none; color: #667; font-size: 24px; cursor: pointer; line-height: 1; padding: 0 4px; flex-shrink: 0; }
-#list-close:hover { color: #e0e6ed; }
+#list-toggle {
+  position: fixed;
+  right: 12px;
+  bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  z-index: 1000;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--bg-surface);
+  color: var(--text-main);
+  border: 1px solid var(--border-strong);
+  border-radius: 18px;
+  padding: 10px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: var(--shadow-md);
+  -webkit-tap-highlight-color: transparent;
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  font-family: inherit;
+  transition: transform 0.16s ease, background 0.16s ease, box-shadow 0.16s ease;
+}
+#list-toggle:active { transform: translateY(1px); }
+#list-toggle .label {
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+}
+#list-toggle .count {
+  min-width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(105, 199, 255, 0.16);
+  color: var(--accent);
+  border: 1px solid rgba(105, 199, 255, 0.2);
+}
+
+#list-sheet {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  visibility: hidden;
+  pointer-events: none;
+}
+#list-sheet.open {
+  visibility: visible;
+  pointer-events: auto;
+}
+#list-backdrop {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  background: rgba(4, 9, 16, 0.3);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  transition: opacity 0.18s ease;
+}
+#list-sheet.open #list-backdrop {
+  opacity: 1;
+}
+#list-panel {
+  position: absolute;
+  top: calc(12px + env(safe-area-inset-top, 0px));
+  right: 12px;
+  bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+  width: min(420px, calc(100% - 24px));
+  background: linear-gradient(180deg, rgba(12, 22, 37, 0.94) 0%, rgba(8, 16, 28, 0.98) 100%);
+  border-radius: 24px;
+  border: 1px solid var(--border-soft);
+  box-shadow: var(--shadow-lg);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  opacity: 0;
+  transform: translate3d(18px, 0, 0);
+  transition: transform 0.18s ease, opacity 0.18s ease;
+}
+#list-sheet.open #list-panel {
+  opacity: 1;
+  transform: translate3d(0, 0, 0);
+}
+#list-grabber { display: none; }
+#list-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border-soft);
+}
+#list-heading { flex: 1; min-width: 0; }
+#list-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-strong);
+  letter-spacing: -0.01em;
+}
+#list-subtitle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+#list-header .count { color: var(--accent); font-weight: 700; }
+#list-header #status-time { color: var(--text-soft); }
+#list-close {
+  width: 36px;
+  height: 36px;
+  border-radius: 12px;
+  border: 1px solid var(--border-soft);
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-muted);
+  font-size: 24px;
+  cursor: pointer;
+  line-height: 1;
+  flex-shrink: 0;
+}
+#list-close:hover { color: var(--text-strong); }
 
 #map-controls {
   position: fixed;
-  left: 10px;
-  right: 10px;
-  bottom: calc(74px + env(safe-area-inset-bottom, 0px));
+  top: calc(12px + env(safe-area-inset-top, 0px));
+  left: 12px;
   z-index: 980;
+  width: min(360px, calc(100% - 88px));
+  padding: 8px;
+  border-radius: 20px;
+  border: 1px solid var(--border-strong);
+  background: linear-gradient(180deg, rgba(9, 18, 31, 0.84) 0%, rgba(8, 15, 26, 0.94) 100%);
+  box-shadow: var(--shadow-md);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  overflow: hidden;
+  transition: width 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
+}
+#map-controls.collapsed {
+  width: min(236px, calc(100% - 100px));
+}
+#map-controls.expanded {
+  width: min(360px, calc(100% - 24px));
+  box-shadow: var(--shadow-lg);
+}
+#controls-toggle {
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: inherit;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 8px;
+  cursor: pointer;
+  font: inherit;
+  -webkit-tap-highlight-color: transparent;
+}
+#controls-toggle-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+#controls-toggle-main {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 8px;
-  border-radius: 16px;
-  border: 1px solid rgba(58, 80, 104, 0.8);
-  background: rgba(13, 19, 32, 0.9);
-  box-shadow: 0 8px 26px rgba(0,0,0,0.35);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
+  align-items: flex-start;
+  min-width: 0;
 }
-.control-row { display: flex; gap: 6px; overflow-x: auto; -webkit-overflow-scrolling: touch; }
-.control-row::-webkit-scrollbar { display: none; }
-.ftag { font-size: 11px; padding: 4px 10px; border-radius: 12px; border: 1px solid #2a3a4f; color: #667; background: transparent; cursor: pointer; white-space: nowrap; -webkit-tap-highlight-color: transparent; }
-.ftag.on { color: #5bbcf5; border-color: #5bbcf5; background: #0f1e33; }
-
+#controls-logo-shell,
+#controls-logo-badge {
+  position: relative;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 16px;
+  border: 1px solid rgba(105, 199, 255, 0.18);
+  background: linear-gradient(180deg, rgba(255,255,255,0.08) 0%, rgba(255,255,255,0.03) 100%);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.05), 0 10px 18px rgba(0,0,0,0.22);
+}
+#controls-logo-shell::after,
+#controls-logo-badge::after {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  background: radial-gradient(circle at top, rgba(105, 199, 255, 0.18), transparent 62%);
+  pointer-events: none;
+}
+#controls-logo-shell {
+  width: 38px;
+  height: 38px;
+}
+#controls-logo-badge {
+  width: 40px;
+  height: 40px;
+}
+#controls-logo-shell img,
+#controls-logo-badge img {
+  width: 24px;
+  height: 24px;
+  display: block;
+}
+#controls-toggle-label {
+  font-size: 11px;
+  color: var(--text-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+#controls-compact-summary {
+  margin-top: 2px;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-strong);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#controls-toggle-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 10px;
+  border: 1px solid var(--border-soft);
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-main);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+#controls-body {
+  margin-top: 0;
+  max-height: 0;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+  transform: translateY(-6px);
+  transition: max-height 0.18s ease, opacity 0.18s ease, transform 0.18s ease, margin-top 0.18s ease;
+}
+#map-controls.expanded #controls-body {
+  margin-top: 8px;
+  max-height: 360px;
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+#controls-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+}
+#controls-brand { min-width: 0; flex: 1; }
+#controls-brand-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+#controls-brand-text {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+#controls-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-strong);
+  letter-spacing: -0.02em;
+}
+#controls-subtitle {
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+#version-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border-soft);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-soft);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  pointer-events: none;
+}
+#radius-pill {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  padding: 6px 10px;
+  border-radius: 14px;
+  border: 1px solid var(--border-soft);
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-strong);
+  flex-shrink: 0;
+}
+#radius-value {
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: -0.04em;
+}
+#radius-pill .unit {
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+#radius-slider-wrap { margin-top: 12px; }
+#radius-slider-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.section-label {
+  font-size: 11px;
+  color: var(--text-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+#radius-slider-readout {
+  font-size: 12px;
+  color: var(--text-main);
+  font-weight: 600;
+}
+#radius-slider {
+  --fill: 44%;
+  appearance: none;
+  width: 100%;
+  height: 28px;
+  background: transparent;
+  cursor: pointer;
+}
+#radius-slider:focus { outline: none; }
+#radius-slider::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--accent) 0%, var(--accent) var(--fill), rgba(255,255,255,0.08) var(--fill), rgba(255,255,255,0.08) 100%);
+}
+#radius-slider::-webkit-slider-thumb {
+  appearance: none;
+  width: 22px;
+  height: 22px;
+  margin-top: -8px;
+  border-radius: 50%;
+  border: 1px solid rgba(255,255,255,0.38);
+  background: linear-gradient(180deg, #f7fbff 0%, #dbe8f4 100%);
+  box-shadow: 0 6px 16px rgba(0,0,0,0.24);
+}
+#radius-slider::-moz-range-track {
+  height: 6px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--accent) 0%, var(--accent) var(--fill), rgba(255,255,255,0.08) var(--fill), rgba(255,255,255,0.08) 100%);
+}
+#radius-slider::-moz-range-thumb {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 1px solid rgba(255,255,255,0.38);
+  background: linear-gradient(180deg, #f7fbff 0%, #dbe8f4 100%);
+  box-shadow: 0 6px 16px rgba(0,0,0,0.24);
+}
+#radius-marks {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 6px;
+  font-size: 10px;
+  color: var(--text-soft);
+  letter-spacing: 0.04em;
+}
+.control-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+#visibility-controls { margin-top: 12px; }
+.ftag {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 7px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border-soft);
+  color: var(--text-muted);
+  background: var(--bg-chip);
+  cursor: pointer;
+  white-space: nowrap;
+  -webkit-tap-highlight-color: transparent;
+}
+.ftag.on {
+  color: var(--text-strong);
+  border-color: rgba(105, 199, 255, 0.34);
+  background: rgba(105, 199, 255, 0.16);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.02);
+}
 
 #loading {
-  position: fixed; inset: 0; z-index: 2000; background: #0a0e17;
-  display: flex; flex-direction: column; align-items: center; justify-content: center;
-  font-size: 15px; color: #8899aa; gap: 16px;
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  background: #0a0e17;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  color: var(--text-muted);
+  gap: 16px;
 }
 #loading .spinner {
-  width: 36px; height: 36px; border: 3px solid #1e2a3a;
-  border-top-color: #5bbcf5; border-radius: 50%; animation: spin 0.8s linear infinite;
+  width: 36px;
+  height: 36px;
+  border: 3px solid rgba(255,255,255,0.1);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 .leaflet-tooltip.plane-label {
-    background: rgba(10,14,23,0.85); color: #cdd6e0; border: none; box-shadow: none;
-    font-size: 10px; font-weight: 600; padding: 1px 4px; pointer-events: none;
+  background: rgba(8, 15, 26, 0.88);
+  color: var(--text-main);
+  border: none;
+  box-shadow: none;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 6px;
+  pointer-events: none;
 }
 .leaflet-tooltip.plane-label::before { display: none; }
 .leaflet-tooltip.airport-label {
-    background: rgba(15,22,35,0.9); color: #9aacbf; border: 1px solid #3a5068; box-shadow: 0 0 4px rgba(0,0,0,0.4);
-    font-size: 11px; font-weight: 700; padding: 2px 6px; pointer-events: auto; cursor: pointer; letter-spacing: 0.5px;
+  background: rgba(13, 24, 39, 0.92);
+  color: #afc1d4;
+  border: 1px solid rgba(122, 152, 183, 0.34);
+  box-shadow: 0 10px 18px rgba(0, 0, 0, 0.18);
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 8px;
+  pointer-events: auto;
+  cursor: pointer;
+  letter-spacing: 0.05em;
 }
 .leaflet-tooltip.airport-label::before { display: none; }
 .leaflet-tooltip.runway-label {
-    background: rgba(10,14,23,0.8); color: #8899aa; border: 1px solid #3a4a5f; box-shadow: none;
-    font-size: 9px; font-weight: 600; padding: 1px 4px; pointer-events: none;
+  background: rgba(10, 18, 30, 0.84);
+  color: var(--text-muted);
+  border: 1px solid rgba(96, 122, 146, 0.28);
+  box-shadow: none;
+  font-size: 9px;
+  font-weight: 600;
+  padding: 1px 5px;
+  pointer-events: none;
 }
 .leaflet-tooltip.runway-label::before { display: none; }
-.card .route-line { font-size: 12px; color: #5bbcf5; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.card .airline-name { font-size: 12px; color: #8899aa; font-weight: 400; margin-left: 6px; letter-spacing: 0; }
 
-.leaflet-popup-content-wrapper { background: #111825; color: #e0e6ed; border-radius: 8px; }
-.leaflet-popup-tip { background: #111825; }
-.leaflet-popup-content { margin: 10px 14px; font-size: 13px; line-height: 1.6; }
-.leaflet-popup-content strong { color: #5bbcf5; font-size: 15px; }
+.leaflet-popup-content-wrapper {
+  background: linear-gradient(180deg, rgba(14, 26, 42, 0.98) 0%, rgba(10, 18, 31, 0.98) 100%);
+  color: var(--text-main);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-soft);
+  box-shadow: var(--shadow-md);
+}
+.leaflet-popup-tip { background: rgba(14, 26, 42, 0.98); }
+.leaflet-popup-content { margin: 12px 14px; font-size: 13px; line-height: 1.6; }
+.leaflet-popup-content strong { color: var(--accent); font-size: 15px; }
 
 #fids { position: fixed; inset: 0; z-index: 1500; display: none; flex-direction: column; }
 #fids.open { display: flex; }
-#fids-backdrop { flex: 1; min-height: 60px; }
-#fids-sheet { max-height: 80vh; max-height: 80dvh; background: #0d1320; border-top: 1px solid #1e2a3a; display: flex; flex-direction: column; overflow: hidden; border-radius: 12px 12px 0 0; box-shadow: 0 -4px 24px rgba(0,0,0,0.5); }
-#fids-header { display: flex; justify-content: space-between; align-items: center; padding: 14px 16px 10px; }
-#fids-title { font-size: 20px; font-weight: 700; color: #5bbcf5; letter-spacing: 1px; }
-#fids-subtitle { font-size: 12px; color: #8899aa; margin-top: 2px; }
-#fids-close { background: none; border: none; color: #667; font-size: 28px; cursor: pointer; padding: 0 4px; line-height: 1; }
-#fids-close:hover { color: #e0e6ed; }
-#fids-tabs { display: flex; border-bottom: 1px solid #1a2233; }
-.fids-tab { flex: 1; padding: 10px; background: transparent; border: none; color: #667; font-size: 13px; font-weight: 600; cursor: pointer; border-bottom: 2px solid transparent; transition: color 0.15s; }
-.fids-tab.active { color: #5bbcf5; border-bottom-color: #5bbcf5; }
-#fids-body { overflow-y: auto; flex: 1; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; padding-bottom: env(safe-area-inset-bottom, 0px); }
-.fids-row { padding: 10px 16px; border-bottom: 1px solid #141d2d; }
+#fids-backdrop {
+  flex: 1;
+  min-height: 60px;
+  background: linear-gradient(180deg, rgba(4, 9, 16, 0) 0%, rgba(4, 9, 16, 0.48) 100%);
+}
+#fids-sheet {
+  max-height: 82vh;
+  max-height: 82dvh;
+  background: linear-gradient(180deg, rgba(12, 22, 37, 0.94) 0%, rgba(8, 16, 28, 0.98) 100%);
+  border: 1px solid var(--border-soft);
+  border-bottom: none;
+  border-radius: 24px 24px 0 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: var(--shadow-lg);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+}
+#fids-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 16px 12px;
+  border-bottom: 1px solid var(--border-soft);
+}
+#fids-title {
+  font-size: 19px;
+  font-weight: 700;
+  color: var(--text-strong);
+  letter-spacing: -0.02em;
+}
+#fids-subtitle { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+#fids-close {
+  width: 38px;
+  height: 38px;
+  border-radius: 12px;
+  border: 1px solid var(--border-soft);
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-muted);
+  font-size: 28px;
+  cursor: pointer;
+  padding: 0;
+  line-height: 1;
+}
+#fids-close:hover { color: var(--text-strong); }
+#fids-tabs {
+  display: flex;
+  gap: 8px;
+  padding: 10px 16px 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+.fids-tab {
+  flex: 1;
+  padding: 10px 12px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 12px 12px 0 0;
+  color: var(--text-soft);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
+}
+.fids-tab.active {
+  color: var(--text-strong);
+  background: rgba(105, 199, 255, 0.1);
+  border-color: rgba(105, 199, 255, 0.2);
+}
+#fids-body {
+  overflow-y: auto;
+  flex: 1;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  padding: 8px 12px calc(18px + env(safe-area-inset-bottom, 0px));
+}
+.fids-row {
+  padding: 12px 14px;
+  margin-bottom: 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md);
+  background: linear-gradient(180deg, rgba(17, 28, 45, 0.96) 0%, rgba(11, 20, 34, 0.92) 100%);
+  box-shadow: var(--shadow-md);
+}
+.fids-row:last-child { margin-bottom: 0; }
 .fids-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
-.fids-flight-num { font-size: 15px; font-weight: 700; color: #e0e6ed; }
-.fids-airline-name { font-size: 12px; color: #8899aa; margin-left: 8px; font-weight: 400; }
-.fids-badge { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 4px; white-space: nowrap; flex-shrink: 0; }
-.fids-badge.green { color: #4ade80; background: rgba(74,222,128,0.12); }
-.fids-badge.yellow { color: #facc15; background: rgba(250,204,21,0.12); }
-.fids-badge.orange { color: #fb923c; background: rgba(251,146,60,0.12); }
-.fids-badge.red { color: #f87171; background: rgba(248,113,113,0.12); }
-.fids-badge.gray, .fids-badge { color: #8899aa; background: rgba(136,153,170,0.08); }
-.fids-route { font-size: 12px; color: #8899aa; margin-top: 3px; }
-.fids-times { display: flex; gap: 14px; margin-top: 5px; font-size: 11px; color: #556677; }
-.fids-times span { white-space: nowrap; }
-.fids-times .ft-actual { color: #e0e6ed; font-weight: 600; }
-.fids-empty { padding: 40px; text-align: center; color: #556677; font-size: 14px; }
-.fids-empty .spinner { width: 24px; height: 24px; border: 2px solid #1e2a3a; border-top-color: #5bbcf5; border-radius: 50%; animation: spin 0.8s linear infinite; display: inline-block; }
-
-#version-badge {
-  position: fixed;
-  right: 12px;
-  bottom: calc(10px + env(safe-area-inset-bottom, 0px));
-  z-index: 950;
-  padding: 4px 8px;
-  border-radius: 999px;
-  border: 1px solid rgba(90, 120, 150, 0.35);
-  background: rgba(10, 14, 23, 0.72);
-  color: #7f92a6;
+.fids-flight-num { font-size: 15px; font-weight: 700; color: var(--text-strong); }
+.fids-airline-name { font-size: 12px; color: var(--text-muted); margin-left: 8px; font-weight: 400; }
+.fids-badge {
   font-size: 11px;
   font-weight: 600;
-  letter-spacing: 0.04em;
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-  pointer-events: none;
+  padding: 3px 9px;
+  border-radius: 999px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.fids-badge.green { color: var(--success); background: rgba(74,222,128,0.12); }
+.fids-badge.yellow { color: #facc15; background: rgba(250,204,21,0.12); }
+.fids-badge.orange { color: #fb923c; background: rgba(251,146,60,0.12); }
+.fids-badge.red { color: var(--danger); background: rgba(248,113,113,0.12); }
+.fids-badge.gray, .fids-badge { color: var(--text-muted); background: rgba(136,153,170,0.08); }
+.fids-route { font-size: 12px; color: var(--text-muted); margin-top: 5px; }
+.fids-times { display: flex; gap: 14px; margin-top: 7px; font-size: 11px; color: var(--text-soft); flex-wrap: wrap; }
+.fids-times span { white-space: nowrap; }
+.fids-times .ft-actual { color: var(--text-main); font-weight: 600; }
+.fids-empty {
+  padding: 34px 20px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 14px;
+  border: 1px dashed var(--border-soft);
+  border-radius: var(--radius-md);
+  background: rgba(255,255,255,0.03);
+}
+.fids-empty .spinner {
+  width: 24px;
+  height: 24px;
+  border: 2px solid rgba(255,255,255,0.12);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  display: inline-block;
 }
 
 @media (min-width: 760px) {
   #map-controls {
-    top: 12px;
-    bottom: auto;
-    left: 12px;
-    right: auto;
-    width: min(520px, calc(100% - 24px));
+    width: 340px;
+  }
+
+  #map-controls.collapsed {
+    width: 232px;
   }
 
   #list-panel {
-    max-height: 80vh;
-    max-height: 80dvh;
-    border-radius: 12px 12px 0 0;
+    width: 420px;
   }
 
-  #list-grabber {
-    display: none;
+  #fids-sheet {
+    max-height: 86dvh;
+    width: min(720px, calc(100% - 24px));
+    margin: 0 auto;
   }
 }
 </style>
@@ -186,30 +829,63 @@ body.noscroll { touch-action: none; }
   <div id="map"></div>
 </div>
 <div id="alert-bar"></div>
-<div id="version-badge"></div>
-<div id="map-controls">
-  <div class="control-row" id="visibility-controls">
-    <button class="ftag on" data-f="private">Private</button>
-    <button class="ftag on" data-f="ground">Ground</button>
-    <button class="ftag on" data-f="trails">Trails</button>
-    <button class="ftag on" data-f="airports">Airports</button>
-    <button class="ftag on" data-f="labels">Labels</button>
-  </div>
-  <div class="control-row" id="radius-controls">
-    <button class="ftag" data-radius="10">10 km</button>
-    <button class="ftag" data-radius="25">25 km</button>
-    <button class="ftag" data-radius="50">50 km</button>
-    <button class="ftag" data-radius="100">100 km</button>
+<div id="map-controls" class="collapsed">
+  <button id="controls-toggle" type="button" aria-expanded="false" aria-controls="controls-body">
+    <span id="controls-toggle-brand">
+      <span id="controls-logo-shell" aria-hidden="true"><img src="favicon.svg" alt=""></span>
+      <span id="controls-toggle-main">
+        <span id="controls-toggle-label">Contrails</span>
+        <span id="controls-compact-summary">50 km focus</span>
+      </span>
+    </span>
+    <span id="controls-toggle-icon" aria-hidden="true">+</span>
+  </button>
+  <div id="controls-body">
+    <div id="controls-top">
+      <div id="controls-brand">
+        <div id="controls-brand-line">
+          <span id="controls-logo-badge" aria-hidden="true"><img src="favicon.svg" alt=""></span>
+          <div id="controls-brand-text">
+            <div id="controls-title">Contrails</div>
+            <div id="version-badge"></div>
+          </div>
+        </div>
+        <div id="controls-subtitle">Waiting for nearby traffic...</div>
+      </div>
+      <div id="radius-pill"><span id="radius-value">50</span><span class="unit">km</span></div>
+    </div>
+    <div id="radius-slider-wrap">
+      <div id="radius-slider-header">
+        <span class="section-label">Visibility radius</span>
+        <span id="radius-slider-readout">50 km</span>
+      </div>
+      <input id="radius-slider" type="range" min="10" max="100" step="5" value="50" aria-label="Visibility radius in kilometers">
+      <div id="radius-marks">
+        <span>10</span>
+        <span>25</span>
+        <span>50</span>
+        <span>100 km</span>
+      </div>
+    </div>
+    <div class="control-row" id="visibility-controls">
+      <button class="ftag on" data-f="private">Private</button>
+      <button class="ftag on" data-f="ground">Ground</button>
+      <button class="ftag on" data-f="trails">Trails</button>
+      <button class="ftag on" data-f="labels">Labels</button>
+    </div>
   </div>
 </div>
-<button id="list-toggle"><span class="count">0</span> aircraft</button>
+<button id="list-toggle"><span class="label">Traffic</span><span class="count">0</span></button>
 <div id="list-sheet">
   <div id="list-backdrop"></div>
   <div id="list-panel">
     <div id="list-grabber"></div>
     <div id="list-header">
-      <div><span id="status-text">Waiting for data...</span><span id="status-time"></span></div>
-      <button id="list-close">&times;</button>
+      <div id="list-heading">
+        <div id="list-title">Nearby aircraft</div>
+        <div id="list-subtitle"><span id="status-text">Waiting for data...</span><span id="status-time"></span></div>
+      </div>
+      <button id="list-close" aria-label="Close traffic list">&times;</button>
     </div>
     <div id="panel"></div>
   </div>
@@ -234,7 +910,7 @@ body.noscroll { touch-action: none; }
 <script src="https://unpkg.com/leaflet-doubletapdragzoom@0.3.2/Leaflet.DoubleTapDragZoom.js"></script>
 <script>
 (function() {
-  const APP_VERSION = "v1.3";
+  const APP_VERSION = "v1.6";
   const isLocal = location.hostname === "localhost" || location.hostname === "127.0.0.1";
   const isIOSDevice = /iP(ad|hone|od)/.test(navigator.userAgent) ||
     (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
@@ -257,7 +933,12 @@ body.noscroll { touch-action: none; }
   }
   const REFRESH_MS = 3000;
   const DEFAULT_RADIUS_KM = 50;
-  const RADIUS_OPTIONS = [10, 25, 50, 100];
+  const MIN_RADIUS_KM = 10;
+  const MAX_RADIUS_KM = 100;
+  const RADIUS_STEP_KM = 5;
+  const SEEDED_TRAIL_WINDOW_MS = 12000;
+  const SEEDED_TRAIL_POINTS = 4;
+  const SEEDED_MIN_SPEED_KTS = 100;
   const CARDINALS = ["N","NE","E","SE","S","SW","W","NW"];
   const posHistory = {};
   const routeCache = {};
@@ -273,12 +954,13 @@ body.noscroll { touch-action: none; }
   let ignoreMapClickUntil = 0;
   let radiusKm = DEFAULT_RADIUS_KM;
   let applyingRadiusLock = false;
+  let radiusFetchTimer = null;
   const markerMap = {};
   const extraState = {};
   var lastFetchTs = 0;
   var fetchInterval = REFRESH_MS;
   var trailBreakPending = {};
-  const filters = { private: true, ground: true, trails: true, airports: true, labels: true };
+  const filters = { private: true, ground: true, trails: true, labels: true };
   const SQUAWK_ALERT = { "7700": "EMERGENCY", "7600": "RADIO FAILURE", "7500": "HIJACK" };
 
   const AIRLINES = {
@@ -322,9 +1004,15 @@ body.noscroll { touch-action: none; }
 
   function cardinalDir(deg) { return CARDINALS[Math.round(deg / 45) % 8]; }
 
+  function normalizeRadiusKm(value) {
+    var parsed = parseFloat(value);
+    if (!isFinite(parsed)) return DEFAULT_RADIUS_KM;
+    var snapped = Math.round(parsed / RADIUS_STEP_KM) * RADIUS_STEP_KM;
+    return Math.max(MIN_RADIUS_KM, Math.min(MAX_RADIUS_KM, snapped));
+  }
+
   function parseRadiusParam(value) {
-    var parsed = parseInt(value, 10);
-    return RADIUS_OPTIONS.indexOf(parsed) >= 0 ? parsed : DEFAULT_RADIUS_KM;
+    return normalizeRadiusKm(value);
   }
 
   const REG_PATTERNS = /^(N\d|C-[FGFI]|G-|D-|F-|I-|EC-|HB-|OE-|PH-|SE-|OH-|OY-|LN-|EI-|CS-|SX-|TC-|VH-|ZK-|PP-|PT-|PR-|JA|B-|HL|VT-|9V-|A[267]-|SU-|5[ABHNXY]-|ZS-|VP-|V[5HPQR]-|RP-|HS-|9M-|PK-|XA-|XB-|LV-|CC-|TI-|HP-|HK-|YV-)/i;
@@ -412,7 +1100,13 @@ body.noscroll { touch-action: none; }
       zoomControl: false,
       attributionControl: false,
       preferCanvas: true,
-      zoomSnap: isIOSSafari ? 0.1 : 1,
+      zoomSnap: 0.25,
+      zoomDelta: 0.5,
+      wheelPxPerZoomLevel: 140,
+      zoomAnimation: true,
+      zoomAnimationThreshold: 8,
+      fadeAnimation: false,
+      markerZoomAnimation: true,
       doubleClickZoom: !isIOSSafari,
       doubleTapDragZoom: isIOSSafari ? false : "center",
       doubleTapDragZoomOptions: { reverse: true }
@@ -423,7 +1117,9 @@ body.noscroll { touch-action: none; }
     map.getPane("focusMaskPane").style.zIndex = 680;
     map.getPane("focusMaskPane").style.pointerEvents = "none";
     L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
-      maxZoom: 18
+      maxZoom: 18,
+      keepBuffer: 4,
+      updateWhenZooming: false
     }).addTo(map);
 
     userMarker = L.circleMarker([lat, lng], {
@@ -520,7 +1216,7 @@ body.noscroll { touch-action: none; }
     function onTouchEnd(e) {
       if (!gesture) return;
       if (!gesture.moved) {
-        map.setZoomAround(gesture.anchorLatLng, clampZoom(Math.round(gesture.startZoom + 1)), { animate: true });
+        map.setZoomAround(gesture.anchorLatLng, clampZoom(gesture.startZoom + 1), { animate: true });
       }
       ignoreMapClickUntil = Date.now() + 500;
       if (e) {
@@ -542,11 +1238,46 @@ body.noscroll { touch-action: none; }
     history.replaceState(null, "", query ? "?" + query : location.pathname);
   }
 
-  function updateRadiusChips() {
-    var chips = document.querySelectorAll("[data-radius]");
-    for (var i = 0; i < chips.length; i++) {
-      chips[i].classList.toggle("on", parseInt(chips[i].getAttribute("data-radius"), 10) === radiusKm);
+  function updateControlsCompactSummary(visibleCount) {
+    var el = document.getElementById("controls-compact-summary");
+    if (!el) return;
+    if (visibleCount == null) {
+      visibleCount = 0;
+      for (var i = 0; i < aircraft.length; i++) {
+        if (!isFiltered(aircraft[i])) visibleCount++;
+      }
     }
+    var summary = radiusKm + " km";
+    if (visibleCount > 0) summary += " · " + visibleCount + " traffic";
+    else if (aircraft.length) summary += " · quiet";
+    else summary += " · scanning";
+    el.textContent = summary;
+  }
+
+  function setControlsExpanded(expanded) {
+    var wrap = document.getElementById("map-controls");
+    var toggle = document.getElementById("controls-toggle");
+    var icon = document.getElementById("controls-toggle-icon");
+    if (!wrap || !toggle || !icon) return;
+    wrap.classList.toggle("expanded", !!expanded);
+    wrap.classList.toggle("collapsed", !expanded);
+    toggle.setAttribute("aria-expanded", expanded ? "true" : "false");
+    icon.textContent = expanded ? "-" : "+";
+  }
+
+  function updateRadiusUi() {
+    var radiusValue = document.getElementById("radius-value");
+    var radiusReadout = document.getElementById("radius-slider-readout");
+    var radiusSlider = document.getElementById("radius-slider");
+    var valueText = radiusKm + " km";
+    if (radiusValue) radiusValue.textContent = String(radiusKm);
+    if (radiusReadout) radiusReadout.textContent = valueText;
+    if (radiusSlider) {
+      radiusSlider.value = String(radiusKm);
+      var fill = ((radiusKm - MIN_RADIUS_KM) / (MAX_RADIUS_KM - MIN_RADIUS_KM)) * 100;
+      radiusSlider.style.setProperty("--fill", fill + "%");
+    }
+    updateControlsCompactSummary();
   }
 
   function updateFilterButtons() {
@@ -555,6 +1286,20 @@ body.noscroll { touch-action: none; }
       var key = btns[i].getAttribute("data-f");
       btns[i].classList.toggle("on", !!filters[key]);
     }
+  }
+
+  function clearRadiusFetchTimer() {
+    if (!radiusFetchTimer) return;
+    clearTimeout(radiusFetchTimer);
+    radiusFetchTimer = null;
+  }
+
+  function scheduleRadiusFetch(delayMs) {
+    clearRadiusFetchTimer();
+    radiusFetchTimer = setTimeout(function() {
+      radiusFetchTimer = null;
+      fetchAircraft();
+    }, delayMs);
   }
 
   function circleRing(lat, lng, radiusKm, points) {
@@ -657,19 +1402,27 @@ body.noscroll { touch-action: none; }
     restrictMapToRadius();
   }
 
-  function setRadiusKm(nextRadius) {
-    if (nextRadius === radiusKm) return;
-    radiusKm = nextRadius;
+  function setRadiusKm(nextRadius, options) {
+    options = options || {};
+    nextRadius = normalizeRadiusKm(nextRadius);
+    var changed = nextRadius !== radiusKm;
+    if (changed) radiusKm = nextRadius;
     syncUrlState();
-    updateRadiusChips();
-    resetInterpolationSamples();
-    updateFocusView(true);
+    updateRadiusUi();
+    if (changed) resetInterpolationSamples();
+    updateFocusView(options.fitView !== false);
     renderAirports();
     renderRunways();
     renderMap();
     renderPanel();
     updateStatus();
     updateAlerts();
+    if (options.fetchMode === "none") return;
+    if (options.fetchMode === "debounced") {
+      scheduleRadiusFetch(options.fetchDelay || 240);
+      return;
+    }
+    clearRadiusFetchTimer();
     fetchAircraft();
   }
 
@@ -706,6 +1459,9 @@ body.noscroll { touch-action: none; }
         return fetchAircraft();
       }
       document.getElementById("status-text").textContent = "Error: " + err.message;
+      var controlsSubtitle = document.getElementById("controls-subtitle");
+      if (controlsSubtitle) controlsSubtitle.textContent = "Live data unavailable";
+      updateControlsCompactSummary(0);
     }
   }
 
@@ -767,8 +1523,9 @@ body.noscroll { touch-action: none; }
       var a = aircraft[j];
       if (!posHistory[a.icao24]) posHistory[a.icao24] = [];
       var h = posHistory[a.icao24];
-      var lastPt = h.length ? h[h.length - 1] : null;
       var reportTs = now - Math.max(0, (a.seenPos || 0) * 1000);
+      seedSyntheticTrail(h, a, reportTs);
+      var lastPt = h.length ? h[h.length - 1] : null;
       if (lastPt && reportTs <= lastPt[2]) reportTs = lastPt[2] + 1;
       var breakBefore = !!trailBreakPending[a.icao24] && !!lastPt;
       if (trailBreakPending[a.icao24]) delete trailBreakPending[a.icao24];
@@ -779,6 +1536,7 @@ body.noscroll { touch-action: none; }
         lastPt[4] !== a.ground ||
         reportTs - lastPt[2] > Math.max(1500, fetchInterval * 0.9);
       if (moved) h.push([a.lat, a.lng, reportTs, a.altFt, a.ground, breakBefore]);
+      pruneSeededTrailPrefix(h);
       if (h.length > 120) h.splice(0, h.length - 120);
     }
 
@@ -892,6 +1650,51 @@ body.noscroll { touch-action: none; }
     }
   }
 
+  function projectLatLng(lat, lng, bearingDeg, distanceMeters) {
+    if (!distanceMeters) return [lat, lng];
+    var earthRadius = 6371000;
+    var angular = distanceMeters / earthRadius;
+    var bearing = bearingDeg * Math.PI / 180;
+    var phi1 = lat * Math.PI / 180;
+    var lambda1 = lng * Math.PI / 180;
+    var sinPhi1 = Math.sin(phi1);
+    var cosPhi1 = Math.cos(phi1);
+    var sinAngular = Math.sin(angular);
+    var cosAngular = Math.cos(angular);
+    var sinPhi2 = sinPhi1 * cosAngular + cosPhi1 * sinAngular * Math.cos(bearing);
+    var phi2 = Math.asin(sinPhi2);
+    var lambda2 = lambda1 + Math.atan2(
+      Math.sin(bearing) * sinAngular * cosPhi1,
+      cosAngular - sinPhi1 * sinPhi2
+    );
+    return [
+      phi2 * 180 / Math.PI,
+      ((lambda2 * 180 / Math.PI + 540) % 360) - 180
+    ];
+  }
+
+  function seedSyntheticTrail(history, a, reportTs) {
+    if (history.length || a.ground || a.track == null || a.speedKts == null || a.speedKts < SEEDED_MIN_SPEED_KTS) return;
+    var speedMs = a.speedKts * 0.514444;
+    var stepMs = SEEDED_TRAIL_WINDOW_MS / SEEDED_TRAIL_POINTS;
+    var reverseTrack = (a.track + 180) % 360;
+    for (var i = SEEDED_TRAIL_POINTS; i >= 1; i--) {
+      var ageMs = stepMs * i;
+      var point = projectLatLng(a.lat, a.lng, reverseTrack, speedMs * ageMs / 1000);
+      if (userLat != null && userLng != null && haversineKm(userLat, userLng, point[0], point[1]) > radiusKm) continue;
+      history.push([point[0], point[1], reportTs - ageMs, a.altFt, false, false, true]);
+    }
+  }
+
+  function pruneSeededTrailPrefix(history) {
+    var realCount = 0;
+    for (var i = 0; i < history.length; i++) {
+      if (!history[i][6]) realCount++;
+    }
+    if (realCount < 3) return;
+    while (history.length && history[0][6]) history.shift();
+  }
+
   async function fetchAirports() {
     if (userLat == null || userLng == null) return;
     if (airportData) {
@@ -908,7 +1711,7 @@ body.noscroll { touch-action: none; }
 
   function renderAirports() {
     airportLayer.clearLayers();
-    if (!airportData || !filters.airports || userLat == null || userLng == null) return;
+    if (!airportData || userLat == null || userLng == null) return;
     for (var i = 0; i < airportData.length; i++) {
       var ap = airportData[i];
       var dist = haversineKm(userLat, userLng, ap[1], ap[2]);
@@ -947,7 +1750,7 @@ body.noscroll { touch-action: none; }
 
   function renderRunways() {
     runwayLayer.clearLayers();
-    if (!runwayData || !filters.airports || userLat == null || userLng == null) return;
+    if (!runwayData || userLat == null || userLng == null) return;
     for (var iata in runwayData) {
       var rwys = runwayData[iata];
       for (var j = 0; j < rwys.length; j++) {
@@ -968,12 +1771,24 @@ body.noscroll { touch-action: none; }
     var airborne = visible.filter(function(a) { return !a.ground; }).length;
     var grounded = visible.filter(function(a) { return a.ground; }).length;
     var el = document.getElementById("status-text");
+    var controlsSubtitle = document.getElementById("controls-subtitle");
     var txt = '<span class="count">' + airborne + '</span> aircraft';
     if (grounded > 0) txt += ' &middot; <span style="color:#556677">' + grounded + ' ground</span>';
     el.innerHTML = txt;
-    document.getElementById("status-time").textContent = new Date().toLocaleTimeString([], { hour:"2-digit", minute:"2-digit", second:"2-digit" });
+    var stamp = new Date().toLocaleTimeString([], { hour:"2-digit", minute:"2-digit", second:"2-digit" });
+    document.getElementById("status-time").textContent = stamp;
+    if (controlsSubtitle) {
+      if (!visible.length) {
+        controlsSubtitle.textContent = "No aircraft in range";
+      } else {
+        var controlSummary = airborne + " airborne";
+        if (grounded > 0) controlSummary += " · " + grounded + " ground";
+        controlsSubtitle.textContent = controlSummary + " · " + stamp;
+      }
+    }
     var toggleBtn = document.getElementById("list-toggle");
-    if (toggleBtn) toggleBtn.innerHTML = '<span class="count">' + visible.length + '</span> aircraft';
+    if (toggleBtn) toggleBtn.innerHTML = '<span class="label">Traffic</span><span class="count">' + visible.length + '</span>';
+    updateControlsCompactSummary(visible.length);
   }
 
   function updateAlerts() {
@@ -1034,13 +1849,15 @@ body.noscroll { touch-action: none; }
     return 82000;
   }
 
-  function trailStyle(ageNorm, isSelected) {
+  function trailStyle(ageNorm, isSelected, isSynthetic) {
     var opacityFloor = isSelected ? 0.28 : 0.12;
     var opacitySpan = isSelected ? 0.62 : 0.58;
     var exponent = isSelected ? 1.15 : 1.65;
+    var opacity = opacityFloor + opacitySpan * Math.pow(1 - ageNorm, exponent);
+    if (isSynthetic) opacity *= isSelected ? 0.86 : 0.72;
     return {
-      opacity: opacityFloor + opacitySpan * Math.pow(1 - ageNorm, exponent),
-      weight: isSelected ? 3.3 : 2.5
+      opacity: opacity,
+      weight: isSelected ? 3.3 : (isSynthetic ? 2.2 : 2.5)
     };
   }
 
@@ -1156,7 +1973,9 @@ body.noscroll { touch-action: none; }
         var segGround = trail[j][4];
         var color = segGround ? GROUND_COLOR : altColor(trail[j][3]);
         var ageNorm = Math.max(0, Math.min(1, (now - trail[j][2]) / ageSpan));
-        var style = trailStyle(ageNorm, isSelected);
+        var isSynthetic = !!trail[j][6] || !!trail[j - 1][6];
+        if (isSynthetic) ageNorm = Math.min(1, ageNorm * 1.25 + 0.08);
+        var style = trailStyle(ageNorm, isSelected, isSynthetic);
         var endLatLng = [trail[j][0], trail[j][1]];
         if (j === trail.length - 1 && !trail[j][5]) {
           endLatLng = displayedAircraftLatLng(a.icao24, endLatLng);
@@ -1400,7 +2219,7 @@ body.noscroll { touch-action: none; }
     var panel = document.getElementById("panel");
     var visible = aircraft.filter(function(a) { return !isFiltered(a); });
     if (!visible.length) {
-      var empty = '<div style="padding:24px;text-align:center;color:#556">No aircraft detected nearby</div>';
+      var empty = '<div class="panel-empty">No aircraft detected nearby</div>';
       if (_lastPanelHtml !== empty) { panel.innerHTML = empty; _lastPanelHtml = empty; }
       return;
     }
@@ -1418,7 +2237,7 @@ body.noscroll { touch-action: none; }
       var spd = a.speedKts != null ? a.speedKts + " kts" : "";
       var vc = a.ground ? "vert-level" : vertClass(a.vRate);
       var va = a.ground ? "" : vertArrow(a.vRate);
-      var emergClass = (a.emergency || SQUAWK_ALERT[a.squawk]) ? ' style="border-left:3px solid #f87171"' : "";
+      var emergClass = (a.emergency || SQUAWK_ALERT[a.squawk]) ? " emergency" : "";
 
       var detailParts = [a.aircraftType, alt, spd, '<span class="' + vc + '">' + va + "</span>"].filter(Boolean);
 
@@ -1427,13 +2246,13 @@ body.noscroll { touch-action: none; }
         routeHtml = '<div class="route-line">' + routeCache[a.callsign].display + "</div>";
       }
 
-      html += "<div class=\"card" + selectedClass + "\"" + emergClass + " onclick=\"flyTo('" + a.icao24 + "'," + a.lat + "," + a.lng + ")\">" +
+      html += "<div class=\"card" + selectedClass + emergClass + "\" onclick=\"flyTo('" + a.icao24 + "'," + a.lat + "," + a.lng + ")\">" +
         '<div class="main">' +
           '<div class="callsign' + nameClass + '">' + name + privTag + alTag + "</div>" +
           routeHtml +
           '<div class="details">' + detailParts.join(" &middot; ") + "</div>" +
         "</div>" +
-        '<div class="distance">' + a.distKm + " km" + '<span class="bearing-tag">' + a.cardinal + "</span></div>" +
+        '<div class="distance"><span class="distance-num">' + a.distKm + '</span><span class="distance-unit">km</span><span class="bearing-tag">' + a.cardinal + "</span></div>" +
       "</div>";
     }
     if (html !== _lastPanelHtml) { panel.innerHTML = html; _lastPanelHtml = html; }
@@ -1442,7 +2261,7 @@ body.noscroll { touch-action: none; }
   window.flyTo = function(id, lat, lng) {
     setSelectedAircraft(id);
     document.getElementById("list-sheet").classList.remove("open");
-    map.flyTo([lat, lng], 13, { duration: 0.5 });
+    map.flyTo([lat, lng], Math.max(map.getZoom(), 13), { duration: 0.75, easeLinearity: 0.18 });
   };
 
   // --- Geolocation ---
@@ -1472,6 +2291,7 @@ body.noscroll { touch-action: none; }
     lastFetchTs = 0;
     fetchInterval = REFRESH_MS;
     scheduleTrailBreaks();
+    clearRadiusFetchTimer();
     resetInterpolationSamples();
     fetchAircraft();
   }
@@ -1481,7 +2301,7 @@ body.noscroll { touch-action: none; }
     document.getElementById("loading").style.display = "none";
     syncUrlState();
     updateFilterButtons();
-    updateRadiusChips();
+    updateRadiusUi();
     initMap(lat, lng);
     updateUserPosition(lat, lng);
     updateFocusView(true);
@@ -1499,48 +2319,71 @@ body.noscroll { touch-action: none; }
     });
   }
 
-  // --- List sheet ---
+  // --- Controls dock ---
+  (function() {
+    var controls = document.getElementById("map-controls");
+    var toggle = document.getElementById("controls-toggle");
+    if (!controls || !toggle) return;
+    setControlsExpanded(false);
+    toggle.addEventListener("click", function(e) {
+      e.preventDefault();
+      e.stopPropagation();
+      setControlsExpanded(!controls.classList.contains("expanded"));
+    });
+    controls.addEventListener("click", function(e) {
+      e.stopPropagation();
+    });
+    document.addEventListener("click", function(e) {
+      if (!controls.classList.contains("expanded")) return;
+      if (controls.contains(e.target)) return;
+      setControlsExpanded(false);
+    });
+  })();
+
+  // --- Traffic drawer ---
   (function() {
     var sheet = document.getElementById("list-sheet");
     var toggle = document.getElementById("list-toggle");
     var backdrop = document.getElementById("list-backdrop");
     var closeBtn = document.getElementById("list-close");
 
-    toggle.addEventListener("click", function() { sheet.classList.add("open"); });
-    backdrop.addEventListener("click", function() { sheet.classList.remove("open"); });
-    closeBtn.addEventListener("click", function() { sheet.classList.remove("open"); });
+    function setListOpen(open) {
+      sheet.classList.toggle("open", !!open);
+      if (open) setControlsExpanded(false);
+    }
+
+    toggle.addEventListener("click", function() { setListOpen(true); });
+    backdrop.addEventListener("click", function() { setListOpen(false); });
+    closeBtn.addEventListener("click", function() { setListOpen(false); });
     document.addEventListener("keydown", function(e) {
       if (e.key === "Escape" && sheet.classList.contains("open") &&
           !document.getElementById("fids").classList.contains("open")) {
-        sheet.classList.remove("open");
+        setListOpen(false);
       }
     });
   })();
 
+  // --- Radius slider ---
+  (function() {
+    var slider = document.getElementById("radius-slider");
+    if (!slider) return;
+    slider.addEventListener("input", function() {
+      setRadiusKm(this.value, { fitView: false, fetchMode: "debounced", fetchDelay: 260 });
+    });
+    slider.addEventListener("change", function() {
+      setRadiusKm(this.value, { fitView: true, fetchMode: "immediate" });
+    });
+    updateRadiusUi();
+  })();
+
   // --- Filter toggles ---
   (function() {
-    var btns = document.querySelectorAll("#map-controls .ftag");
+    var btns = document.querySelectorAll("#visibility-controls .ftag");
     for (var i = 0; i < btns.length; i++) {
       btns[i].addEventListener("click", function() {
-        var nextRadius = parseInt(this.getAttribute("data-radius"), 10);
-        if (RADIUS_OPTIONS.indexOf(nextRadius) >= 0) {
-          setRadiusKm(nextRadius);
-          return;
-        }
         var f = this.getAttribute("data-f");
         filters[f] = !filters[f];
         updateFilterButtons();
-        if (f === "airports") {
-          if (filters.airports) {
-            if (airportLayer) map.addLayer(airportLayer);
-            if (runwayLayer) map.addLayer(runwayLayer);
-            renderAirports();
-            renderRunways();
-          } else {
-            if (airportLayer) map.removeLayer(airportLayer);
-            if (runwayLayer) map.removeLayer(runwayLayer);
-          }
-        }
         renderMap();
         renderPanel();
         updateStatus();
@@ -1548,7 +2391,6 @@ body.noscroll { touch-action: none; }
       });
     }
     updateFilterButtons();
-    updateRadiusChips();
   })();
 
   if (!isNaN(paramLat) && !isNaN(paramLng)) {
