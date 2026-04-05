@@ -19,11 +19,31 @@ export default {
 
     if (url.pathname.startsWith("/adsb/")) return proxyAdsb(url);
     if (url.pathname.startsWith("/route/")) return proxyRoute(url, request);
+    if (url.pathname === "/geo") return handleGeo(request);
     if (url.pathname.startsWith("/schedule/")) return handleSchedule(url, request, ctx);
 
     return new Response("Not found", { status: 404 });
   },
 };
+
+function handleGeo(request) {
+  const cf = request.cf || {};
+  const lat = parseFloat(cf.latitude);
+  const lng = parseFloat(cf.longitude);
+  if (!isFinite(lat) || !isFinite(lng)) {
+    return json(503, { error: "Approximate location unavailable" });
+  }
+  return json(200, {
+    lat,
+    lng,
+    city: cf.city || "",
+    region: cf.region || "",
+    country: cf.country || "",
+    timezone: cf.timezone || "",
+    approximate: true,
+    source: "ip"
+  });
+}
 
 async function proxyAdsb(url) {
   const path = url.pathname.slice("/adsb".length);
