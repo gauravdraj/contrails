@@ -144,3 +144,36 @@ test("interpolatePlaybackPose advances monotonically as display time increases",
   assert.ok(second.lat > first.lat);
   assert.ok(second.lng > first.lng);
 });
+
+test("slantKm at cruise altitude directly overhead", () => {
+  const result = core.slantKm(0, 35000);
+  assert.ok(Math.abs(result - 10.668) < 0.01);
+});
+
+test("slantKm barely changes for nearby low-altitude aircraft", () => {
+  const result = core.slantKm(5, 2000);
+  assert.ok(Math.abs(result - 5.04) < 0.01);
+});
+
+test("slantKm equals ground distance when altitude is zero", () => {
+  assert.equal(core.slantKm(10, 0), 10);
+});
+
+test("slantKm returns null when ground distance is null", () => {
+  assert.equal(core.slantKm(null, 1000), null);
+});
+
+test("elevationDeg is near 90 for a plane directly overhead", () => {
+  const result = core.elevationDeg(0.001, 35000);
+  assert.ok(result > 89);
+});
+
+test("elevationDeg at 10 km ground distance and cruise altitude", () => {
+  const result = core.elevationDeg(10, 35000);
+  assert.ok(Math.abs(result - 46.7) < 1);
+});
+
+test("elevationDeg returns null when inputs are missing", () => {
+  assert.equal(core.elevationDeg(null, 1000), null);
+  assert.equal(core.elevationDeg(5, null), null);
+});

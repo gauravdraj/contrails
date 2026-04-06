@@ -35,6 +35,7 @@ The app stays GitHub Pages-friendly:
 | `/route/*` | api.adsb.lol/api/0 | Route lookups |
 | `/geo` | Cloudflare request geodata | Approximate initial map area |
 | `/schedule/<IATA>` | FlightRadar24 API | Airport schedule boards (cached 2 min) |
+| `/nearby?lat=&lng=` | api.adsb.lol/v2 + route API | Siri plane spotter (text/plain) |
 
 ## Local Development
 
@@ -54,6 +55,34 @@ Run the lightweight checks with Node:
 ```bash
 node --test contrails-core.test.js
 node smoke-boot.mjs
+```
+
+## Siri Shortcut: "What Plane Is That?"
+
+The Worker exposes a `/nearby` endpoint that returns a plain-text list of aircraft near a given location, sorted by 3D slant distance (line-of-sight, factoring in altitude). It includes airline names, routes, landing/departing context, elevation angles, contrail likelihood, and squawk alerts.
+
+Create a Shortcut named **"What Plane Is That"** with three actions:
+
+| # | Action | Configuration |
+|---|--------|---------------|
+| 1 | **Get Current Location** | (no config needed) |
+| 2 | **Get Contents of URL** | `https://contrails-api.<account>.workers.dev/nearby?lat=[Latitude]&lng=[Longitude]` — insert the Location variables from step 1 |
+| 3 | **Show Result** | (shows the text inline; the map link at the bottom is tappable) |
+
+Example output:
+
+```
+2 aircraft nearby:
+
+1. British Airways 456 (A320) [G-EUPH]
+   Landing at Heathrow — from New York JFK
+   3.2 km ↑73° SE — 4,200 ft, descending
+
+2. Ryanair 1234 (B738)
+   Dublin → Barcelona
+   12.4 km ↑29° NW — 35,000 ft, level — likely contrail
+
+https://gauravdraj.github.io/contrails/?lat=51.5074&lng=-0.1278&zoom=11
 ```
 
 ## Deploying the Worker

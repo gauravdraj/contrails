@@ -952,8 +952,11 @@ body.noscroll { touch-action: none; }
   const parseCoordinate = core.parseCoordinate;
   const projectLatLng = core.projectLatLng;
   const roundTenths = core.roundTenths;
+  const slantKm = core.slantKm;
+  const elevationDeg = core.elevationDeg;
   if (!bearingDegrees || !buildViewPolicy || !buildViewportFetchSpec || !cardinalDir || !computePlaybackDelayMs ||
-      !haversineKm || !interpolatePlaybackPose || !interpolateTimedPose || !parseCoordinate || !projectLatLng || !roundTenths) {
+      !haversineKm || !interpolatePlaybackPose || !interpolateTimedPose || !parseCoordinate || !projectLatLng || !roundTenths ||
+      !slantKm || !elevationDeg) {
     throw new Error("Contrails core helpers failed to load.");
   }
 
@@ -1800,6 +1803,8 @@ body.noscroll { touch-action: none; }
     a.cardinal = metrics.cardinal;
     var viewDistKm = viewportDistanceKm(a.lat, a.lng);
     a.viewDistKm = viewDistKm != null ? roundTenths(viewDistKm) : null;
+    var raw = slantKm(a.distKm, a.altFt);
+    a.slantKm = raw != null ? roundTenths(raw) : null;
   }
 
   function sortAircraftList() {
@@ -1808,8 +1813,8 @@ body.noscroll { touch-action: none; }
       if (!a.emergency && b.emergency) return 1;
       if (a.ground && !b.ground) return 1;
       if (!a.ground && b.ground) return -1;
-      var distA = a.viewDistKm != null ? a.viewDistKm : (a.distKm != null ? a.distKm : 999);
-      var distB = b.viewDistKm != null ? b.viewDistKm : (b.distKm != null ? b.distKm : 999);
+      var distA = a.slantKm != null ? a.slantKm : (a.viewDistKm != null ? a.viewDistKm : 999);
+      var distB = b.slantKm != null ? b.slantKm : (b.viewDistKm != null ? b.viewDistKm : 999);
       return distA - distB;
     });
   }
@@ -2229,8 +2234,8 @@ body.noscroll { touch-action: none; }
     }
 
     var distanceLine = "";
-    if (a.distKm != null) {
-      distanceLine = a.distKm + " km " + a.cardinal;
+    if (a.slantKm != null) {
+      distanceLine = a.slantKm + " km " + a.cardinal;
     } else if (a.viewDistKm != null) {
       distanceLine = a.viewDistKm + " km from view";
     }
@@ -2425,7 +2430,7 @@ body.noscroll { touch-action: none; }
       var vc = a.ground ? "vert-level" : vertClass(a.vRate);
       var va = a.ground ? "" : vertArrow(a.vRate);
       var emergClass = (a.emergency || SQUAWK_ALERT[a.squawk]) ? " emergency" : "";
-      var distDisplay = a.distKm != null ? a.distKm : (a.viewDistKm != null ? a.viewDistKm : "—");
+      var distDisplay = a.slantKm != null ? a.slantKm : (a.viewDistKm != null ? a.viewDistKm : "\u2014");
 
       var detailParts = [a.aircraftType, alt, spd, '<span class="' + vc + '">' + va + "</span>"].filter(Boolean);
 

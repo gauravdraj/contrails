@@ -217,17 +217,31 @@
     };
   }
 
+  function slantKm(groundKm, altFt) {
+    if (groundKm == null) return null;
+    var altKm = (altFt || 0) * 0.0003048;
+    return Math.sqrt(groundKm * groundKm + altKm * altKm);
+  }
+
+  function elevationDeg(groundKm, altFt) {
+    if (groundKm == null || altFt == null) return null;
+    var altKm = altFt * 0.0003048;
+    return Math.atan2(altKm, Math.max(groundKm, 0.001)) * 180 / Math.PI;
+  }
+
   return {
     bearingDegrees: bearingDegrees,
     computePlaybackDelayMs: computePlaybackDelayMs,
     buildViewPolicy: buildViewPolicy,
     buildViewportFetchSpec: buildViewportFetchSpec,
     cardinalDir: cardinalDir,
+    elevationDeg: elevationDeg,
     haversineKm: haversineKm,
     interpolatePlaybackPose: interpolatePlaybackPose,
     interpolateTimedPose: interpolateTimedPose,
     parseCoordinate: parseCoordinate,
     projectLatLng: projectLatLng,
-    roundTenths: roundTenths
+    roundTenths: roundTenths,
+    slantKm: slantKm
   };
 });
