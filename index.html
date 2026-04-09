@@ -3,11 +3,14 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="application-name" content="Contrails">
 <meta name="theme-color" content="#07101b">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Contrails">
 <title>Contrails</title>
-<link id="app-favicon" rel="icon" type="image/svg+xml" sizes="any" href="favicon.svg?v=v1.8">
+<link id="app-touch-icon" rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
+<link rel="manifest" href="manifest.json">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <style>
 :root {
@@ -39,18 +42,25 @@
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 html, body {
-  height: 100%;
+  height: 100dvh;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   background:
     radial-gradient(circle at top, rgba(42, 105, 148, 0.12), transparent 36%),
     linear-gradient(180deg, #07101b 0%, #0a1320 100%);
+  background-color: #07101b;
   color: var(--text-main);
-  overflow: hidden;
+  overflow-x: hidden;
   font-variant-numeric: tabular-nums;
+}
+/* Keep a tiny root scroll range so iOS Safari can collapse its in-tab chrome. */
+body {
+  min-height: calc(100dvh + 2px);
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
 }
 body.noscroll { touch-action: none; }
 
-#app { height: 100%; height: 100dvh; }
+#app { position: fixed; inset: 0; background-color: #07101b; }
 #map { height: 100%; }
 .leaflet-container,
 .leaflet-pane,
@@ -176,8 +186,8 @@ body.noscroll { touch-action: none; }
   display: none;
   position: fixed;
   top: calc(10px + env(safe-area-inset-top, 0px));
-  left: 12px;
-  right: 12px;
+  left: max(12px, env(safe-area-inset-left, 0px));
+  right: max(12px, env(safe-area-inset-right, 0px));
   z-index: 1005;
   padding: 10px 14px;
   border-radius: var(--radius-md);
@@ -243,7 +253,7 @@ body.noscroll { touch-action: none; }
   position: absolute;
   left: 50%;
   bottom: calc(12px + env(safe-area-inset-bottom, 0px));
-  width: min(560px, calc(100% - 20px));
+  width: min(560px, calc(100% - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px) - 20px));
   max-height: 52vh;
   max-height: 52dvh;
   background: linear-gradient(180deg, rgba(12, 22, 37, 0.94) 0%, rgba(8, 16, 28, 0.98) 100%);
@@ -314,9 +324,9 @@ body.noscroll { touch-action: none; }
 #map-controls {
   position: fixed;
   top: calc(12px + env(safe-area-inset-top, 0px));
-  left: 12px;
+  left: max(12px, env(safe-area-inset-left, 0px));
   z-index: 980;
-  width: min(320px, calc(100% - 24px));
+  width: min(320px, calc(100% - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px) - 24px));
   padding: 7px;
   border-radius: 18px;
   border: 1px solid var(--border-strong);
@@ -328,10 +338,10 @@ body.noscroll { touch-action: none; }
   transition: width 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
 }
 #map-controls.collapsed {
-  width: min(266px, calc(100% - 96px));
+  width: min(266px, calc(100% - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px) - 96px));
 }
 #map-controls.expanded {
-  width: min(320px, calc(100% - 24px));
+  width: min(320px, calc(100% - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px) - 24px));
   box-shadow: var(--shadow-lg);
 }
 #controls-toggle {
@@ -391,12 +401,24 @@ body.noscroll { touch-action: none; }
 #controls-logo-shell {
   width: 38px;
   height: 38px;
+  overflow: hidden;
+  border: none;
+  border-radius: 12px;
+  background: transparent;
+  box-shadow: none;
 }
+#controls-logo-shell::after { display: none; }
 #controls-logo-badge {
   width: 40px;
   height: 40px;
 }
-#controls-logo-shell img,
+#controls-logo-shell img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+  border-radius: 12px;
+}
 #controls-logo-badge img {
   width: 24px;
   height: 24px;
@@ -569,12 +591,26 @@ body.noscroll { touch-action: none; }
   flex-direction: column;
   align-items: center;
   justify-content: center;
+  padding:
+    calc(18px + env(safe-area-inset-top, 0px))
+    calc(16px + env(safe-area-inset-right, 0px))
+    calc(24px + env(safe-area-inset-bottom, 0px) + var(--loading-keyboard-offset, 0px))
+    calc(16px + env(safe-area-inset-left, 0px));
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
   font-size: 15px;
   color: var(--text-muted);
   gap: 16px;
 }
+#loading.keyboard-open {
+  justify-content: flex-start;
+}
+#loading.keyboard-open #loading-card {
+  margin: 0;
+}
 #loading-card {
-  width: min(420px, calc(100% - 32px));
+  width: min(420px, 100%);
+  margin: auto 0;
   padding: 24px 20px;
   border-radius: var(--radius-xl);
   border: 1px solid var(--border-soft);
@@ -612,6 +648,8 @@ body.noscroll { touch-action: none; }
   background: rgba(255, 255, 255, 0.05);
   color: var(--text-main);
   font: inherit;
+  appearance: none;
+  -webkit-appearance: none;
 }
 .loading-action {
   padding: 10px 14px;
@@ -632,7 +670,9 @@ body.noscroll { touch-action: none; }
 .loading-input {
   width: 100%;
   padding: 10px 12px;
+  font-size: 16px;
   text-align: center;
+  scroll-margin-block: 24px;
 }
 #loading-coordinates .loading-action {
   grid-column: 1 / -1;
@@ -647,6 +687,31 @@ body.noscroll { touch-action: none; }
   animation: spin 0.8s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+@media (max-height: 720px) {
+  #loading {
+    justify-content: flex-start;
+  }
+
+  #loading-card {
+    margin: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #list-backdrop,
+  #list-panel,
+  #map-controls {
+    transition: none;
+  }
+
+  #loading .spinner,
+  .fids-empty .spinner {
+    animation: none;
+    border-top-color: rgba(255, 255, 255, 0.12);
+    border-right-color: var(--accent);
+  }
+}
 
 .leaflet-tooltip.plane-label {
   background: rgba(8, 15, 26, 0.88);
@@ -828,22 +893,22 @@ body.noscroll { touch-action: none; }
 
 @media (min-width: 760px) {
   #map-controls {
-    width: 320px;
+    width: min(320px, calc(100% - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px) - 24px));
   }
 
   #map-controls.collapsed {
-    width: 260px;
+    width: min(260px, calc(100% - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px) - 96px));
   }
 
   #list-panel {
-    width: 420px;
+    width: min(420px, calc(100% - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px) - 24px));
     max-height: 58dvh;
-    bottom: 18px;
+    bottom: calc(18px + env(safe-area-inset-bottom, 0px));
   }
 
   #fids-sheet {
     max-height: 86dvh;
-    width: min(720px, calc(100% - 24px));
+    width: min(720px, calc(100% - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px) - 24px));
     margin: 0 auto;
   }
 }
@@ -876,7 +941,7 @@ body.noscroll { touch-action: none; }
 <div id="map-controls" class="collapsed">
   <button id="controls-toggle" type="button" aria-expanded="false" aria-controls="controls-body">
     <span id="controls-toggle-brand">
-      <span id="controls-logo-shell" aria-hidden="true"><img src="favicon.svg" alt=""></span>
+      <span id="controls-logo-shell" aria-hidden="true"><img id="controls-logo-image" src="contrails-logo.png" alt=""></span>
       <span id="controls-toggle-main">
         <span id="controls-toggle-heading"><span id="controls-toggle-label">Contrails</span><span id="version-badge"></span></span>
         <span id="controls-compact-summary">Browse the map</span>
@@ -966,13 +1031,81 @@ body.noscroll { touch-action: none; }
     (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
   const isIOSSafari = isIOSDevice && /WebKit/i.test(navigator.userAgent) &&
     !/CriOS|FxiOS|EdgiOS/i.test(navigator.userAgent);
+  const isStandaloneWebApp = window.navigator.standalone === true ||
+    (typeof window.matchMedia === "function" && window.matchMedia("(display-mode: standalone)").matches);
   const isDesktopFinePointer = !isIOSDevice &&
     typeof window.matchMedia === "function" &&
     window.matchMedia("(hover: hover) and (pointer: fine)").matches;
   const WORKER_URL = "https://contrails-api.therealgraj.workers.dev";
   var workerOk = true;
   document.getElementById("version-badge").textContent = APP_VERSION;
-  document.getElementById("app-favicon").setAttribute("href", "favicon.svg?v=" + APP_VERSION);
+  document.getElementById("controls-logo-image").setAttribute("src", "contrails-logo.png?v=" + APP_VERSION);
+  document.getElementById("app-touch-icon").setAttribute("href", "apple-touch-icon.png?v=" + APP_VERSION);
+  function syncLoadingViewportState() {
+    var loading = document.getElementById("loading");
+    if (!loading) return;
+    var keyboardOffset = 0;
+    if (window.visualViewport) {
+      keyboardOffset = Math.max(0, Math.round(window.innerHeight - window.visualViewport.height - window.visualViewport.offsetTop));
+      if (keyboardOffset < 120) keyboardOffset = 0;
+    }
+    loading.classList.toggle("keyboard-open", keyboardOffset > 0);
+    loading.style.setProperty("--loading-keyboard-offset", keyboardOffset ? keyboardOffset + "px" : "0px");
+  }
+  function nudgeLoadingFieldIntoView(input) {
+    if (!input || !isIOSDevice) return;
+    setTimeout(function() {
+      try {
+        input.scrollIntoView({ block: "center", inline: "nearest" });
+      } catch (err) {}
+    }, 240);
+  }
+  // iOS Safari only collapses the toolbar when the page itself can scroll.
+  function nudgeSafariToolbarCollapse() {
+    if (!isIOSSafari || isStandaloneWebApp) return;
+    var scrollingEl = document.scrollingElement || document.documentElement || document.body;
+    if (!scrollingEl) return;
+    var maxScroll = Math.max(0, scrollingEl.scrollHeight - window.innerHeight);
+    if (maxScroll < 1 || window.scrollY > 1) return;
+    window.scrollTo(0, Math.min(1, maxScroll));
+  }
+  function scheduleSafariToolbarCollapse() {
+    if (!isIOSSafari || isStandaloneWebApp) return;
+    requestAnimationFrame(function() {
+      nudgeSafariToolbarCollapse();
+      setTimeout(nudgeSafariToolbarCollapse, 180);
+      setTimeout(nudgeSafariToolbarCollapse, 700);
+    });
+  }
+  (function installSafariToolbarNudge() {
+    if (!isIOSSafari || isStandaloneWebApp) return;
+    var nudgedAfterTouch = false;
+    window.addEventListener("load", scheduleSafariToolbarCollapse);
+    window.addEventListener("pageshow", scheduleSafariToolbarCollapse);
+    window.addEventListener("orientationchange", function() {
+      nudgedAfterTouch = false;
+      setTimeout(scheduleSafariToolbarCollapse, 250);
+    });
+    document.addEventListener("touchend", function() {
+      if (nudgedAfterTouch) return;
+      nudgedAfterTouch = true;
+      scheduleSafariToolbarCollapse();
+    }, { passive: true });
+  })();
+  (function installLoadingViewportHandling() {
+    var inputs = document.querySelectorAll("#loading-coordinates .loading-input");
+    for (var i = 0; i < inputs.length; i++) {
+      inputs[i].addEventListener("focus", function() {
+        syncLoadingViewportState();
+        nudgeLoadingFieldIntoView(this);
+      });
+    }
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener("resize", syncLoadingViewportState);
+      window.visualViewport.addEventListener("scroll", syncLoadingViewportState);
+    }
+    syncLoadingViewportState();
+  })();
   function corsProxy(url) { return "https://corsproxy.io/?" + encodeURIComponent(url); }
   function adsbUrl(path) {
     if (isLocal) return "/api/adsb" + path;
@@ -1042,6 +1175,7 @@ body.noscroll { touch-action: none; }
   let referenceMeta = null;
   const markerMap = {};
   const extraState = {};
+  let markerAnimationFrame = 0;
   var lastFetchTs = 0;
   var fetchInterval = REFRESH_MS;
   var trailBreakPending = {};
@@ -1187,7 +1321,8 @@ body.noscroll { touch-action: none; }
       doubleTapDragZoomOptions: { reverse: true }
     });
     map.createPane("airportTooltipPane");
-    map.getPane("airportTooltipPane").style.zIndex = 700;
+    // Keep airport labels above markers but below plane labels and popups.
+    map.getPane("airportTooltipPane").style.zIndex = 640;
     L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
       maxZoom: 18,
       keepBuffer: desktopWheelTuning ? 4 : 6,
@@ -2256,6 +2391,19 @@ body.noscroll { touch-action: none; }
     }
   }
 
+  function syncMarkerPose(marker, pose) {
+    if (!marker || !pose) return;
+    var cur = marker.getLatLng();
+    if (!cur || Math.abs(pose.lat - cur.lat) > 5e-6 || Math.abs(pose.lng - cur.lng) > 5e-6) {
+      marker.setLatLng([pose.lat, pose.lng]);
+    }
+  }
+
+  function scheduleMarkerAnimation() {
+    if (markerAnimationFrame) return;
+    markerAnimationFrame = requestAnimationFrame(animateMarkers);
+  }
+
   function setSelectedAircraft(id) {
     if (selectedAircraftId === id) return;
     ignoreMapClickUntil = Date.now() + 250;
@@ -2324,6 +2472,7 @@ body.noscroll { touch-action: none; }
       };
 
       if (existing) {
+        syncMarkerPose(existing, displayPose);
         existing.setIcon(icon);
         existing.setPopupContent(buildPopup(a, policy));
         existing.setZIndexOffset(isSelected ? 1000 : 0);
@@ -2360,6 +2509,7 @@ body.noscroll { touch-action: none; }
   }
 
   function animateMarkers() {
+    markerAnimationFrame = 0;
     var now = Date.now();
     var displayTime = currentDisplayTime(now);
     var displayPoses = {};
@@ -2373,14 +2523,10 @@ body.noscroll { touch-action: none; }
       if (!pose) continue;
       st.displayPose = pose;
       displayPoses[id] = pose;
-
-      var cur = marker.getLatLng();
-      if (Math.abs(pose.lat - cur.lat) > 5e-6 || Math.abs(pose.lng - cur.lng) > 5e-6) {
-        marker.setLatLng([pose.lat, pose.lng]);
-      }
+      syncMarkerPose(marker, pose);
     }
     renderTrails(now, displayPoses);
-    requestAnimationFrame(animateMarkers);
+    scheduleMarkerAnimation();
   }
 
   function renderMap(now, displayPoses) {
@@ -2566,13 +2712,14 @@ body.noscroll { touch-action: none; }
     updateFilterButtons();
     updateSummaryUi();
     initMap(lat, lng);
+    scheduleSafariToolbarCollapse();
     syncUrlState();
     updateUserPosition(lat, lng);
     updateReferenceNote();
     fetchAircraft({ source: "boot" });
     fetchAirports();
     fetchRunways();
-    requestAnimationFrame(animateMarkers);
+    scheduleMarkerAnimation();
     if (shouldWatchUserPosition) startGeolocation();
     scheduleRefreshTimer(REFRESH_MS);
     document.addEventListener("visibilitychange", function() {
@@ -2619,6 +2766,7 @@ body.noscroll { touch-action: none; }
     clearMapFetchTimer();
     clearRefreshTimer();
     resetInterpolationSamples();
+    scheduleMarkerAnimation();
     fetchAircraft({ source: "resume" });
   }
 

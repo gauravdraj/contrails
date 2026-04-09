@@ -1,0 +1,19 @@
+{
+  "name": "Contrails",
+  "short_name": "Contrails",
+  "description": "Live aircraft tracker",
+  "start_url": "/contrails/",
+  "scope": "/contrails/",
+  "display": "standalone",
+  "orientation": "any",
+  "theme_color": "#07101b",
+  "background_color": "#07101b",
+  "icons": [
+    {
+      "src": "apple-touch-icon.png",
+      "sizes": "180x180",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

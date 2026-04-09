@@ -1,3 +1,5 @@
+import { MAJOR_AIRPORTS } from "./airports.js";
+
 const ADSB_API = "https://api.adsb.lol/v2";
 const ADSB_ROUTE_API = "https://api.adsb.lol/api/0";
 const FR24_API = "https://api.flightradar24.com/common/v1";
@@ -190,7 +192,7 @@ const MAX_SLANT_KM = 35;
 const MAX_NEARBY_RESULTS = 5;
 const CONTRAIL_MIN_FT = 25000;
 const LANDING_MAX_FT = 10000;
-const LANDING_AIRPORT_KM = 30;
+const LANDING_AIRPORT_KM = 50;
 const VERT_RATE_THRESHOLD = 300;
 
 const NEARBY_AIRLINES = {
@@ -327,6 +329,7 @@ async function handleNearby(url) {
       speedKts: s.gs != null ? Math.round(s.gs) : null,
       vRate: s.baro_rate || null,
       squawk: s.squawk || null,
+      track: s.track != null ? Math.round(s.track) : null,
       slantKm: Math.round(slant * 10) / 10,
       elevDeg: Math.round(Math.atan2(altKm, Math.max(groundKm, 0.001)) * 180 / Math.PI),
       cardinal: CARDINALS[Math.round(brg / 45) % 8],
@@ -354,7 +357,7 @@ async function handleNearby(url) {
   if (!visible.length) {
     const msg = "No aircraft detected nearby.";
     if (fmt === "text") return plainText(200, msg);
-    if (fmt === "json") return json(200, { text: msg, mapUrl: mapLink });
+    if (fmt === "json") return json(200, { text: msg, mapUrl: mapLink, anyAircraftDetected: false });
     return nearbyHtml(msg, mapLink);
   }
 
@@ -386,39 +389,58 @@ async function handleNearby(url) {
   const body = lines.join("\n");
 
   if (fmt === "text") return plainText(200, body);
-  if (fmt === "json") return json(200, { text: body, mapUrl: mapLink });
+  if (fmt === "json") return json(200, { text: body, mapUrl: mapLink, anyAircraftDetected: true });
   return nearbyHtml(body, mapLink);
+}
+
+function shortAlt(ft) {
+  if (Math.abs(ft) >= 1000) return `${(ft / 1000).toFixed(1).replace(/\.0$/, "")}k ft`;
+  return `${ft} ft`;
 }
 
 function formatNearbyEntry(num, p, airports) {
   const parts = [];
 
-  // Squawk alert (prepended)
   const alert = SQUAWK_ALERTS[p.squawk];
   if (alert) parts.push(`${num}. \u26A0 ${alert} (${p.squawk})`);
 
-  // Identity line
   let name = p.callsign || p.icao24;
   if (p.airline && p.callsign) {
     name = p.airline + " " + p.callsign.substring(3);
   }
   let id = (alert ? "   " : `${num}. `) + name;
   if (p.type) id += ` (${p.type})`;
-  if (p.registration) id += ` [${p.registration}]`;
   if (p.priv) id += " [PRIVATE]";
   parts.push(id);
 
-  // Route line (contextual)
   const routeLine = formatRouteContext(p, airports);
-  if (routeLine) parts.push("   " + routeLine);
-
-  // Distance + details line
-  let details = `   ${p.slantKm} km \u2191${p.elevDeg}\u00B0 ${p.cardinal}`;
-  details += ` \u2014 ${commaNum(p.altFt)} ft, ${p.vertical}`;
-  if (p.altFt >= CONTRAIL_MIN_FT) details += " \u2014 likely contrail";
-  parts.push(details);
+  const dist = `${Math.round(p.slantKm)} km \u2191${p.elevDeg}\u00B0 ${p.cardinal}`;
+  let info = dist + ", " + shortAlt(p.altFt);
+  if (!routeLine) info += ", " + p.vertical;
+  if (p.altFt >= CONTRAIL_MIN_FT) info += ", contrail likely";
+  parts.push("   " + (routeLine ? `${routeLine} \u2014 ${info}` : info));
 
   return parts.join("\n");
+}
+
+function angleDiff(a, b) {
+  let d = ((b - a) % 360 + 360) % 360;
+  return d > 180 ? 360 - d : d;
+}
+
+function nearestMajorAirport(p) {
+  if (p.track == null) return null;
+  let best = null;
+  let bestDist = Infinity;
+  for (const [iata, name, lat, lon] of MAJOR_AIRPORTS) {
+    const d = haversineKm(p.lat, p.lng, lat, lon);
+    if (d > LANDING_AIRPORT_KM || d >= bestDist) continue;
+    const toBearing = bearingDeg(p.lat, p.lng, lat, lon);
+    if (angleDiff(p.track, toBearing) > 60) continue;
+    best = { iata, name };
+    bestDist = d;
+  }
+  return best;
 }
 
 function nearestAirport(p, airports) {
@@ -437,22 +459,31 @@ function nearestAirport(p, airports) {
 }
 
 function formatRouteContext(p, airports) {
-  if (!airports || airports.length < 2) return null;
-
-  if (p.altFt <= LANDING_MAX_FT && (p.vertical === "descending" || p.vertical === "climbing")) {
-    const { airport, dist, idx } = nearestAirport(p, airports);
-    if (airport && dist <= LANDING_AIRPORT_KM) {
-      const name = airport.location || airport.iata || "?";
-      if (p.vertical === "descending") {
-        const fromAirport = idx > 0 ? airports[idx - 1] : airports[0];
-        const fromName = fromAirport.location || fromAirport.iata || "?";
-        return `Landing at ${name} — from ${fromName}`;
+  if (airports && airports.length >= 2) {
+    if (p.altFt <= LANDING_MAX_FT && (p.vertical === "descending" || p.vertical === "climbing")) {
+      const { airport, dist, idx } = nearestAirport(p, airports);
+      if (airport && dist <= LANDING_AIRPORT_KM) {
+        const name = airport.location || airport.iata || "?";
+        if (p.vertical === "descending") {
+          const fromAirport = idx > 0 ? airports[idx - 1] : airports[0];
+          const fromName = fromAirport.location || fromAirport.iata || "?";
+          return `Landing at ${name} — from ${fromName}`;
+        }
+        const toAirport = idx < airports.length - 1 ? airports[idx + 1] : airports[airports.length - 1];
+        const toName = toAirport.location || toAirport.iata || "?";
+        return `Departing ${name} — to ${toName}`;
       }
-      const toAirport = idx < airports.length - 1 ? airports[idx + 1] : airports[airports.length - 1];
-      const toName = toAirport.location || toAirport.iata || "?";
-      return `Departing ${name} — to ${toName}`;
     }
   }
 
-  return airports.map(a => a.location || a.iata).join(" → ");
+  if (p.altFt <= LANDING_MAX_FT && p.vertical === "descending") {
+    const match = nearestMajorAirport(p);
+    if (match) return `Landing at ${match.name}`;
+  }
+
+  if (airports && airports.length >= 2) {
+    return airports.map(a => a.location || a.iata).join(" → ");
+  }
+
+  return null;
 }

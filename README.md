@@ -21,6 +21,17 @@ Open it at **[gauravdraj.github.io/contrails](https://gauravdraj.github.io/contr
 - Approximate IP-based fallback area when browser geolocation is unavailable
 - Mobile-first dark UI that also works well as a home screen shortcut
 
+## iPhone Home Screen
+
+For the best iPhone experience, install Contrails from Safari:
+
+1. Open **[gauravdraj.github.io/contrails](https://gauravdraj.github.io/contrails/)** in Safari.
+2. Tap **Share**.
+3. Tap **Add to Home Screen**.
+4. Launch Contrails from the Home Screen for the true edge-to-edge view.
+
+The normal Safari tab keeps browser chrome visible, so the Home Screen launch is the version that feels most app-like.
+
 ## Architecture
 
 The app stays GitHub Pages-friendly:
@@ -56,6 +67,13 @@ Run the lightweight checks with Node:
 node --test contrails-core.test.js
 node smoke-boot.mjs
 ```
+
+Manual iPhone checks:
+
+- Compare the normal Safari tab against the Home Screen launch.
+- Verify the Home Screen icon/title look right.
+- Check portrait and landscape on a notched iPhone.
+- Focus the coordinate inputs and confirm Safari no longer zooms the page.
 
 ## Siri Shortcut: "What Plane Is That?"
 
