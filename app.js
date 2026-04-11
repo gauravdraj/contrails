@@ -175,7 +175,7 @@
   const PLAYBACK_DELAY_MIN_MS = 2200;
   const PLAYBACK_DELAY_MAX_MS = 4500;
   const PLAYBACK_DELAY_SAFETY_MS = 250;
-  const PLAYBACK_EXTRAPOLATION_MS = 650;
+  const PLAYBACK_EXTRAPOLATION_MS = 1200;
   const MARKER_TARGET_INTERVAL_MS = Math.round(1000 / 24);
   const STALE_HISTORY_MS = 6 * 60 * 1000;
   const SEEDED_TRAIL_WINDOW_MS = 12000;
@@ -324,6 +324,9 @@
       attributionControl: false,
       preferCanvas: true,
       zoomSnap: 0,
+      scrollWheelZoom: !desktopWheelTuning,
+      smoothWheelZoom: desktopWheelTuning,
+      smoothSensitivity: 1,
       zoomDelta: desktopWheelTuning ? 0.5 : 0.25,
       wheelPxPerZoomLevel: desktopWheelTuning ? 90 : 180,
       wheelDebounceTime: desktopWheelTuning ? 28 : 40,
@@ -372,11 +375,37 @@
       if (!el.__contrailsPopupActionsBound) {
         el.__contrailsPopupActionsBound = true;
         el.addEventListener("click", function(event) {
-          var shareBtn = event.target && event.target.closest ? event.target.closest(".popup-share") : null;
-          if (!shareBtn) return;
-          event.preventDefault();
-          event.stopPropagation();
-          sharePlaneById(shareBtn.getAttribute("data-hex"));
+          var t = event.target;
+          if (!t || !t.closest) return;
+          var shareBtn = t.closest(".popup-share");
+          if (shareBtn) {
+            event.preventDefault();
+            event.stopPropagation();
+            sharePlaneById(shareBtn.getAttribute("data-hex"));
+            return;
+          }
+          var toggleBtn = t.closest(".sched-toggle-btn");
+          if (toggleBtn) {
+            event.preventDefault();
+            event.stopPropagation();
+            var dir = toggleBtn.getAttribute("data-dir");
+            if (dir) renderSchedulePopup(dir);
+            return;
+          }
+          var seeAll = t.closest(".sched-see-all");
+          if (seeAll) {
+            event.preventDefault();
+            event.stopPropagation();
+            var card = seeAll.closest(".sched-card");
+            if (card) {
+              var sIata = card.getAttribute("data-sched-iata");
+              var sName = card.getAttribute("data-sched-name");
+              var sDir = card.getAttribute("data-sched-dir") || "arrivals";
+              map.closePopup();
+              window.openFids(sIata, sName, sDir);
+            }
+            return;
+          }
         });
       }
       var photoEl = el.querySelector(".popup-photo");
@@ -1424,10 +1453,10 @@
           interactive: true,
           pane: "airportTooltipPane"
         })
-        .on("click", function() { window.openFids(code, apName); })
+        .on("click", function() { openAirportSchedulePopup(code, apName, lat, lng); })
         .addTo(airportLayer);
         var el = m.getTooltip() && m.getTooltip().getElement();
-        if (el) el.addEventListener("click", function() { window.openFids(code, apName); });
+        if (el) el.addEventListener("click", function() { openAirportSchedulePopup(code, apName, lat, lng); });
       })(iata, name, ap[1], ap[2]);
     }
   }
@@ -2592,6 +2621,142 @@
     requestInitialLocation();
   }
 
+  // --- Airport schedule popup card ---
+  var _activeAirportPopup = null;
+  var _activeAirportIata = null;
+  var _activeAirportScheduleData = null;
+  var _activeAirportName = null;
+
+  function relativeMinutes(unixTs) {
+    var diffSec = unixTs - Math.floor(Date.now() / 1000);
+    if (Math.abs(diffSec) < 60) return "now";
+    var mins = Math.round(diffSec / 60);
+    return mins > 0 ? mins + "m" : mins + "m";
+  }
+
+  function buildScheduleCardContent(iata, name, flights, dir) {
+    var isArr = dir === "arrivals";
+    var safeName = escapeHtml(name || "").replace(/"/g, "&quot;");
+    var html = '<div class="sched-card" data-sched-iata="' + escapeHtml(iata) +
+      '" data-sched-name="' + safeName +
+      '" data-sched-dir="' + dir + '">' +
+      '<div class="sched-header">' +
+        '<div class="sched-iata">' + escapeHtml(iata) + '</div>' +
+        '<div class="sched-name">' + escapeHtml(name) + '</div>' +
+      '</div>' +
+      '<div class="sched-toggle">' +
+        '<button class="sched-toggle-btn' + (isArr ? " active" : "") + '" data-dir="arrivals">Arrivals</button>' +
+        '<button class="sched-toggle-btn' + (isArr ? "" : " active") + '" data-dir="departures">Departures</button>' +
+      '</div>';
+    if (!flights || !flights.length) {
+      html += '<div class="sched-empty">No upcoming flights</div>';
+    } else {
+      for (var i = 0; i < flights.length; i++) {
+        var f = flights[i];
+        var color = f.color || "gray";
+        var tsKey = isArr ? (f.est_arr || f.sched_arr) : (f.est_dep || f.sched_dep);
+        var timeStr = fidsTime(isArr ? f.est_arr : f.est_dep) !== "\u2014"
+          ? fidsTime(isArr ? f.est_arr : f.est_dep)
+          : fidsTime(isArr ? f.sched_arr : f.sched_dep);
+        var rel = tsKey ? relativeMinutes(tsKey) : "";
+        var route = isArr ? (f.from_iata || "") : (f.to_iata || "");
+        html += '<div class="sched-row">' +
+          '<span class="sched-flight">' + escapeHtml(f.flight || "\u2014") + '</span>' +
+          (route ? '<span class="sched-route">' + escapeHtml(route) + '</span>' : '') +
+          '<span class="sched-time">' + timeStr + '</span>' +
+          '<span class="sched-rel">' + rel + '</span>' +
+          '<span class="sched-dot ' + color + '"></span>' +
+        '</div>';
+      }
+    }
+    html += '<div class="sched-footer"><a class="sched-see-all">See all ' +
+      dir + ' \u2192</a></div>';
+    html += '</div>';
+    return html;
+  }
+
+  function filterAndSortFlights(flights, isArr) {
+    if (!flights || !flights.length) return [];
+    var nowSec = Math.floor(Date.now() / 1000);
+    var lo = nowSec - 15 * 60;
+    var hi = nowSec + 2 * 60 * 60;
+    var sorted = flights.slice().sort(function(a, b) {
+      var tA = isArr ? (a.est_arr || a.sched_arr || 0) : (a.est_dep || a.sched_dep || 0);
+      var tB = isArr ? (b.est_arr || b.sched_arr || 0) : (b.est_dep || b.sched_dep || 0);
+      return tA - tB;
+    });
+    var result = [];
+    for (var i = 0; i < sorted.length && result.length < 4; i++) {
+      var ts = isArr
+        ? (sorted[i].est_arr || sorted[i].sched_arr || 0)
+        : (sorted[i].est_dep || sorted[i].sched_dep || 0);
+      if (ts >= lo && ts <= hi) result.push(sorted[i]);
+    }
+    return result;
+  }
+
+  function renderSchedulePopup(dir) {
+    if (!_activeAirportPopup || !_activeAirportScheduleData) return;
+    var isArr = dir === "arrivals";
+    var flights = filterAndSortFlights(_activeAirportScheduleData[dir] || [], isArr);
+    _activeAirportPopup.setContent(
+      buildScheduleCardContent(_activeAirportIata, _activeAirportName, flights, dir)
+    );
+  }
+
+  function openAirportSchedulePopup(iata, name, lat, lng) {
+    if (_activeAirportPopup) {
+      map.closePopup(_activeAirportPopup);
+      _activeAirportPopup = null;
+      _activeAirportIata = null;
+    }
+    var popup = L.popup({ maxWidth: 320, minWidth: 280, closeButton: true, className: "" })
+      .setLatLng([lat, lng])
+      .setContent('<div class="sched-card"><div class="sched-header">' +
+        '<div class="sched-iata">' + escapeHtml(iata) + '</div>' +
+        '<div class="sched-name">' + escapeHtml(name) + '</div>' +
+        '</div><div class="sched-loading"><span class="spinner"></span></div></div>')
+      .openOn(map);
+
+    _activeAirportPopup = popup;
+    _activeAirportIata = iata;
+
+    popup.on("remove", function() {
+      if (_activeAirportIata === iata) {
+        _activeAirportPopup = null;
+        _activeAirportIata = null;
+        _activeAirportScheduleData = null;
+        _activeAirportName = null;
+      }
+    });
+
+    var schedUrl = (isLocal ? "/api/fr24/schedule/" : WORKER_URL + "/schedule/") + encodeURIComponent(iata);
+    fetch(schedUrl)
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        if (_activeAirportIata !== iata) return;
+        if (data.error) {
+          popup.setContent('<div class="sched-card"><div class="sched-header">' +
+            '<div class="sched-iata">' + escapeHtml(iata) + '</div>' +
+            '<div class="sched-name">' + escapeHtml(name) + '</div>' +
+            '</div><div class="sched-error">' + escapeHtml(data.error) + '</div></div>');
+          return;
+        }
+        var resolvedName = data.name || name;
+        _activeAirportScheduleData = data;
+        _activeAirportName = resolvedName;
+        var flights = filterAndSortFlights(data.arrivals || [], true);
+        popup.setContent(buildScheduleCardContent(iata, resolvedName, flights, "arrivals"));
+      })
+      .catch(function() {
+        if (_activeAirportIata !== iata) return;
+        popup.setContent('<div class="sched-card"><div class="sched-header">' +
+          '<div class="sched-iata">' + escapeHtml(iata) + '</div>' +
+          '<div class="sched-name">' + escapeHtml(name) + '</div>' +
+          '</div><div class="sched-error">Failed to load schedule</div></div>');
+      });
+  }
+
   // --- FIDS (airport schedule board) ---
   var _fidsData = null;
   var _fidsDir = "arrivals";
@@ -2636,15 +2801,15 @@
     body.innerHTML = html;
   }
 
-  window.openFids = function(iata, name) {
+  window.openFids = function(iata, name, direction) {
     document.getElementById("fids-title").textContent = iata;
     document.getElementById("fids-subtitle").textContent = name || "";
     document.getElementById("fids-body").innerHTML =
       '<div class="fids-empty"><div class="spinner"></div><br>Loading schedule\u2026</div>';
-    _fidsDir = "arrivals";
+    _fidsDir = direction || "arrivals";
     var tabs = document.querySelectorAll(".fids-tab");
     for (var t = 0; t < tabs.length; t++)
-      tabs[t].classList.toggle("active", tabs[t].getAttribute("data-dir") === "arrivals");
+      tabs[t].classList.toggle("active", tabs[t].getAttribute("data-dir") === _fidsDir);
     document.getElementById("fids").classList.add("open");
 
     var schedUrl = (isLocal ? "/api/fr24/schedule/" : WORKER_URL + "/schedule/") + encodeURIComponent(iata);
@@ -2683,8 +2848,14 @@
       });
     }
     document.addEventListener("keydown", function(e) {
-      if (e.key === "Escape" && document.getElementById("fids").classList.contains("open"))
+      if (e.key !== "Escape") return;
+      if (document.getElementById("fids").classList.contains("open")) {
         window.closeFids();
+        return;
+      }
+      if (_activeAirportPopup) {
+        map.closePopup(_activeAirportPopup);
+      }
     });
   })();
 })();
