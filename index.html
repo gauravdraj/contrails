@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="application-name" content="Contrails">
-<meta name="theme-color" content="#07101b">
+<meta name="theme-color" content="#000">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Contrails">
@@ -46,8 +46,8 @@ html, body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   background:
     radial-gradient(circle at top, rgba(42, 105, 148, 0.12), transparent 36%),
-    linear-gradient(180deg, #07101b 0%, #0a1320 100%);
-  background-color: #07101b;
+    linear-gradient(180deg, #000 0%, #000 100%);
+  background-color: #000;
   color: var(--text-main);
   overflow-x: hidden;
   font-variant-numeric: tabular-nums;
@@ -60,7 +60,7 @@ body {
 }
 body.noscroll { touch-action: none; }
 
-#app { position: fixed; inset: 0; background-color: #07101b; }
+#app { position: fixed; inset: 0; background-color: #000; }
 #map { height: 100%; }
 .leaflet-container,
 .leaflet-pane,
@@ -68,9 +68,9 @@ body.noscroll { touch-action: none; }
 .leaflet-tile-container,
 .leaflet-tile-pane,
 .leaflet-overlay-pane {
-  background: #07101b;
+  background: #000;
 }
-.leaflet-tile { background: #07101b; }
+.leaflet-tile { background: #000; }
 #panel {
   overflow-y: auto;
   padding: 12px 12px calc(18px + env(safe-area-inset-bottom, 0px));
@@ -762,8 +762,10 @@ body.noscroll { touch-action: none; }
   box-shadow: var(--shadow-md);
 }
 .leaflet-popup-tip { background: rgba(14, 26, 42, 0.98); }
-.leaflet-popup-content { margin: 12px 14px; font-size: 13px; line-height: 1.6; }
+.leaflet-popup-content { margin: 12px 14px; font-size: 13px; line-height: 1.6; min-width: 200px; }
 .leaflet-popup-content strong { color: var(--accent); font-size: 15px; }
+.popup-photo img { max-width: 280px; }
+.popup-photo { min-height: 0; }
 
 #fids { position: fixed; inset: 0; z-index: 1500; display: none; flex-direction: column; }
 #fids.open { display: flex; }
@@ -1117,13 +1119,22 @@ body.noscroll { touch-action: none; }
     if (workerOk) return WORKER_URL + "/route" + path;
     return corsProxy("https://api.adsb.lol/api/0" + path);
   }
+  function photoUrl(hex) {
+    return WORKER_URL + "/photo/" + hex;
+  }
+  function routesetUrl() {
+    return WORKER_URL + "/routeset";
+  }
+  function flightUrl(callsign) {
+    return WORKER_URL + "/flight/" + encodeURIComponent(callsign);
+  }
   function geoUrl() {
     if (isLocal) return "/api/geo";
     return WORKER_URL + "/geo";
   }
   const REFRESH_MS = 3000;
   const DEFAULT_MAP_ZOOM = 11;
-  const MIN_MAP_ZOOM = 7;
+  const MIN_MAP_ZOOM = 5;
   const DEFAULT_BROWSE_LAT = 51.5074;
   const DEFAULT_BROWSE_LNG = -0.1278;
   const VIEW_FILTER_PAD = 0.08;
@@ -1149,6 +1160,8 @@ body.noscroll { touch-action: none; }
   const SEEDED_MIN_DISPLAY_SPEED_KTS = 35;
   const posHistory = {};
   const routeCache = {};
+  const photoCache = {};
+  const flightCache = {};
   const dormantHistory = {};
 
   let map, userMarker, aircraftLayer, trailLayer, airportLayer, runwayLayer;
@@ -1314,7 +1327,7 @@ body.noscroll { touch-action: none; }
       wheelDebounceTime: desktopWheelTuning ? 28 : 40,
       zoomAnimation: true,
       zoomAnimationThreshold: desktopWheelTuning ? 6 : 4,
-      fadeAnimation: false,
+      fadeAnimation: true,
       markerZoomAnimation: true,
       doubleClickZoom: !isIOSSafari,
       doubleTapDragZoom: isIOSSafari ? false : "center",
@@ -1325,10 +1338,10 @@ body.noscroll { touch-action: none; }
     map.getPane("airportTooltipPane").style.zIndex = 640;
     L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
       maxZoom: 18,
-      keepBuffer: desktopWheelTuning ? 4 : 6,
-      updateWhenIdle: desktopWheelTuning ? false : true,
-      updateInterval: desktopWheelTuning ? 80 : 120,
-      updateWhenZooming: desktopWheelTuning ? true : false
+      keepBuffer: 6,
+      updateWhenIdle: false,
+      updateInterval: 100,
+      updateWhenZooming: true
     }).addTo(map);
 
     userMarker = L.circleMarker([lat, lng], {
@@ -1363,6 +1376,14 @@ body.noscroll { touch-action: none; }
       .addAttribution('&copy; <a href="https://carto.com/">CARTO</a> | <a href="https://adsb.lol">adsb.lol</a>')
       .addTo(map);
     installIOSOneFingerZoom();
+    map.on("popupopen", function(e) {
+      var el = e.popup.getElement();
+      if (!el) return;
+      var photoEl = el.querySelector(".popup-photo");
+      if (photoEl) loadPopupPhoto(photoEl);
+      var routeEl = el.querySelector(".popup-route");
+      if (routeEl) loadPopupFlight(routeEl, e.popup);
+    });
     map.on("moveend", function() {
       if (suppressViewportRefresh) return;
       refreshViewportUi({ fetch: true });
@@ -1888,7 +1909,7 @@ body.noscroll { touch-action: none; }
     }
     if (!needed.length) return;
     try {
-      var resp = await fetch(routeUrl("/routeset"), {
+      var resp = await fetch(routesetUrl(), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ planes: needed })
@@ -1897,12 +1918,12 @@ body.noscroll { touch-action: none; }
       var routes = await resp.json();
       for (var j = 0; j < routes.length; j++) {
         var r = routes[j];
-        if (!r.callsign || !r._airports || !r._airports.length) continue;
-        var locs = r._airports.map(function(ap) { return ap.location || ap.iata; });
-        var iatas = r._airport_codes_iata || r.airport_codes || "";
+        if (!r.callsign || !r.origin || !r.destination) continue;
+        var displayParts = [r.origin.name || r.origin.iata, r.destination.name || r.destination.iata].filter(Boolean);
+        var iataParts = [r.origin.iata, r.destination.iata].filter(Boolean);
         routeCache[r.callsign] = {
-          display: locs.join(" \u2192 "),
-          iata: iatas.replace(/-/g, " \u2192 ")
+          display: displayParts.join(" \u2192 "),
+          iata: iataParts.join(" \u2192 ")
         };
       }
       renderPanel();
@@ -2264,6 +2285,9 @@ body.noscroll { touch-action: none; }
   function trailWindowMs(a) {
     if (a.ground) return GROUND_TRAIL_MS;
     var zoom = map ? map.getZoom() : 11;
+    if (zoom <= 5) return 8000;
+    if (zoom <= 6) return 10000;
+    if (zoom <= 7) return 12000;
     if (zoom <= 8) return 16000;
     if (zoom <= 9) return 24000;
     if (zoom <= 10) return 34000;
@@ -2365,7 +2389,9 @@ body.noscroll { touch-action: none; }
     var routeLine = "";
     var rc = routeCache[a.callsign];
     if (rc && policy.allowRoutes) {
-      routeLine = '<span style="color:#5bbcf5">' + rc.display + "</span><br>";
+      routeLine = '<span class="popup-route" data-callsign="' + (a.callsign || "") + '" style="color:#5bbcf5">' + rc.display + "</span><br>";
+    } else if (a.callsign && !a.private) {
+      routeLine = '<span class="popup-route" data-callsign="' + a.callsign + '" style="color:#5bbcf5"></span>';
     }
 
     var distanceLine = "";
@@ -2376,11 +2402,67 @@ body.noscroll { touch-action: none; }
     }
     var distanceHtml = distanceLine ? distanceLine + "<br>" : "";
 
-    return "<strong>" + nameStr + "</strong><br>" +
+    var photoHtml = '<div class="popup-photo" data-hex="' + a.icao24 + '">';
+    var cached = photoCache[a.icao24];
+    if (cached && cached.src) {
+      photoHtml += '<img src="' + cached.src + '" style="width:100%;border-radius:6px;display:block;margin-bottom:6px" alt="Aircraft photo">';
+    }
+    photoHtml += '</div>';
+
+    return photoHtml +
+      "<strong>" + nameStr + "</strong><br>" +
       emergLine + routeLine + typeLine + alt + " &middot; " + spd + " &middot; " + vert + "<br>" +
       detail2 + windLine +
-      distanceHtml +
-      '<span style="color:#667">ICAO: ' + a.icao24 + "</span>";
+      distanceHtml;
+  }
+
+  function loadPopupPhoto(container) {
+    var hex = container.getAttribute("data-hex");
+    if (!hex) return;
+    if (photoCache[hex] === null) return;
+    if (photoCache[hex]) return;
+    container.innerHTML = '<span style="color:#556;font-size:11px">Loading photo\u2026</span>';
+    fetch(photoUrl(hex))
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        if (!data || !data.src) { photoCache[hex] = null; container.innerHTML = ""; return; }
+        photoCache[hex] = data;
+        renderPhoto(container, data);
+      })
+      .catch(function() { photoCache[hex] = null; container.innerHTML = ""; });
+  }
+
+  function renderPhoto(container, photo) {
+    container.innerHTML =
+      '<img src="' + photo.src + '" style="width:100%;border-radius:6px;display:block;margin-bottom:6px" alt="Aircraft photo">';
+  }
+
+  function loadPopupFlight(routeEl, popup) {
+    var cs = routeEl.getAttribute("data-callsign");
+    if (!cs) return;
+    if (flightCache[cs] === null) return;
+    if (flightCache[cs]) { applyFlightRoute(routeEl, flightCache[cs], popup); return; }
+    fetch(flightUrl(cs))
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        if (!data || !data.origin || !data.destination) { flightCache[cs] = null; return; }
+        flightCache[cs] = data;
+        applyFlightRoute(routeEl, data, popup);
+        routeCache[cs] = {
+          display: (data.origin.name || data.origin.iata) + " \u2192 " + (data.destination.name || data.destination.iata),
+          iata: [data.origin.iata, data.destination.iata].filter(Boolean).join(" \u2192 ")
+        };
+      })
+      .catch(function() { flightCache[cs] = null; });
+  }
+
+  function applyFlightRoute(routeEl, data, popup) {
+    var display = (data.origin.name || data.origin.iata) + " \u2192 " + (data.destination.name || data.destination.iata);
+    routeEl.textContent = display;
+    if (!routeEl.nextSibling || routeEl.nextSibling.nodeName !== "BR") {
+      routeEl.insertAdjacentHTML("afterend", "<br>");
+    }
+    popup.update();
   }
 
   function bindPlaneLabel(marker, text, yOffset) {

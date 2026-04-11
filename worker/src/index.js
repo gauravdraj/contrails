@@ -2,8 +2,14 @@ import { MAJOR_AIRPORTS } from "./airports.js";
 
 const ADSB_API = "https://api.adsb.lol/v2";
 const ADSB_ROUTE_API = "https://api.adsb.lol/api/0";
+const ADSBDB_API = "https://api.adsbdb.com/v0";
+const PLANESPOTTERS_API = "https://api.planespotters.net/pub/photos";
 const FR24_API = "https://api.flightradar24.com/common/v1";
+const AERODATABOX_API = "https://aerodatabox.p.rapidapi.com";
 const FR24_CACHE_TTL = 120;
+const PHOTO_CACHE_TTL = 86400;
+const ADSBDB_CACHE_TTL = 3600;
+const FLIGHT_CACHE_TTL = 14400;
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -21,6 +27,9 @@ export default {
 
     if (url.pathname.startsWith("/adsb/")) return proxyAdsb(url);
     if (url.pathname.startsWith("/route/")) return proxyRoute(url, request);
+    if (url.pathname.startsWith("/photo/")) return handlePhoto(url, ctx);
+    if (url.pathname === "/routeset") return handleRouteset(request, ctx);
+    if (url.pathname.startsWith("/flight/")) return handleFlight(url, env, ctx);
     if (url.pathname === "/geo") return handleGeo(request);
     if (url.pathname.startsWith("/schedule/")) return handleSchedule(url, request, ctx);
     if (url.pathname === "/nearby") return handleNearby(url);
@@ -71,6 +80,162 @@ async function proxy(target, method, body) {
       status: resp.status,
       headers: { ...CORS, "Content-Type": "application/json" },
     });
+  } catch (e) {
+    return json(502, { error: e.message });
+  }
+}
+
+async function handlePhoto(url, ctx) {
+  const hex = url.pathname.split("/").pop().toLowerCase();
+  if (!/^[0-9a-f]{6}$/.test(hex)) return json(400, { error: "Invalid hex" });
+
+  const cache = caches.default;
+  const cacheKey = new Request(url.toString());
+  const cached = await cache.match(cacheKey);
+  if (cached) return cached;
+
+  try {
+    const resp = await fetch(`${PLANESPOTTERS_API}/hex/${hex}`, {
+      headers: { "User-Agent": "contrails/1.0" },
+    });
+    if (!resp.ok) throw new Error("HTTP " + resp.status);
+    const data = await resp.json();
+
+    const photo = (data.photos || [])[0];
+    const result = photo
+      ? {
+          src: (photo.thumbnail_large || photo.thumbnail || {}).src || null,
+          width: (photo.thumbnail_large || photo.thumbnail || {}).size?.width || null,
+          height: (photo.thumbnail_large || photo.thumbnail || {}).size?.height || null,
+          link: photo.link || null,
+          photographer: photo.photographer || null,
+        }
+      : null;
+
+    const response = json(200, result);
+    response.headers.set("Cache-Control", `s-maxage=${PHOTO_CACHE_TTL}`);
+    ctx.waitUntil(cache.put(cacheKey, response.clone()));
+    return response;
+  } catch (e) {
+    return json(502, { error: e.message });
+  }
+}
+
+async function handleRouteset(request, ctx) {
+  if (request.method !== "POST") return json(405, { error: "POST required" });
+
+  let planes;
+  try {
+    const body = await request.json();
+    planes = body.planes;
+  } catch (_) {
+    return json(400, { error: "Invalid JSON" });
+  }
+  if (!Array.isArray(planes) || !planes.length) return json(400, { error: "No planes" });
+
+  const cache = caches.default;
+  const limited = planes.slice(0, 20);
+
+  const results = await Promise.allSettled(
+    limited.map(async (p) => {
+      if (!p.callsign) return null;
+      const cs = p.callsign.trim().toUpperCase();
+
+      const cacheKey = new Request(`https://adsbdb-cache/${cs}`);
+      const cached = await cache.match(cacheKey);
+      if (cached) return cached.json();
+
+      const resp = await fetch(`${ADSBDB_API}/callsign/${cs}`, {
+        headers: { "User-Agent": "contrails/1.0" },
+      });
+      if (!resp.ok) return null;
+      const data = await resp.json();
+      const route = data?.response?.flightroute;
+      if (!route?.origin || !route?.destination) return null;
+
+      const entry = {
+        callsign: cs,
+        origin: {
+          iata: route.origin.iata_code || "",
+          name: route.origin.municipality || route.origin.name || "",
+        },
+        destination: {
+          iata: route.destination.iata_code || "",
+          name: route.destination.municipality || route.destination.name || "",
+        },
+        airline: route.airline?.name || null,
+      };
+
+      const cacheResp = json(200, entry);
+      cacheResp.headers.set("Cache-Control", `s-maxage=${ADSBDB_CACHE_TTL}`);
+      ctx.waitUntil(cache.put(cacheKey, cacheResp.clone()));
+      return entry;
+    }),
+  );
+
+  const routes = results
+    .map((r) => (r.status === "fulfilled" ? r.value : null))
+    .filter(Boolean);
+
+  return json(200, routes);
+}
+
+async function handleFlight(url, env, ctx) {
+  const callsign = url.pathname.split("/").pop().toUpperCase();
+  if (!callsign || callsign.length < 3) return json(400, { error: "Invalid callsign" });
+
+  const apiKey = env.AERODATABOX_KEY;
+  if (!apiKey) return json(501, { error: "AeroDataBox not configured" });
+
+  const cache = caches.default;
+  const cacheKey = new Request(`https://flight-cache/${callsign}`);
+  const cached = await cache.match(cacheKey);
+  if (cached) return new Response(cached.body, { headers: { ...CORS, "Content-Type": "application/json" } });
+
+  try {
+    const now = new Date();
+    const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    const dateFrom = yesterday.toISOString().slice(0, 10);
+    const dateTo = now.toISOString().slice(0, 10);
+    const resp = await fetch(
+      `${AERODATABOX_API}/flights/callsign/${callsign}/${dateFrom}/${dateTo}?withAircraftImage=false&withLocation=false`,
+      {
+        headers: {
+          "X-RapidAPI-Key": apiKey,
+          "X-RapidAPI-Host": "aerodatabox.p.rapidapi.com",
+        },
+      },
+    );
+    if (resp.status === 204 || resp.status === 404) return json(200, null);
+    if (!resp.ok) throw new Error("HTTP " + resp.status);
+    const flights = await resp.json();
+
+    const active = Array.isArray(flights)
+      ? flights.find(f => f.status === "EnRoute" || f.status === "Started" || f.status === "Unknown") || flights[0]
+      : flights;
+
+    if (!active) return json(200, null);
+
+    const dep = active.departure || {};
+    const arr = active.arrival || {};
+    const result = {
+      callsign,
+      origin: {
+        iata: dep.airport?.iata || "",
+        name: dep.airport?.municipalityName || dep.airport?.name || "",
+      },
+      destination: {
+        iata: arr.airport?.iata || "",
+        name: arr.airport?.municipalityName || arr.airport?.name || "",
+      },
+      status: active.status || null,
+      airline: active.airline?.name || null,
+    };
+
+    const response = json(200, result);
+    response.headers.set("Cache-Control", `s-maxage=${FLIGHT_CACHE_TTL}`);
+    ctx.waitUntil(cache.put(cacheKey, response.clone()));
+    return response;
   } catch (e) {
     return json(502, { error: e.message });
   }
@@ -317,6 +482,10 @@ async function handleNearby(url) {
 
     if (slant > MAX_SLANT_KM) continue;
 
+    const elevDeg = Math.round(Math.atan2(altKm, Math.max(groundKm, 0.001)) * 180 / Math.PI);
+    const minElev = Math.max(0, (groundKm - 5) * 0.3);
+    if (elevDeg < minElev) continue;
+
     const brg = bearingDeg(lat, lng, s.lat, s.lon);
     planes.push({
       callsign,
@@ -331,7 +500,7 @@ async function handleNearby(url) {
       squawk: s.squawk || null,
       track: s.track != null ? Math.round(s.track) : null,
       slantKm: Math.round(slant * 10) / 10,
-      elevDeg: Math.round(Math.atan2(altKm, Math.max(groundKm, 0.001)) * 180 / Math.PI),
+      elevDeg,
       cardinal: CARDINALS[Math.round(brg / 45) % 8],
       vertical: verticalState(s.baro_rate),
       priv: isLikelyPrivate(callsign),
@@ -361,22 +530,33 @@ async function handleNearby(url) {
     return nearbyHtml(msg, mapLink);
   }
 
-  // Fetch routes for non-private planes with callsigns
+  // Fetch routes via adsbdb for non-private planes with callsigns
   const routeMap = {};
   const routable = visible.filter(p => p.callsign && !p.priv);
   if (routable.length) {
     try {
-      const resp = await fetch(`${ADSB_ROUTE_API}/routeset`, {
-        method: "POST",
-        headers: { "User-Agent": "contrails/1.0", "Content-Type": "application/json" },
-        body: JSON.stringify({
-          planes: routable.map(p => ({ callsign: p.callsign, lat: p.lat, lng: p.lng })),
+      const results = await Promise.allSettled(
+        routable.map(async (p) => {
+          const cs = p.callsign.trim().toUpperCase();
+          const resp = await fetch(`${ADSBDB_API}/callsign/${cs}`, {
+            headers: { "User-Agent": "contrails/1.0" },
+          });
+          if (!resp.ok) return null;
+          const data = await resp.json();
+          const route = data?.response?.flightroute;
+          if (!route?.origin || !route?.destination) return null;
+          return {
+            callsign: cs,
+            airports: [
+              { iata: route.origin.iata_code, location: route.origin.municipality || route.origin.name, lat: route.origin.latitude, lon: route.origin.longitude },
+              { iata: route.destination.iata_code, location: route.destination.municipality || route.destination.name, lat: route.destination.latitude, lon: route.destination.longitude },
+            ],
+          };
         }),
-      });
-      if (resp.ok) {
-        for (const r of await resp.json()) {
-          if (!r.callsign || !r._airports || r._airports.length < 2) continue;
-          routeMap[r.callsign] = r._airports;
+      );
+      for (const r of results) {
+        if (r.status === "fulfilled" && r.value) {
+          routeMap[r.value.callsign] = r.value.airports;
         }
       }
     } catch (_) { /* routes are optional enrichment */ }
@@ -458,20 +638,23 @@ function nearestAirport(p, airports) {
   return { airport: best, dist: bestDist, idx: bestIdx };
 }
 
+function airportLabel(a) {
+  if (a.iata) return a.iata;
+  return a.location || "?";
+}
+
 function formatRouteContext(p, airports) {
   if (airports && airports.length >= 2) {
     if (p.altFt <= LANDING_MAX_FT && (p.vertical === "descending" || p.vertical === "climbing")) {
       const { airport, dist, idx } = nearestAirport(p, airports);
       if (airport && dist <= LANDING_AIRPORT_KM) {
-        const name = airport.location || airport.iata || "?";
+        const name = airportLabel(airport);
         if (p.vertical === "descending") {
           const fromAirport = idx > 0 ? airports[idx - 1] : airports[0];
-          const fromName = fromAirport.location || fromAirport.iata || "?";
-          return `Landing at ${name} — from ${fromName}`;
+          return `Landing at ${name} — from ${airportLabel(fromAirport)}`;
         }
         const toAirport = idx < airports.length - 1 ? airports[idx + 1] : airports[airports.length - 1];
-        const toName = toAirport.location || toAirport.iata || "?";
-        return `Departing ${name} — to ${toName}`;
+        return `Departing ${name} — to ${airportLabel(toAirport)}`;
       }
     }
   }
@@ -482,7 +665,7 @@ function formatRouteContext(p, airports) {
   }
 
   if (airports && airports.length >= 2) {
-    return airports.map(a => a.location || a.iata).join(" → ");
+    return airports.map(a => airportLabel(a)).join(" → ");
   }
 
   return null;
