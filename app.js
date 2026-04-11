@@ -176,13 +176,14 @@
   const PLAYBACK_DELAY_MAX_MS = 4500;
   const PLAYBACK_DELAY_SAFETY_MS = 250;
   const PLAYBACK_EXTRAPOLATION_MS = 650;
+  const MARKER_TARGET_INTERVAL_MS = Math.round(1000 / 24);
   const STALE_HISTORY_MS = 6 * 60 * 1000;
   const SEEDED_TRAIL_WINDOW_MS = 12000;
   const SEEDED_TRAIL_POINTS = 4;
   const SEEDED_MIN_DISPLAY_SPEED_KTS = 35;
   const NEW_MARKER_BATCH = 25;
   const MARKER_DRAIN_DELAY_MS = 80;
-  const PLAYBACK_EXTRAPOLATION_MAX_MS = 1650;
+  const PLAYBACK_EXTRAPOLATION_MAX_MS = 2200;
   const SEARCH_MIN_ZOOM = 13;
   const SEARCH_SUGGESTION_LIMIT = 7;
   const SEARCH_LOOKUP_DEBOUNCE_MS = 180;
@@ -190,6 +191,7 @@
   const posHistory = {};
   const routeCache = {};
   const photoCache = {};
+  const photoPending = {};
   const flightCache = {};
   const dormantHistory = {};
 
@@ -218,6 +220,7 @@
   const extraState = {};
   var refreshSearchUi = null;
   let markerAnimationFrame = 0;
+  let markerAnimationTimer = 0;
   var lastFetchTs = 0;
   var fetchInterval = REFRESH_MS;
   var trailBreakPending = {};
@@ -1243,7 +1246,7 @@
   }
 
   function currentPlaybackExtrapolationMs() {
-    var adaptiveMs = fetchInterval * 0.48 + fetchJitterMs * 0.18;
+    var adaptiveMs = fetchInterval * 0.58 + fetchJitterMs * 0.22;
     return Math.round(Math.max(PLAYBACK_EXTRAPOLATION_MS, Math.min(PLAYBACK_EXTRAPOLATION_MAX_MS, adaptiveMs)));
   }
 
@@ -1590,14 +1593,13 @@
 
   function buildPopup(a, policy) {
     policy = policy || currentViewPolicy(visibleAircraftCount());
-    var name = escapeHtml(a.callsign || a.icao24);
-    var alName = !a.private ? escapeHtml(airlineName(a.callsign)) : "";
-    var nameStr = alName ? name + " &middot; " + alName : name;
+    var titleSource = a.callsign || a.registration || a.icao24;
+    var title = escapeHtml(titleSource);
     var alt = a.ground ? "On ground" : (a.altFt != null ? a.altFt.toLocaleString() + " ft" : "\u2014");
     var spd = a.speedKts != null ? formatSpeedMph(a.speedKts) + " mph" : "\u2014";
     var vert = a.ground ? "" : vertLabel(a.vRate);
     var typeStr = escapeHtml(a.aircraftType);
-    var regStr = escapeHtml(a.registration);
+    var regStr = a.registration && a.registration !== titleSource ? escapeHtml(a.registration) : "";
     var typeLine = [typeStr, regStr].filter(Boolean).join(" &middot; ");
     if (typeLine) typeLine += "<br>";
 
@@ -1619,14 +1621,8 @@
       emergLine = '<span style="color:#f87171;font-weight:700">' + emergText + "</span><br>";
     }
 
-    var routeLine = "";
-    var rc = routeCache[a.callsign];
-    var safeCallsign = escapeHtml(a.callsign);
-    if (rc && policy.allowRoutes) {
-      routeLine = '<span class="popup-route" data-callsign="' + safeCallsign + '" style="color:#5bbcf5">' + escapeHtml(rc.display) + "</span><br>";
-    } else if (a.callsign && !a.private) {
-      routeLine = '<span class="popup-route" data-callsign="' + safeCallsign + '" style="color:#5bbcf5"></span>';
-    }
+    var rc = a.callsign ? routeCache[a.callsign] : null;
+    var subheaderHtml = buildPopupSubheader(a, rc);
 
     var distanceLine = "";
     if (a.slantKm != null) {
@@ -1653,10 +1649,31 @@
       '</button>';
 
     return photoHtml +
-      '<div class="popup-header"><div class="popup-title"><strong>' + nameStr + "</strong></div>" + shareButton + "</div>" +
-      emergLine + routeLine + typeLine + alt + " &middot; " + spd + " &middot; " + vert + "<br>" +
+      '<div class="popup-header"><div class="popup-title"><strong>' + title + "</strong>" + subheaderHtml + "</div>" + shareButton + "</div>" +
+      emergLine + typeLine + alt + " &middot; " + spd + " &middot; " + vert + "<br>" +
       detail2 + windLine +
       distanceHtml;
+  }
+
+  function popupRouteDisplay(routeEntry) {
+    if (!routeEntry) return "";
+    return routeEntry.iata || routeEntry.display || "";
+  }
+
+  function buildPopupSubheader(a, routeEntry) {
+    var airline = !a.private && a.callsign ? airlineName(a.callsign) : "";
+    var routeDisplay = popupRouteDisplay(routeEntry);
+    var canLookupRoute = !!a.callsign && !a.private;
+    if (!airline && !canLookupRoute && !routeDisplay) return "";
+    var hidden = !airline && !routeDisplay ? " hidden" : "";
+    var html = '<div class="popup-subheader"' + hidden + '>';
+    if (airline) html += '<span class="popup-airline">' + escapeHtml(airline) + "</span>";
+    if (canLookupRoute) {
+      if (airline) html += '<span class="popup-route-sep"' + (routeDisplay ? "" : " hidden") + '> &middot; </span>';
+      html += '<span class="popup-route" data-callsign="' + escapeHtml(a.callsign) + '">' + escapeHtml(routeDisplay) + "</span>";
+    }
+    html += "</div>";
+    return html;
   }
 
   function loadPopupPhoto(container) {
@@ -1664,15 +1681,19 @@
     if (!hex) return;
     if (photoCache[hex] === null) return;
     if (photoCache[hex]) return;
-    container.innerHTML = '<span style="color:#556;font-size:11px">Loading photo\u2026</span>';
+    if (photoPending[hex]) return;
+    photoPending[hex] = true;
     fetch(photoUrl(hex))
       .then(function(r) { return r.json(); })
       .then(function(data) {
-        if (!data || !data.src) { photoCache[hex] = null; container.innerHTML = ""; return; }
+        if (!data || !data.src) { photoCache[hex] = null; return; }
         photoCache[hex] = data;
         renderPhoto(container, data);
       })
-      .catch(function() { photoCache[hex] = null; container.innerHTML = ""; });
+      .catch(function() { photoCache[hex] = null; })
+      .finally(function() {
+        delete photoPending[hex];
+      });
   }
 
   function renderPhoto(container, photo) {
@@ -1680,31 +1701,47 @@
       '<img src="' + escapeHtml(photo.src) + '" style="width:100%;border-radius:6px;display:block;margin-bottom:6px" alt="Aircraft photo">';
   }
 
+  function buildFlightRouteCacheEntry(data) {
+    return {
+      display: (data.origin.name || data.origin.iata) + " → " + (data.destination.name || data.destination.iata),
+      iata: [data.origin.iata, data.destination.iata].filter(Boolean).join(" → ")
+    };
+  }
+
+  function syncPopupRouteText(routeEl, routeText) {
+    routeEl.textContent = routeText || "";
+    var wrapper = routeEl.parentElement;
+    if (!wrapper) return;
+    var airlineEl = wrapper.querySelector(".popup-airline");
+    var hasAirline = !!(airlineEl && airlineEl.textContent);
+    var sep = wrapper.querySelector(".popup-route-sep");
+    if (sep) sep.hidden = !hasAirline || !routeText;
+    wrapper.hidden = !hasAirline && !routeText;
+  }
+
   function loadPopupFlight(routeEl, popup) {
     var cs = routeEl.getAttribute("data-callsign");
     if (!cs) return;
     if (flightCache[cs] === null) return;
-    if (flightCache[cs]) { applyFlightRoute(routeEl, flightCache[cs], popup); return; }
+    if (flightCache[cs]) {
+      var cachedRoute = routeCache[cs] || buildFlightRouteCacheEntry(flightCache[cs]);
+      routeCache[cs] = cachedRoute;
+      applyFlightRoute(routeEl, cachedRoute, popup);
+      return;
+    }
     fetch(flightUrl(cs))
       .then(function(r) { return r.json(); })
       .then(function(data) {
         if (!data || !data.origin || !data.destination) { flightCache[cs] = null; return; }
         flightCache[cs] = data;
-        applyFlightRoute(routeEl, data, popup);
-        routeCache[cs] = {
-          display: (data.origin.name || data.origin.iata) + " \u2192 " + (data.destination.name || data.destination.iata),
-          iata: [data.origin.iata, data.destination.iata].filter(Boolean).join(" \u2192 ")
-        };
+        routeCache[cs] = buildFlightRouteCacheEntry(data);
+        applyFlightRoute(routeEl, routeCache[cs], popup);
       })
       .catch(function() { flightCache[cs] = null; });
   }
 
-  function applyFlightRoute(routeEl, data, popup) {
-    var display = (data.origin.name || data.origin.iata) + " \u2192 " + (data.destination.name || data.destination.iata);
-    routeEl.textContent = display;
-    if (!routeEl.nextSibling || routeEl.nextSibling.nodeName !== "BR") {
-      routeEl.insertAdjacentHTML("afterend", "<br>");
-    }
+  function applyFlightRoute(routeEl, routeEntry, popup) {
+    syncPopupRouteText(routeEl, popupRouteDisplay(routeEntry));
     popup.update();
   }
 
@@ -1770,9 +1807,23 @@
     }
   }
 
-  function scheduleMarkerAnimation() {
-    if (markerAnimationFrame) return;
-    markerAnimationFrame = requestAnimationFrame(animateMarkers);
+  function scheduleMarkerAnimation(delayMs) {
+    delayMs = delayMs == null ? 0 : delayMs;
+    if (delayMs <= 0) {
+      if (markerAnimationTimer) {
+        clearTimeout(markerAnimationTimer);
+        markerAnimationTimer = 0;
+      }
+      if (markerAnimationFrame) return;
+      markerAnimationFrame = requestAnimationFrame(animateMarkers);
+      return;
+    }
+    if (markerAnimationFrame || markerAnimationTimer) return;
+    markerAnimationTimer = setTimeout(function() {
+      markerAnimationTimer = 0;
+      if (markerAnimationFrame) return;
+      markerAnimationFrame = requestAnimationFrame(animateMarkers);
+    }, delayMs);
   }
 
   function setSelectedAircraft(id) {
@@ -1795,10 +1846,10 @@
   var _markerDrainTimer = 0;
 
   function markerAnimationIntervalMs(markerCount) {
-    if (markerCount > 260) return 48;
-    if (markerCount > 160) return 32;
-    if (markerCount > 80) return 20;
-    return 0;
+    if (!markerCount) return 250;
+    if (markerCount > 320) return 84;
+    if (markerCount > 220) return 56;
+    return MARKER_TARGET_INTERVAL_MS;
   }
 
   function renderMarkers(now, displayPoses) {
@@ -1910,8 +1961,9 @@
     var now = Date.now();
     var markerCount = Object.keys(markerMap).length;
     var minInterval = markerAnimationIntervalMs(markerCount);
-    if (minInterval > 0 && now - _lastAnimateTs < minInterval) {
-      scheduleMarkerAnimation();
+    var elapsedMs = now - _lastAnimateTs;
+    if (_lastAnimateTs && minInterval > 0 && elapsedMs < minInterval) {
+      scheduleMarkerAnimation(Math.ceil(minInterval - elapsedMs));
       return;
     }
     _lastAnimateTs = now;
@@ -1930,7 +1982,7 @@
       syncMarkerPose(marker, pose);
     }
     renderTrails(now, displayPoses);
-    scheduleMarkerAnimation();
+    scheduleMarkerAnimation(minInterval);
   }
 
   function renderMap(now, displayPoses) {

@@ -1,26 +1,36 @@
 # Contrails
 
+<p align="center">
+  <img src="contrails-logo.png" alt="Contrails logo" width="120">
+</p>
+
 Live aircraft tracker on a dark interactive map. Browse what is flying in the current map view in real time using ADS-B data.
+
+Contrails is built for the "what plane is that?" moment: open the map, see what is overhead in the current view, jump to a flight quickly, and share a direct link back to a specific aircraft.
 
 Open it at **[gauravdraj.github.io/contrails](https://gauravdraj.github.io/contrails/)**. The site uses your location when available, falls back to an approximate network area when precise location is unavailable, and also supports entering coordinates manually.
 
-## Features
+## Highlights
 
+### Tracking
 - Viewport-based aircraft browsing with ~3 s refresh
-- Altitude-colored plane icons with type-accurate silhouettes (light, turboprop, bizjet, narrowbody, widebody, quad)
 - Smooth marker interpolation between updates
 - Seeded and live altitude trails with fade
+- Altitude-colored plane icons with type-accurate silhouettes (light, turboprop, bizjet, narrowbody, widebody, quad)
 - Route lookups when the current view is zoomed in enough
-- Airline identification from callsign prefixes
-- Private aircraft detection via registration patterns
-- Squawk alerts for 7500 / 7600 / 7700
 - Airport markers with runway overlays whenever they are in view
 - FIDS-style arrival/departure boards via FlightRadar24
+- Airline identification from callsign prefixes, private-aircraft heuristics, and squawk alerts for 7500 / 7600 / 7700
+
+### Search and Sharing
 - Exact search by flight, airline code alias, or ICAO hex
-- Filter toggles: private, ground, trails, labels
 - Shareable plane links that reopen and refocus the live map
-- Approximate IP-based fallback area when browser geolocation is unavailable
+- Filter toggles: private, ground, trails, labels
+
+### Mobile UX
 - Mobile-first dark UI that also works well as a home screen shortcut
+- Approximate IP-based fallback area when browser geolocation is unavailable
+- Manual coordinate entry when you want to browse somewhere else
 
 ## iPhone Home Screen
 
@@ -35,7 +45,7 @@ The normal Safari tab keeps browser chrome visible, so the Home Screen launch is
 
 ## Architecture
 
-The app stays GitHub Pages-friendly:
+The app stays GitHub Pages-friendly. The static frontend lives at the repo root, while a small Cloudflare Worker handles API proxying, caching, and third-party lookups that should not happen directly in the browser:
 
 - `index.html` handles the UI shell, styles, and HTML structure.
 - `app.js` contains all browser-side application logic (map setup, data fetching, rendering).
@@ -119,7 +129,7 @@ npm install
 npx wrangler deploy
 ```
 
-Then set the `WORKER_URL` constant in `index.html` to your worker's URL.
+Then set the `WORKER_URL` constant in `app.js` to your worker's URL.
 
 ## Files
 
