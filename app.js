@@ -178,8 +178,8 @@
   const PLAYBACK_EXTRAPOLATION_MS = 1200;
   const MARKER_TARGET_INTERVAL_MS = Math.round(1000 / 24);
   const STALE_HISTORY_MS = 6 * 60 * 1000;
-  const SEEDED_TRAIL_WINDOW_MS = 12000;
-  const SEEDED_TRAIL_POINTS = 4;
+  const SEEDED_TRAIL_WINDOW_MS = 30000;
+  const SEEDED_TRAIL_POINTS = 8;
   const SEEDED_MIN_DISPLAY_SPEED_KTS = 35;
   const NEW_MARKER_BATCH = 25;
   const MARKER_DRAIN_DELAY_MS = 80;
@@ -221,6 +221,7 @@
   var refreshSearchUi = null;
   let markerAnimationFrame = 0;
   let markerAnimationTimer = 0;
+  let _isZooming = false;
   var lastFetchTs = 0;
   var fetchInterval = REFRESH_MS;
   var trailBreakPending = {};
@@ -360,6 +361,9 @@
       if (!selectedAircraftId) return;
       setSelectedAircraft(null);
     });
+
+    map.on("zoomstart", function() { _isZooming = true; });
+    map.on("zoomend", function() { _isZooming = false; });
 
     trailLayer = L.layerGroup().addTo(map);
     runwayLayer = L.layerGroup().addTo(map);
@@ -661,6 +665,45 @@
     syncUrlState();
   }
 
+  function fallbackToUserLocation() {
+    clearPendingPlaneFocus();
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        function(pos) {
+          var lat = pos.coords.latitude;
+          var lng = pos.coords.longitude;
+          updateUserPosition(lat, lng);
+          map.setView([lat, lng], map.getZoom());
+          referenceMode = "device";
+          referenceMeta = null;
+          updateReferenceNote();
+          shouldWatchUserPosition = true;
+          startGeolocation();
+        },
+        function() {
+          fetchApproximateArea().then(function(approx) {
+            if (!approx) return;
+            updateUserPosition(approx.lat, approx.lng);
+            map.setView([approx.lat, approx.lng], map.getZoom());
+            referenceMode = approx.approximate ? "approximate" : "default";
+            referenceMeta = approx;
+            updateReferenceNote();
+          });
+        },
+        { timeout: 5000 }
+      );
+    } else {
+      fetchApproximateArea().then(function(approx) {
+        if (!approx) return;
+        updateUserPosition(approx.lat, approx.lng);
+        map.setView([approx.lat, approx.lng], map.getZoom());
+        referenceMode = approx.approximate ? "approximate" : "default";
+        referenceMeta = approx;
+        updateReferenceNote();
+      });
+    }
+  }
+
   function buildPlaneShareUrl(id) {
     var normalized = normalizeAircraftHex(id);
     var plane = normalized ? findAircraftById(normalized) : null;
@@ -760,14 +803,18 @@
   }
 
   async function maybeLookupPendingPlaneFocus() {
-    if (!pendingPlaneFocus || pendingPlaneFocus.reason !== "shared-link" ||
+    if (!pendingPlaneFocus ||
+        (pendingPlaneFocus.reason !== "shared-link" && pendingPlaneFocus.reason !== "search") ||
         pendingPlaneFocus.loading || pendingPlaneFocus.failed ||
         pendingPlaneFocus.lookupAttempts >= SHARED_PLANE_LOOKUP_LIMIT) {
       return;
     }
     pendingPlaneFocus.loading = true;
     pendingPlaneFocus.lookupAttempts += 1;
-    setControlsFeedback("Finding shared plane…", "info", { persistent: true });
+    setControlsFeedback(
+      pendingPlaneFocus.reason === "search" ? "Finding plane\u2026" : "Finding shared plane\u2026",
+      "info", { persistent: true }
+    );
     try {
       var found = await lookupAircraftQuery({
         type: "hex",
@@ -776,16 +823,31 @@
       });
       if (!pendingPlaneFocus) return;
       if (found) {
-        setControlsFeedback("Centering on shared plane…", "info", { timeoutMs: 4000 });
+        setControlsFeedback(
+          pendingPlaneFocus.reason === "search" ? "Centering on plane\u2026" : "Centering on shared plane\u2026",
+          "info", { timeoutMs: 4000 }
+        );
         centerMapOnPlane(found.lat, found.lng, SEARCH_MIN_ZOOM);
       } else if (pendingPlaneFocus.lookupAttempts >= SHARED_PLANE_LOOKUP_LIMIT) {
         pendingPlaneFocus.failed = true;
         setControlsFeedback("Plane not currently available.", "warning", { timeoutMs: 6000 });
+        if (pendingPlaneFocus && pendingPlaneFocus.reason === "shared-link") {
+          fallbackToUserLocation();
+        }
       }
     } catch (_) {
       if (pendingPlaneFocus && pendingPlaneFocus.lookupAttempts >= SHARED_PLANE_LOOKUP_LIMIT) {
+        var reason = pendingPlaneFocus.reason;
         pendingPlaneFocus.failed = true;
-        setControlsFeedback("Couldn't look up the shared plane right now.", "warning", { timeoutMs: 6000 });
+        setControlsFeedback(
+          reason === "search"
+            ? "Couldn\u2019t find that plane right now."
+            : "Couldn\u2019t look up the shared plane right now.",
+          "warning", { timeoutMs: 6000 }
+        );
+        if (reason === "shared-link") {
+          fallbackToUserLocation();
+        }
       }
     } finally {
       if (pendingPlaneFocus) pendingPlaneFocus.loading = false;
@@ -1414,7 +1476,7 @@
     for (var i = 0; i < history.length; i++) {
       if (!history[i][6]) realCount++;
     }
-    if (realCount < 3) return;
+    if (realCount < 8) return;
     while (history.length && history[0][6]) history.shift();
   }
 
@@ -1570,6 +1632,7 @@
   }
 
   function renderTrails(now, displayPoses) {
+    if (_isZooming) return;
     now = now || Date.now();
     var zoom = map ? map.getZoom() : 11;
     var markerCount = Object.keys(markerMap).length;
