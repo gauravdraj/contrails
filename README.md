@@ -38,7 +38,7 @@ The app stays GitHub Pages-friendly:
 
 - `index.html` handles the UI shell, Leaflet map, and browser-side rendering.
 - `contrails-core.js` contains shared pure helpers for viewport policy, geometry, and parsing.
-- A [Cloudflare Worker](worker/) handles API proxying.
+- A [Cloudflare Worker](worker/) handles API proxying, with the nearby, FR24, ADSBDB, and HTTP response helpers split into focused modules under `worker/src/`.
 
 | Worker endpoint | Proxies to | Purpose |
 |---|---|---|
@@ -65,6 +65,7 @@ Run the lightweight checks with Node:
 
 ```bash
 node --test contrails-core.test.js
+node --test worker/src/*.test.js
 node smoke-boot.mjs
 ```
 
@@ -125,7 +126,11 @@ Then set the `WORKER_URL` constant in `index.html` to your worker's URL.
 | `server.py` | Local dev server with ADS-B, route, and schedule proxying |
 | `airports.json` | Airport positions (IATA, lat, lng, name) |
 | `runways.json` | Runway endpoints for overlay lines |
-| `worker/` | Cloudflare Worker — API proxy + FR24 schedules |
+| `worker/src/index.js` | Cloudflare Worker entrypoint and route wiring |
+| `worker/src/nearby.js` | Siri nearby-aircraft endpoint and formatting |
+| `worker/src/adsbdb.js` | Shared ADSBDB route lookup helpers |
+| `worker/src/fr24.js` | FlightRadar24 schedule shaping helpers |
+| `worker/src/http.js` | Shared Worker response/CORS helpers |
 
 ## Credits
 

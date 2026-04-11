@@ -44,10 +44,7 @@
 html, body {
   height: 100dvh;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-  background:
-    radial-gradient(circle at top, rgba(42, 105, 148, 0.12), transparent 36%),
-    linear-gradient(180deg, #000 0%, #000 100%);
-  background-color: #000;
+  background: #000;
   color: var(--text-main);
   overflow-x: hidden;
   font-variant-numeric: tabular-nums;
@@ -70,7 +67,11 @@ body.noscroll { touch-action: none; }
 .leaflet-overlay-pane {
   background: #000;
 }
-.leaflet-tile { background: #000; }
+.leaflet-tile {
+  background: #000;
+  -webkit-backface-visibility: hidden;
+  backface-visibility: hidden;
+}
 #panel {
   overflow-y: auto;
   padding: 12px 12px calc(18px + env(safe-area-inset-bottom, 0px));
@@ -1135,6 +1136,14 @@ body.noscroll { touch-action: none; }
   const REFRESH_MS = 3000;
   const DEFAULT_MAP_ZOOM = 11;
   const MIN_MAP_ZOOM = 5;
+  const TILE_LAYER_URL = "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png";
+  const TILE_LAYER_OPTIONS = {
+    maxZoom: 18,
+    keepBuffer: 6,
+    updateWhenIdle: false,
+    updateInterval: 100,
+    updateWhenZooming: true
+  };
   const DEFAULT_BROWSE_LAT = 51.5074;
   const DEFAULT_BROWSE_LNG = -0.1278;
   const VIEW_FILTER_PAD = 0.08;
@@ -1158,6 +1167,8 @@ body.noscroll { touch-action: none; }
   const SEEDED_TRAIL_WINDOW_MS = 12000;
   const SEEDED_TRAIL_POINTS = 4;
   const SEEDED_MIN_DISPLAY_SPEED_KTS = 35;
+  const NEW_MARKER_BATCH = 25;
+  const MARKER_DRAIN_DELAY_MS = 80;
   const posHistory = {};
   const routeCache = {};
   const photoCache = {};
@@ -1321,13 +1332,13 @@ body.noscroll { touch-action: none; }
       zoomControl: false,
       attributionControl: false,
       preferCanvas: true,
-      zoomSnap: desktopWheelTuning ? 0.25 : 0,
+      zoomSnap: 0,
       zoomDelta: desktopWheelTuning ? 0.5 : 0.25,
-      wheelPxPerZoomLevel: desktopWheelTuning ? 110 : 180,
+      wheelPxPerZoomLevel: desktopWheelTuning ? 90 : 180,
       wheelDebounceTime: desktopWheelTuning ? 28 : 40,
       zoomAnimation: true,
-      zoomAnimationThreshold: desktopWheelTuning ? 6 : 4,
-      fadeAnimation: true,
+      zoomAnimationThreshold: 8,
+      fadeAnimation: false,
       markerZoomAnimation: true,
       doubleClickZoom: !isIOSSafari,
       doubleTapDragZoom: isIOSSafari ? false : "center",
@@ -1336,13 +1347,7 @@ body.noscroll { touch-action: none; }
     map.createPane("airportTooltipPane");
     // Keep airport labels above markers but below plane labels and popups.
     map.getPane("airportTooltipPane").style.zIndex = 640;
-    L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
-      maxZoom: 18,
-      keepBuffer: 6,
-      updateWhenIdle: false,
-      updateInterval: 100,
-      updateWhenZooming: true
-    }).addTo(map);
+    L.tileLayer(TILE_LAYER_URL, TILE_LAYER_OPTIONS).addTo(map);
 
     userMarker = L.circleMarker([lat, lng], {
       radius: 7, fillColor: "#5bbcf5", fillOpacity: 1,
@@ -2310,7 +2315,10 @@ body.noscroll { touch-action: none; }
 
   function renderTrails(now, displayPoses) {
     now = now || Date.now();
-    if (!filters.trails) {
+    var zoom = map ? map.getZoom() : 11;
+    var markerCount = Object.keys(markerMap).length;
+    var trailsOff = !filters.trails || (zoom < 7 && markerCount > 120);
+    if (trailsOff) {
       if (trailLayer.getLayers().length) trailLayer.clearLayers();
       for (var id in trailLines) delete trailLines[id];
       return;
@@ -2502,6 +2510,14 @@ body.noscroll { touch-action: none; }
     return false;
   }
 
+  var _markerDrainTimer = 0;
+
+  function markerAnimationIntervalMs(markerCount) {
+    if (markerCount > 200) return 80;
+    if (markerCount > 80) return 50;
+    return 33;
+  }
+
   function renderMarkers(now, displayPoses) {
     now = now || Date.now();
     var displayTime = currentDisplayTime(now);
@@ -2511,14 +2527,22 @@ body.noscroll { touch-action: none; }
       if (!isFiltered(aircraft[vc])) visibleCount++;
     }
     var policy = currentViewPolicy(visibleCount);
+    var newThisFrame = 0;
+    var deferredNew = false;
     for (var i = 0; i < aircraft.length; i++) {
       var a = aircraft[i];
       if (isFiltered(a)) continue;
       seen[a.icao24] = true;
+
+      var existing = markerMap[a.icao24];
+      if (!existing && newThisFrame >= NEW_MARKER_BATCH) {
+        deferredNew = true;
+        continue;
+      }
+
       var isSelected = selectedAircraftId === a.icao24;
       var icon = planeIcon(a.track, a.aircraftType, a.private, a.category, a.altFt, a.ground);
       var label = a.callsign || a.icao24;
-      var existing = markerMap[a.icao24];
 
       var prev = extraState[a.icao24];
       var samples = prev && prev.samples ? prev.samples.slice() : [];
@@ -2568,6 +2592,7 @@ body.noscroll { touch-action: none; }
           existing.unbindTooltip();
         }
       } else {
+        newThisFrame++;
         var marker = L.marker([displayPose.lat, displayPose.lng], { icon: icon }).bindPopup(buildPopup(a, policy));
         marker.on("click", (function(id) {
           return function() { setSelectedAircraft(id); };
@@ -2588,11 +2613,25 @@ body.noscroll { touch-action: none; }
       }
     }
     if (selectedAircraftId && !seen[selectedAircraftId]) selectedAircraftId = null;
+    if (deferredNew && !_markerDrainTimer) {
+      _markerDrainTimer = setTimeout(function() {
+        _markerDrainTimer = 0;
+        renderMap();
+      }, MARKER_DRAIN_DELAY_MS);
+    }
   }
 
+  var _lastAnimateTs = 0;
   function animateMarkers() {
     markerAnimationFrame = 0;
     var now = Date.now();
+    var markerCount = Object.keys(markerMap).length;
+    var minInterval = markerAnimationIntervalMs(markerCount);
+    if (minInterval > 0 && now - _lastAnimateTs < minInterval) {
+      scheduleMarkerAnimation();
+      return;
+    }
+    _lastAnimateTs = now;
     var displayTime = currentDisplayTime(now);
     var displayPoses = {};
     for (var id in extraState) {

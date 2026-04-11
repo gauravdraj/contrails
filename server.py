@@ -12,6 +12,18 @@ ADSB_API = "https://api.adsb.lol/v2"
 ADSB_ROUTE_API = "https://api.adsb.lol/api/0"
 FR24_API = "https://api.flightradar24.com/common/v1"
 FR24_CACHE_TTL = 120
+CORS_HEADERS = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type",
+}
+PROXY_HEADERS = {
+    "User-Agent": "contrails/1.0",
+    "Content-Type": "application/json",
+}
+FR24_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (compatible; contrails/1.0)",
+}
 SCHEDULE_CACHE = {}
 LOCAL_GEO = {
     "lat": 51.5074,
@@ -45,37 +57,32 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def do_OPTIONS(self):
         self.send_response(200)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        for key, value in CORS_HEADERS.items():
+            self.send_header(key, value)
         self.end_headers()
 
     def _proxy(self, url, method="GET", body=None):
         try:
             req = urllib.request.Request(
                 url, data=body, method=method,
-                headers={"User-Agent": "contrails/1.0", "Content-Type": "application/json"},
+                headers=PROXY_HEADERS,
             )
             with urllib.request.urlopen(req, timeout=10) as resp:
                 data = resp.read()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.end_headers()
-            self.wfile.write(data)
+            self._send_bytes(data)
         except Exception as e:
-            self.send_response(502)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.end_headers()
-            self.wfile.write(json.dumps({"error": str(e)}).encode())
+            self._send_json({"error": str(e)}, status=502)
+
+    def _send_bytes(self, payload, status=200, content_type="application/json"):
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        for key, value in CORS_HEADERS.items():
+            self.send_header(key, value)
+        self.end_headers()
+        self.wfile.write(payload)
 
     def _send_json(self, payload, status=200):
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.end_headers()
-        self.wfile.write(json.dumps(payload).encode())
+        self._send_bytes(json.dumps(payload).encode(), status=status)
 
     def _handle_schedule(self):
         iata = self.path.split("/api/fr24/schedule/", 1)[-1].split("?", 1)[0].upper()
@@ -98,20 +105,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             }, doseq=True)
             req = urllib.request.Request(
                 f"{FR24_API}/airport.json?{query}",
-                headers={"User-Agent": "Mozilla/5.0 (compatible; contrails/1.0)"},
+                headers=FR24_HEADERS,
             )
             with urllib.request.urlopen(req, timeout=12) as resp:
                 raw = json.loads(resp.read().decode())
 
-            plugin = raw.get("result", {}).get("response", {}).get("airport", {}).get("pluginData", {})
-            sched = plugin.get("schedule", {})
-            detail = plugin.get("details", {})
-            payload = {
-                "iata": iata,
-                "name": detail.get("name") or iata,
-                "arrivals": extract_flights(sched.get("arrivals", {}).get("data", []), "arrival"),
-                "departures": extract_flights(sched.get("departures", {}).get("data", []), "departure"),
-            }
+            payload = build_schedule_payload(raw, iata)
             SCHEDULE_CACHE[iata] = {
                 "expires_at": now + FR24_CACHE_TTL,
                 "payload": payload,
@@ -167,6 +166,18 @@ def extract_flights(data, direction):
 
         rows.append(row)
     return rows
+
+
+def build_schedule_payload(raw, iata):
+    plugin = raw.get("result", {}).get("response", {}).get("airport", {}).get("pluginData", {})
+    schedule = plugin.get("schedule", {})
+    detail = plugin.get("details", {})
+    return {
+        "iata": iata,
+        "name": detail.get("name") or iata,
+        "arrivals": extract_flights(schedule.get("arrivals", {}).get("data", []), "arrival"),
+        "departures": extract_flights(schedule.get("departures", {}).get("data", []), "departure"),
+    }
 
 
 if __name__ == "__main__":
