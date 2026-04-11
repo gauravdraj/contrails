@@ -2,7 +2,7 @@
 
 Live aircraft tracker on a dark interactive map. Browse what is flying in the current map view in real time using ADS-B data.
 
-Open it at **[gauravdraj.github.io/contrails](https://gauravdraj.github.io/contrails/)**. The site uses your location when available, falls back to an approximate network area when precise location is unavailable, and also supports entering coordinates manually or picking a reference point on the map.
+Open it at **[gauravdraj.github.io/contrails](https://gauravdraj.github.io/contrails/)**. The site uses your location when available, falls back to an approximate network area when precise location is unavailable, and also supports entering coordinates manually.
 
 ## Features
 
@@ -16,8 +16,9 @@ Open it at **[gauravdraj.github.io/contrails](https://gauravdraj.github.io/contr
 - Squawk alerts for 7500 / 7600 / 7700
 - Airport markers with runway overlays whenever they are in view
 - FIDS-style arrival/departure boards via FlightRadar24
+- Exact search by flight, airline code alias, or ICAO hex
 - Filter toggles: private, ground, trails, labels
-- Dock-based planes list sorted by distance to the current reference point
+- Shareable plane links that reopen and refocus the live map
 - Approximate IP-based fallback area when browser geolocation is unavailable
 - Mobile-first dark UI that also works well as a home screen shortcut
 
@@ -99,11 +100,11 @@ Example output:
 
 1. British Airways 456 (A320) [G-EUPH]
    Landing at Heathrow — from New York JFK
-   3.2 km ↑73° SE — 4,200 ft, descending
+   2 mi ↑73° SE — 4,200 ft, descending
 
 2. Ryanair 1234 (B738)
    Dublin → Barcelona
-   12.4 km ↑29° NW — 35,000 ft, level — likely contrail
+   7.7 mi ↑29° NW — 35,000 ft, level — likely contrail
 
 https://gauravdraj.github.io/contrails/?lat=51.5074&lng=-0.1278&zoom=11
 ```

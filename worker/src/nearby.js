@@ -68,6 +68,10 @@ function shortAlt(ft) {
   return `${ft} ft`;
 }
 
+function shortMiles(km) {
+  return Math.round(km * 0.621371 * 10) / 10;
+}
+
 function nearbyZoom(visible) {
   if (!visible.length) return 11;
   const farthestKm = visible[visible.length - 1].slantKm;
@@ -259,7 +263,7 @@ function formatNearbyEntry(num, plane, airports) {
   parts.push(identifier);
 
   const routeLine = formatRouteContext(plane, airports);
-  const distance = `${Math.round(plane.slantKm)} km \u2191${plane.elevDeg}\u00B0 ${plane.cardinal}`;
+  const distance = `${shortMiles(plane.slantKm)} mi \u2191${plane.elevDeg}\u00B0 ${plane.cardinal}`;
   let info = distance + ", " + shortAlt(plane.altFt);
   if (!routeLine) info += ", " + plane.vertical;
   if (plane.altFt >= CONTRAIL_MIN_FT) info += ", contrail likely";

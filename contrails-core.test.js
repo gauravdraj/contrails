@@ -23,6 +23,50 @@ test("parseCoordinate accepts valid values and rejects invalid ones", () => {
   assert.equal(core.parseCoordinate("181", -180, 180), null);
 });
 
+test("normalizeAircraftHex accepts valid transponder hex and rejects invalid input", () => {
+  assert.equal(core.normalizeAircraftHex("4CA87C"), "4ca87c");
+  assert.equal(core.normalizeAircraftHex(" 4ca87c "), "4ca87c");
+  assert.equal(core.normalizeAircraftHex("SWA123"), null);
+  assert.equal(core.normalizeAircraftHex("12345"), null);
+});
+
+test("formatDistanceMiles converts kilometers into readable miles", () => {
+  assert.equal(core.formatDistanceMiles(1.60934), "1");
+  assert.equal(core.formatDistanceMiles(8), "5");
+  assert.equal(core.formatDistanceMiles(5), "3.1");
+});
+
+test("formatSpeedMph rounds knots to miles per hour", () => {
+  assert.equal(core.formatSpeedMph(100), "115");
+  assert.equal(core.formatSpeedMph(250), "288");
+  assert.equal(core.formatSpeedMph(null), "");
+});
+
+test("normalizeFlightQuery supports ICAO callsigns, hex ids, and common IATA airline aliases", () => {
+  assert.deepEqual(core.normalizeFlightQuery("swa1234"), {
+    type: "callsign",
+    display: "SWA1234",
+    value: "SWA1234",
+    variants: ["SWA1234"]
+  });
+
+  assert.deepEqual(core.normalizeFlightQuery("WN 1234"), {
+    type: "callsign",
+    display: "WN1234",
+    value: "SWA1234",
+    variants: ["SWA1234", "WN1234"]
+  });
+
+  assert.deepEqual(core.normalizeFlightQuery("4ca87c"), {
+    type: "hex",
+    display: "4CA87C",
+    value: "4ca87c",
+    variants: ["4ca87c"]
+  });
+
+  assert.equal(core.normalizeFlightQuery("12"), null);
+});
+
 test("buildViewportFetchSpec clamps fetch distance into configured bounds", () => {
   const spec = core.buildViewportFetchSpec({
     lat: 0,

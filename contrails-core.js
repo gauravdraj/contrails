@@ -9,6 +9,11 @@
     return Math.round(value * 10) / 10;
   }
 
+  function roundTo(value, decimals) {
+    var factor = Math.pow(10, decimals || 0);
+    return Math.round(value * factor) / factor;
+  }
+
   function clamp(value, min, max) {
     return Math.max(min, Math.min(max, value));
   }
@@ -254,11 +259,90 @@
     XAX:"AirAsia X"
   };
 
+  var AIRLINE_IATA_ALIASES = {
+    AA:"AAL", AC:"ACA", AF:"AFR", AI:"AIC", AS:"ASA", AV:"AVA",
+    AY:"FIN", AZ:"AZA", B6:"JBU", BA:"BAW", BR:"EVA", CI:"CAL",
+    CM:"CMP", CX:"CPA", DL:"DAL", EI:"EIN", EK:"UAE", ET:"ETH",
+    EY:"ETD", FI:"ICE", FR:"RYR", GA:"GIA", HA:"HAL", IB:"IBE",
+    JL:"JAL", KE:"KAL", KL:"KLM", LA:"LAN", LH:"DLH", LO:"LOT",
+    LX:"SWR", MH:"MAS", MS:"MSR", NH:"ANA", NZ:"ANZ", OS:"AUA",
+    OZ:"AAR", PR:"PAL", QF:"QFA", QR:"QTR", SK:"SAS", SQ:"SIA",
+    SV:"SVA", TG:"THA", TK:"THY", TP:"TAP", UA:"UAL", VS:"VIR",
+    WN:"SWA", WS:"WJA"
+  };
+
   var SQUAWK_ALERTS = { "7700": "EMERGENCY", "7600": "RADIO FAILURE", "7500": "HIJACK" };
 
   function airlineName(callsign) {
     if (!callsign || callsign.length < 3) return null;
     return AIRLINES[callsign.substring(0, 3).toUpperCase()] || null;
+  }
+
+  function normalizeAircraftHex(value) {
+    if (value == null) return null;
+    var normalized = String(value).trim().replace(/^~/, "").toLowerCase();
+    return /^[0-9a-f]{6}$/.test(normalized) ? normalized : null;
+  }
+
+  function kmToMiles(km) {
+    return km == null ? null : km * 0.621371;
+  }
+
+  function knotsToMph(knots) {
+    return knots == null ? null : knots * 1.150779;
+  }
+
+  function formatDistanceMiles(km, options) {
+    if (km == null) return options && options.fallback != null ? options.fallback : "";
+    var miles = kmToMiles(km);
+    var decimals = options && options.decimals != null ? options.decimals : (miles < 10 ? 1 : 0);
+    var rounded = roundTo(miles, decimals);
+    return rounded.toFixed(decimals).replace(/\.0+$/, "");
+  }
+
+  function formatSpeedMph(knots) {
+    if (knots == null) return "";
+    return String(Math.round(knotsToMph(knots)));
+  }
+
+  function normalizeFlightQuery(value) {
+    if (value == null) return null;
+    var compact = String(value).trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+    if (!compact) return null;
+
+    var hex = normalizeAircraftHex(compact);
+    if (hex) {
+      return {
+        type: "hex",
+        display: compact,
+        value: hex,
+        variants: [hex]
+      };
+    }
+
+    if (/^[A-Z]{3}[A-Z0-9]{1,6}$/.test(compact)) {
+      return {
+        type: "callsign",
+        display: compact,
+        value: compact,
+        variants: [compact]
+      };
+    }
+
+    if (/^[A-Z0-9]{2}[A-Z0-9]{1,6}$/.test(compact)) {
+      var alias = AIRLINE_IATA_ALIASES[compact.substring(0, 2)];
+      if (alias) {
+        var canonical = alias + compact.substring(2);
+        return {
+          type: "callsign",
+          display: compact,
+          value: canonical,
+          variants: canonical === compact ? [canonical] : [canonical, compact]
+        };
+      }
+    }
+
+    return null;
   }
 
   var _PRIV_REG = /^(N\d|C-[FGFI]|G-|D-|F-|I-|EC-|HB-|OE-|PH-|SE-|OH-|OY-|LN-|EI-|CS-|SX-|TC-|VH-|ZK-|PP-|PT-|PR-|JA|B-|HL|VT-|9V-|A[267]-|SU-|5[ABHNXY]-|ZS-|VP-|V[5HPQR]-|RP-|HS-|9M-|PK-|XA-|XB-|LV-|CC-|TI-|HP-|HK-|YV-)/i;
@@ -285,6 +369,7 @@
 
   return {
     AIRLINES: AIRLINES,
+    AIRLINE_IATA_ALIASES: AIRLINE_IATA_ALIASES,
     SQUAWK_ALERTS: SQUAWK_ALERTS,
     airlineName: airlineName,
     bearingDegrees: bearingDegrees,
@@ -294,10 +379,16 @@
     cardinalDir: cardinalDir,
     elevationDeg: elevationDeg,
     escapeHtml: escapeHtml,
+    formatDistanceMiles: formatDistanceMiles,
+    formatSpeedMph: formatSpeedMph,
     haversineKm: haversineKm,
     interpolatePlaybackPose: interpolatePlaybackPose,
     interpolateTimedPose: interpolateTimedPose,
     isLikelyPrivateCallsign: isLikelyPrivateCallsign,
+    kmToMiles: kmToMiles,
+    knotsToMph: knotsToMph,
+    normalizeAircraftHex: normalizeAircraftHex,
+    normalizeFlightQuery: normalizeFlightQuery,
     parseCoordinate: parseCoordinate,
     projectLatLng: projectLatLng,
     roundTenths: roundTenths,
