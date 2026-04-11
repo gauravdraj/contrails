@@ -153,7 +153,7 @@ async function handleRouteset(request, ctx) {
 
 async function handleFlight(url, env, ctx) {
   const callsign = url.pathname.split("/").pop().toUpperCase();
-  if (!callsign || callsign.length < 3) return json(400, { error: "Invalid callsign" });
+  if (!callsign || !/^[A-Z0-9]{3,10}$/.test(callsign)) return json(400, { error: "Invalid callsign" });
 
   const apiKey = env.AERODATABOX_KEY;
   if (!apiKey) return json(501, { error: "AeroDataBox not configured" });
@@ -218,6 +218,8 @@ async function handleFlight(url, env, ctx) {
 
 async function handleSchedule(url, ctx) {
   const iata = url.pathname.split("/").pop().toUpperCase();
+  if (!/^[A-Z]{3,4}$/.test(iata)) return json(400, { error: "Invalid airport code" });
+
   const cache = caches.default;
   const cacheKey = new Request(url.toString());
   const cached = await cache.match(cacheKey);

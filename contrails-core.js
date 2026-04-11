@@ -217,6 +217,60 @@
     };
   }
 
+  function escapeHtml(str) {
+    if (!str) return "";
+    return String(str)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  var AIRLINES = {
+    AAL:"American",AAR:"Asiana",ACA:"Air Canada",AFR:"Air France",AIC:"Air India",
+    AIJ:"Interjet",AJX:"Air Japan",AMX:"AeroMexico",ANA:"All Nippon",ANZ:"Air New Zealand",
+    APJ:"Peach",ASA:"Alaska",AUA:"Austrian",AVA:"Avianca",AXM:"AirAsia",
+    AZA:"Alitalia/ITA",BAW:"British Airways",BEL:"Brussels",BER:"Berlinair",
+    BLX:"TUIfly Benelux",BWA:"Caribbean",CAL:"China Airlines",CCA:"Air China",
+    CEB:"Cebu Pacific",CES:"China Eastern",CHH:"Hainan",CKS:"Kalitta",CLX:"Cargolux",
+    CMP:"Copa",CPA:"Cathay Pacific",CPZ:"Compass",CSN:"China Southern",CTN:"Croatia",
+    DAL:"Delta",DLH:"Lufthansa",EIN:"Aer Lingus",EJU:"easyJet Europe",
+    ELY:"El Al",ETD:"Etihad",ETH:"Ethiopian",EVA:"EVA Air",EWG:"Eurowings",
+    EZY:"easyJet",FDX:"FedEx",FIN:"Finnair",FJI:"Fiji Airways",GAL:"GetJet",
+    GEC:"Lufthansa Cargo",GIA:"Garuda",GTI:"Atlas Air",GWI:"Germanwings",
+    HAL:"Hawaiian",HVN:"Vietnam Airlines",IAW:"Iraqi",IBE:"Iberia",ICE:"Icelandair",
+    IGO:"IndiGo",JAL:"Japan Airlines",JBU:"JetBlue",JIA:"PSA Airlines",JST:"Jetstar",
+    KAL:"Korean Air",KLM:"KLM",LAN:"LATAM Chile",LAX:"LATAM",LOT:"LOT Polish",
+    MAU:"Air Mauritius",MAS:"Malaysia",MEA:"Middle East",MSR:"EgyptAir",
+    NAX:"Norwegian",NKS:"Spirit",NPT:"N. Pacific",NWS:"Nordwind",NZM:"Mount Cook",
+    OAL:"Olympic",OMA:"Oman Air",PAC:"Polar Air",PAL:"Philippine",PIA:"Pakistan Intl",
+    QFA:"Qantas",QTR:"Qatar",RAM:"Royal Air Maroc",RJA:"Royal Jordanian",
+    ROT:"TAROM",RPA:"Republic",RYR:"Ryanair",SAS:"SAS",SAA:"South African",
+    SCX:"Sun Country",SEJ:"StarFlyer",SIA:"Singapore",SKW:"SkyWest",SLK:"Silk Way",
+    SVA:"Saudia",SWA:"Southwest",SWR:"Swiss",TAM:"LATAM Brazil",TAP:"TAP Portugal",
+    THA:"Thai",THY:"Turkish",TOM:"TUI UK",TVF:"Transavia France",
+    UAE:"Emirates",UAL:"United",UPS:"UPS",UTA:"UTair",VIR:"Virgin Atlantic",
+    VJC:"VietJet",VOI:"Volaris",VTI:"Vistara",WJA:"WestJet",WZZ:"Wizz Air",
+    XAX:"AirAsia X"
+  };
+
+  var SQUAWK_ALERTS = { "7700": "EMERGENCY", "7600": "RADIO FAILURE", "7500": "HIJACK" };
+
+  function airlineName(callsign) {
+    if (!callsign || callsign.length < 3) return null;
+    return AIRLINES[callsign.substring(0, 3).toUpperCase()] || null;
+  }
+
+  var _PRIV_REG = /^(N\d|C-[FGFI]|G-|D-|F-|I-|EC-|HB-|OE-|PH-|SE-|OH-|OY-|LN-|EI-|CS-|SX-|TC-|VH-|ZK-|PP-|PT-|PR-|JA|B-|HL|VT-|9V-|A[267]-|SU-|5[ABHNXY]-|ZS-|VP-|V[5HPQR]-|RP-|HS-|9M-|PK-|XA-|XB-|LV-|CC-|TI-|HP-|HK-|YV-)/i;
+  var _PRIV_ANON_HEX = /^~[0-9a-f]{4,}$/i;
+  var _PRIV_HEXLIKE = /^(?:~)?[0-9a-f]{6}$/i;
+
+  function isLikelyPrivateCallsign(callsign) {
+    if (!callsign) return false;
+    if (_PRIV_REG.test(callsign) || _PRIV_ANON_HEX.test(callsign)) return true;
+    return !airlineName(callsign) && _PRIV_HEXLIKE.test(callsign);
+  }
+
   function slantKm(groundKm, altFt) {
     if (groundKm == null) return null;
     var altKm = (altFt || 0) * 0.0003048;
@@ -230,15 +284,20 @@
   }
 
   return {
+    AIRLINES: AIRLINES,
+    SQUAWK_ALERTS: SQUAWK_ALERTS,
+    airlineName: airlineName,
     bearingDegrees: bearingDegrees,
     computePlaybackDelayMs: computePlaybackDelayMs,
     buildViewPolicy: buildViewPolicy,
     buildViewportFetchSpec: buildViewportFetchSpec,
     cardinalDir: cardinalDir,
     elevationDeg: elevationDeg,
+    escapeHtml: escapeHtml,
     haversineKm: haversineKm,
     interpolatePlaybackPose: interpolatePlaybackPose,
     interpolateTimedPose: interpolateTimedPose,
+    isLikelyPrivateCallsign: isLikelyPrivateCallsign,
     parseCoordinate: parseCoordinate,
     projectLatLng: projectLatLng,
     roundTenths: roundTenths,

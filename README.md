@@ -36,17 +36,21 @@ The normal Safari tab keeps browser chrome visible, so the Home Screen launch is
 
 The app stays GitHub Pages-friendly:
 
-- `index.html` handles the UI shell, Leaflet map, and browser-side rendering.
-- `contrails-core.js` contains shared pure helpers for viewport policy, geometry, and parsing.
+- `index.html` handles the UI shell, styles, and HTML structure.
+- `app.js` contains all browser-side application logic (map setup, data fetching, rendering).
+- `contrails-core.js` contains shared pure helpers for viewport policy, geometry, airline lookups, and HTML escaping.
 - A [Cloudflare Worker](worker/) handles API proxying, with the nearby, FR24, ADSBDB, and HTTP response helpers split into focused modules under `worker/src/`.
 
 | Worker endpoint | Proxies to | Purpose |
 |---|---|---|
-| `/adsb/*` | api.adsb.lol/v2 | Live aircraft positions |
-| `/route/*` | api.adsb.lol/api/0 | Route lookups |
-| `/geo` | Cloudflare request geodata | Approximate initial map area |
-| `/schedule/<IATA>` | FlightRadar24 API | Airport schedule boards (cached 2 min) |
-| `/nearby?lat=&lng=` | api.adsb.lol/v2 + route API | Siri plane spotter (text/plain) |
+| `GET /adsb/*` | api.adsb.lol/v2 | Live aircraft positions |
+| `GET,POST /route/*` | api.adsb.lol/api/0 | Route lookups |
+| `GET /geo` | Cloudflare request geodata | Approximate initial map area |
+| `GET /schedule/<IATA>` | FlightRadar24 API | Airport schedule boards (cached 2 min) |
+| `GET /nearby?lat=&lng=` | api.adsb.lol/v2 + route API | Siri plane spotter (text, json, or html) |
+| `GET /photo/<hex>` | Planespotters API | Aircraft photo lookup (cached 24 h) |
+| `POST /routeset` | ADSBDB API | Batch route lookup for up to 20 planes |
+| `GET /flight/<callsign>` | AeroDataBox (RapidAPI) | Flight details by callsign (requires `AERODATABOX_KEY` secret) |
 
 ## Local Development
 
@@ -110,6 +114,7 @@ Requires a free [Cloudflare](https://dash.cloudflare.com/sign-up) account and No
 
 ```bash
 cd worker
+npm install
 npx wrangler deploy
 ```
 
@@ -119,8 +124,9 @@ Then set the `WORKER_URL` constant in `index.html` to your worker's URL.
 
 | File | Purpose |
 |------|---------|
-| `index.html` | Main app shell, map, and UI |
-| `contrails-core.js` | Shared pure helpers used by the app and tests |
+| `index.html` | App shell, styles, and HTML structure |
+| `app.js` | Browser application logic (map, rendering, data fetching) |
+| `contrails-core.js` | Shared pure helpers (geometry, policy, airlines, escaping) used by the app and tests |
 | `contrails-core.test.js` | Unit tests for shared helper logic |
 | `smoke-boot.mjs` | Local smoke check for page boot with fixed coordinates |
 | `server.py` | Local dev server with ADS-B, route, and schedule proxying |
@@ -131,6 +137,8 @@ Then set the `WORKER_URL` constant in `index.html` to your worker's URL.
 | `worker/src/adsbdb.js` | Shared ADSBDB route lookup helpers |
 | `worker/src/fr24.js` | FlightRadar24 schedule shaping helpers |
 | `worker/src/http.js` | Shared Worker response/CORS helpers |
+| `worker/src/geo.js` | Haversine, bearing, and cardinal helpers for the worker |
+| `worker/src/airports.js` | Major airport list for landing heuristics in `/nearby` |
 
 ## Credits
 
