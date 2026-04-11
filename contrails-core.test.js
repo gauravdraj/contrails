@@ -30,6 +30,18 @@ test("normalizeAircraftHex accepts valid transponder hex and rejects invalid inp
   assert.equal(core.normalizeAircraftHex("12345"), null);
 });
 
+test("normalizeSearchText compacts user-facing search input", () => {
+  assert.equal(core.normalizeSearchText(" wn 1234 "), "WN1234");
+  assert.equal(core.normalizeSearchText("SWA-1234"), "SWA1234");
+  assert.equal(core.normalizeSearchText(null), "");
+});
+
+test("callsignVariants includes common IATA aliases for typeahead matching", () => {
+  assert.deepEqual(core.callsignVariants("SWA1234"), ["SWA1234", "WN1234"]);
+  assert.deepEqual(core.callsignVariants("DAL55"), ["DAL55", "DL55"]);
+  assert.deepEqual(core.callsignVariants("N123AB"), ["N123AB"]);
+});
+
 test("formatDistanceMiles converts kilometers into readable miles", () => {
   assert.equal(core.formatDistanceMiles(1.60934), "1");
   assert.equal(core.formatDistanceMiles(8), "5");

@@ -252,7 +252,9 @@ body.noscroll { touch-action: none; }
 #search-input:focus-visible,
 #fids-close:focus-visible,
 .ftag:focus-visible,
-.mini-action:focus-visible {
+.mini-action:focus-visible,
+.search-option:focus-visible,
+.popup-share:focus-visible {
   outline: none;
   box-shadow: 0 0 0 2px rgba(105, 199, 255, 0.55);
 }
@@ -267,7 +269,7 @@ body.noscroll { touch-action: none; }
 }
 #map-controls.expanded #controls-body {
   margin-top: 6px;
-  max-height: 400px;
+  max-height: 520px;
   opacity: 1;
   pointer-events: auto;
   transform: translateY(0);
@@ -291,13 +293,14 @@ body.noscroll { touch-action: none; }
   gap: 8px;
   margin-bottom: 10px;
 }
-#search-form {
+#search-shell {
   display: flex;
+  flex-direction: column;
   flex: 1 1 100%;
   gap: 8px;
 }
 #search-input {
-  flex: 1 1 auto;
+  width: 100%;
   min-width: 0;
   border: 1px solid var(--border-soft);
   border-radius: 999px;
@@ -310,6 +313,78 @@ body.noscroll { touch-action: none; }
   -webkit-appearance: none;
 }
 #search-input::placeholder { color: var(--text-soft); }
+#search-results {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-soft);
+  background: linear-gradient(180deg, rgba(14, 25, 40, 0.96) 0%, rgba(9, 18, 31, 0.98) 100%);
+  box-shadow: var(--shadow-md);
+  max-height: 224px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+#search-results[hidden] { display: none; }
+.search-option {
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: inherit;
+  border-radius: 12px;
+  padding: 10px 12px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  text-align: left;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.search-option:hover,
+.search-option.active {
+  background: rgba(255, 255, 255, 0.06);
+}
+.search-option:disabled {
+  cursor: default;
+  opacity: 0.78;
+}
+.search-option-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.search-option-label {
+  color: var(--text-strong);
+  font-size: 13px;
+  font-weight: 650;
+}
+.search-option-meta {
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+.search-option-badge {
+  flex-shrink: 0;
+  margin-top: 1px;
+  padding: 3px 7px;
+  border-radius: 999px;
+  border: 1px solid rgba(105, 199, 255, 0.18);
+  background: rgba(105, 199, 255, 0.1);
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.search-empty {
+  padding: 12px 14px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
 #controls-feedback {
   min-height: 16px;
   margin: -2px 2px 10px;
@@ -587,6 +662,46 @@ body.noscroll { touch-action: none; }
 .leaflet-popup-content { margin: 12px 14px; font-size: 13px; line-height: 1.6; min-width: 200px; }
 .leaflet-popup-close-button { display: none; }
 .leaflet-popup-content strong { color: var(--accent); font-size: 15px; }
+.popup-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 2px;
+}
+.popup-title {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.popup-share {
+  width: 28px;
+  height: 28px;
+  border: 1px solid rgba(126, 182, 223, 0.22);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  padding: 0;
+  -webkit-tap-highlight-color: transparent;
+}
+.popup-share:hover {
+  color: var(--accent);
+  border-color: rgba(105, 199, 255, 0.32);
+  background: rgba(105, 199, 255, 0.1);
+}
+.popup-share svg {
+  width: 14px;
+  height: 14px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
 .popup-photo img { max-width: 280px; }
 .popup-photo { min-height: 0; }
 
@@ -770,11 +885,10 @@ body.noscroll { touch-action: none; }
   </button>
   <div id="controls-body">
     <div id="controls-actions">
-      <form id="search-form" autocomplete="off" spellcheck="false">
+      <div id="search-shell">
         <input id="search-input" type="search" inputmode="search" placeholder="Search WN1234, SWA1234, or 4ca87c" autocomplete="off" spellcheck="false">
-        <button id="search-submit" class="mini-action" type="submit">Find</button>
-      </form>
-      <button id="share-button" class="mini-action" type="button" hidden>Share plane</button>
+        <div id="search-results" role="listbox" hidden></div>
+      </div>
     </div>
     <div id="controls-feedback" role="status" aria-live="polite"></div>
     <div class="control-row" id="visibility-controls">

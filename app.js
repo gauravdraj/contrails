@@ -6,6 +6,7 @@
   const buildViewportFetchSpec = core.buildViewportFetchSpec;
   const cardinalDir = core.cardinalDir;
   const computePlaybackDelayMs = core.computePlaybackDelayMs;
+  const callsignVariants = core.callsignVariants;
   const escapeHtml = core.escapeHtml;
   const formatDistanceMiles = core.formatDistanceMiles;
   const formatSpeedMph = core.formatSpeedMph;
@@ -15,6 +16,7 @@
   const isLikelyPrivateCallsign = core.isLikelyPrivateCallsign;
   const normalizeAircraftHex = core.normalizeAircraftHex;
   const normalizeFlightQuery = core.normalizeFlightQuery;
+  const normalizeSearchText = core.normalizeSearchText;
   const parseCoordinate = core.parseCoordinate;
   const projectLatLng = core.projectLatLng;
   const roundTenths = core.roundTenths;
@@ -22,9 +24,9 @@
   const elevationDeg = core.elevationDeg;
   const SQUAWK_ALERT = core.SQUAWK_ALERTS;
   if (!airlineName || !bearingDegrees || !buildViewPolicy || !buildViewportFetchSpec || !cardinalDir ||
-      !computePlaybackDelayMs || !escapeHtml || !formatDistanceMiles || !formatSpeedMph ||
+      !callsignVariants || !computePlaybackDelayMs || !escapeHtml || !formatDistanceMiles || !formatSpeedMph ||
       !haversineKm || !interpolatePlaybackPose || !interpolateTimedPose || !isLikelyPrivateCallsign ||
-      !normalizeAircraftHex || !normalizeFlightQuery || !parseCoordinate || !projectLatLng ||
+      !normalizeAircraftHex || !normalizeFlightQuery || !normalizeSearchText || !parseCoordinate || !projectLatLng ||
       !roundTenths || !slantKm || !elevationDeg || !SQUAWK_ALERT) {
     throw new Error("Contrails core helpers failed to load.");
   }
@@ -180,7 +182,10 @@
   const SEEDED_MIN_DISPLAY_SPEED_KTS = 35;
   const NEW_MARKER_BATCH = 25;
   const MARKER_DRAIN_DELAY_MS = 80;
+  const PLAYBACK_EXTRAPOLATION_MAX_MS = 1650;
   const SEARCH_MIN_ZOOM = 13;
+  const SEARCH_SUGGESTION_LIMIT = 7;
+  const SEARCH_LOOKUP_DEBOUNCE_MS = 180;
   const SHARED_PLANE_LOOKUP_LIMIT = 3;
   const posHistory = {};
   const routeCache = {};
@@ -211,6 +216,7 @@
   let controlsFeedbackTimer = 0;
   const markerMap = {};
   const extraState = {};
+  var refreshSearchUi = null;
   let markerAnimationFrame = 0;
   var lastFetchTs = 0;
   var fetchInterval = REFRESH_MS;
@@ -360,6 +366,16 @@
     map.on("popupopen", function(e) {
       var el = e.popup.getElement();
       if (!el) return;
+      if (!el.__contrailsPopupActionsBound) {
+        el.__contrailsPopupActionsBound = true;
+        el.addEventListener("click", function(event) {
+          var shareBtn = event.target && event.target.closest ? event.target.closest(".popup-share") : null;
+          if (!shareBtn) return;
+          event.preventDefault();
+          event.stopPropagation();
+          sharePlaneById(shareBtn.getAttribute("data-hex"));
+        });
+      }
       var photoEl = el.querySelector(".popup-photo");
       if (photoEl) loadPopupPhoto(photoEl);
       var routeEl = el.querySelector(".popup-route");
@@ -630,16 +646,10 @@
     return url.toString();
   }
 
-  function updateShareButton() {
-    var btn = document.getElementById("share-button");
-    if (!btn) return;
-    btn.hidden = !selectedAircraftId;
-    btn.disabled = !selectedAircraftId;
-  }
-
-  async function shareSelectedPlane() {
-    if (!selectedAircraftId) return;
-    var url = buildPlaneShareUrl(selectedAircraftId);
+  async function sharePlaneById(id) {
+    var normalized = normalizeAircraftHex(id);
+    if (!normalized) return;
+    var url = buildPlaneShareUrl(normalized);
     try {
       if (navigator.share) {
         await navigator.share({
@@ -665,18 +675,32 @@
   }
 
   function focusAircraftById(id, options) {
+    options = options || {};
     var plane = findAircraftById(id);
     if (!plane) return false;
-    setSelectedAircraft(plane.icao24);
+    var filtersChanged = false;
+    if (options.reveal !== false) {
+      if (plane.ground && !filters.ground) {
+        filters.ground = true;
+        filtersChanged = true;
+      }
+      if (plane.private && !filters.private) {
+        filters.private = true;
+        filtersChanged = true;
+      }
+      if (filtersChanged) updateFilterButtons();
+    }
+    if (selectedAircraftId !== plane.icao24) setSelectedAircraft(plane.icao24);
+    else if (filtersChanged) renderMap();
     var marker = markerMap[plane.icao24];
-    if (options && options.center && map) {
+    if (options.center && map) {
       var pose = getDisplayPoseForAircraft(plane.icao24, currentDisplayTime(Date.now())) || { lat: plane.lat, lng: plane.lng };
       map.flyTo([pose.lat, pose.lng], Math.max(map.getZoom(), options.minZoom || SEARCH_MIN_ZOOM), {
         duration: options.duration == null ? 0.75 : options.duration,
         easeLinearity: 0.18
       });
     }
-    if (marker && (!options || options.openPopup !== false)) marker.openPopup();
+    if (marker && options.openPopup !== false) marker.openPopup();
     return true;
   }
 
@@ -935,6 +959,7 @@
     updateAlerts();
     updateReferenceNote();
     updateViewHint(visibleAircraftCount());
+    if (refreshSearchUi) refreshSearchUi();
     if (options.fetch === false || suppressViewportRefresh) return;
     scheduleMapFetch(options.fetchDelay != null ? options.fetchDelay : viewportFetchDelayMs());
   }
@@ -1097,6 +1122,7 @@
     pruneStaleHistoryEntries(activeIds, now);
 
     renderMap();
+    if (refreshSearchUi) refreshSearchUi();
     if (!tryResolvePendingPlaneFocus()) maybeLookupPendingPlaneFocus();
     updateStatus();
     updateAlerts();
@@ -1216,9 +1242,14 @@
     playbackDelayMs = playbackDelayMs * 0.8 + targetDelay * 0.2;
   }
 
+  function currentPlaybackExtrapolationMs() {
+    var adaptiveMs = fetchInterval * 0.48 + fetchJitterMs * 0.18;
+    return Math.round(Math.max(PLAYBACK_EXTRAPOLATION_MS, Math.min(PLAYBACK_EXTRAPOLATION_MAX_MS, adaptiveMs)));
+  }
+
   function getDisplayPoseForSamples(samples, displayTime) {
     return interpolatePlaybackPose(samples, displayTime, {
-      maxExtrapolationMs: PLAYBACK_EXTRAPOLATION_MS
+      maxExtrapolationMs: currentPlaybackExtrapolationMs()
     });
   }
 
@@ -1431,7 +1462,6 @@
   function updateStatus() {
     var visible = aircraft.filter(function(a) { return !isFiltered(a); });
     updateControlsCompactSummary(visible.length);
-    updateShareButton();
   }
 
   function updateAlerts() {
@@ -1613,9 +1643,17 @@
       photoHtml += '<img src="' + escapeHtml(cached.src) + '" style="width:100%;border-radius:6px;display:block;margin-bottom:6px" alt="Aircraft photo">';
     }
     photoHtml += '</div>';
+    var shareButton = '<button type="button" class="popup-share" data-hex="' + safeHex + '" aria-label="Share plane" title="Share plane">' +
+      '<svg viewBox="0 0 24 24" aria-hidden="true">' +
+      '<circle cx="18" cy="5" r="2.5"></circle>' +
+      '<circle cx="6" cy="12" r="2.5"></circle>' +
+      '<circle cx="18" cy="19" r="2.5"></circle>' +
+      '<path d="M8.3 10.8l7.4-4.1M8.3 13.2l7.4 4.1"></path>' +
+      '</svg>' +
+      '</button>';
 
     return photoHtml +
-      "<strong>" + nameStr + "</strong><br>" +
+      '<div class="popup-header"><div class="popup-title"><strong>' + nameStr + "</strong></div>" + shareButton + "</div>" +
       emergLine + routeLine + typeLine + alt + " &middot; " + spd + " &middot; " + vert + "<br>" +
       detail2 + windLine +
       distanceHtml;
@@ -1678,6 +1716,52 @@
     }
   }
 
+  function markerIconKey(a) {
+    return [
+      a.track == null ? "" : Math.round(a.track * 10) / 10,
+      a.aircraftType || "",
+      a.private ? 1 : 0,
+      a.category || "",
+      a.altFt == null ? "" : a.altFt,
+      a.ground ? 1 : 0
+    ].join("|");
+  }
+
+  function currentMarkerLabelOffset(marker) {
+    var icon = marker && marker.options ? marker.options.icon : null;
+    var iconSize = icon && icon.options ? icon.options.iconSize : null;
+    return iconSize && iconSize[1] ? iconSize[1] / 2 : 15;
+  }
+
+  function syncMarkerVisualState(marker, a, markerState, policy, isSelected, popupHtml, label) {
+    var iconKey = markerIconKey(a);
+    if (markerState.iconKey !== iconKey) {
+      marker.setIcon(planeIcon(a.track, a.aircraftType, a.private, a.category, a.altFt, a.ground));
+      markerState.iconKey = iconKey;
+    }
+    if (markerState.popupHtml !== popupHtml) {
+      marker.setPopupContent(popupHtml);
+      markerState.popupHtml = popupHtml;
+    }
+    if (markerState.selected !== isSelected) {
+      marker.setZIndexOffset(isSelected ? 1000 : 0);
+      markerState.selected = isSelected;
+    }
+    var showLabels = !!policy.showLabels;
+    var labelOffset = currentMarkerLabelOffset(marker);
+    if (showLabels) {
+      if (!marker.getTooltip() || markerState.labelText !== label || markerState.labelOffset !== labelOffset || markerState.showLabels !== showLabels) {
+        if (marker.getTooltip()) marker.unbindTooltip();
+        bindPlaneLabel(marker, label, labelOffset);
+      }
+    } else if (marker.getTooltip()) {
+      marker.unbindTooltip();
+    }
+    markerState.showLabels = showLabels;
+    markerState.labelText = showLabels ? label : "";
+    markerState.labelOffset = showLabels ? labelOffset : 0;
+  }
+
   function syncMarkerPose(marker, pose) {
     if (!marker || !pose) return;
     var cur = marker.getLatLng();
@@ -1698,7 +1782,6 @@
     selectedAircraftId = normalized;
     if (pendingPlaneFocus) pendingPlaneFocus = null;
     syncUrlState();
-    updateShareButton();
     renderMap();
   }
 
@@ -1712,9 +1795,10 @@
   var _markerDrainTimer = 0;
 
   function markerAnimationIntervalMs(markerCount) {
-    if (markerCount > 200) return 80;
-    if (markerCount > 80) return 50;
-    return 33;
+    if (markerCount > 260) return 48;
+    if (markerCount > 160) return 32;
+    if (markerCount > 80) return 20;
+    return 0;
   }
 
   function renderMarkers(now, displayPoses) {
@@ -1740,11 +1824,10 @@
       }
 
       var isSelected = selectedAircraftId === a.icao24;
-      var icon = planeIcon(a.track, a.aircraftType, a.private, a.category, a.altFt, a.ground);
       var label = a.callsign || a.icao24;
 
-      var prev = extraState[a.icao24];
-      var samples = prev && prev.samples ? prev.samples.slice() : [];
+      var state = extraState[a.icao24] || {};
+      var samples = state.samples ? state.samples.slice() : [];
       var reportTs = a.reportTs != null ? a.reportTs : now;
       var lastSample = samples.length ? samples[samples.length - 1] : null;
       var shouldAppend = true;
@@ -1771,28 +1854,18 @@
 
       var displayPose = displayPoses && displayPoses[a.icao24] ? displayPoses[a.icao24] : getDisplayPoseForSamples(samples, displayTime);
       if (!displayPose) displayPose = { lat: a.lat, lng: a.lng, ts: reportTs, mode: "hold", usedExtrapolationMs: 0 };
-      extraState[a.icao24] = {
-        samples: samples,
-        displayPose: displayPose
-      };
+      state.samples = samples;
+      state.displayPose = displayPose;
+      extraState[a.icao24] = state;
+      var popupHtml = buildPopup(a, policy);
 
       if (existing) {
         syncMarkerPose(existing, displayPose);
-        existing.setIcon(icon);
-        existing.setPopupContent(buildPopup(a, policy));
-        existing.setZIndexOffset(isSelected ? 1000 : 0);
-        if (policy.showLabels) {
-          if (existing.getTooltip()) {
-            existing.setTooltipContent(label);
-          } else {
-            bindPlaneLabel(existing, label, icon.options.iconSize[1] / 2);
-          }
-        } else if (existing.getTooltip()) {
-          existing.unbindTooltip();
-        }
+        syncMarkerVisualState(existing, a, state, policy, isSelected, popupHtml, label);
       } else {
         newThisFrame++;
-        var marker = L.marker([displayPose.lat, displayPose.lng], { icon: icon }).bindPopup(buildPopup(a, policy), {
+        var icon = planeIcon(a.track, a.aircraftType, a.private, a.category, a.altFt, a.ground);
+        var marker = L.marker([displayPose.lat, displayPose.lng], { icon: icon }).bindPopup(popupHtml, {
           closeButton: false
         });
         marker.on("click", (function(id) {
@@ -1804,6 +1877,12 @@
           bindPlaneLabel(marker, label, icon.options.iconSize[1] / 2);
         }
         markerMap[a.icao24] = marker;
+        state.iconKey = markerIconKey(a);
+        state.popupHtml = popupHtml;
+        state.selected = isSelected;
+        state.showLabels = !!policy.showLabels;
+        state.labelText = policy.showLabels ? label : "";
+        state.labelOffset = policy.showLabels ? icon.options.iconSize[1] / 2 : 0;
       }
     }
     for (var id in markerMap) {
@@ -1816,7 +1895,6 @@
     if (selectedAircraftId && !seen[selectedAircraftId]) {
       selectedAircraftId = null;
       syncUrlState();
-      updateShareButton();
     }
     if (deferredNew && !_markerDrainTimer) {
       _markerDrainTimer = setTimeout(function() {
@@ -2025,72 +2103,380 @@
     });
   })();
 
-  // --- Search / share ---
+  // --- Search ---
   (function() {
-    var form = document.getElementById("search-form");
+    var shell = document.getElementById("search-shell");
     var input = document.getElementById("search-input");
-    var submit = document.getElementById("search-submit");
-    var shareBtn = document.getElementById("share-button");
-    if (!form || !input || !submit || !shareBtn) return;
+    var resultsEl = document.getElementById("search-results");
+    if (!shell || !input || !resultsEl) return;
+    input.setAttribute("aria-controls", "search-results");
+    input.setAttribute("aria-expanded", "false");
+    input.setAttribute("aria-autocomplete", "list");
 
-    function setSearchBusy(busy) {
-      submit.disabled = !!busy;
-      input.disabled = !!busy;
-      submit.textContent = busy ? "Finding…" : "Find";
+    var renderedResults = [];
+    var highlightIndex = -1;
+    var lookupTimer = 0;
+    var lookupSeq = 0;
+    var remoteLookup = {
+      key: "",
+      query: null,
+      status: "idle",
+      result: null
+    };
+
+    function clearLookupTimer() {
+      if (!lookupTimer) return;
+      clearTimeout(lookupTimer);
+      lookupTimer = 0;
     }
 
-    form.addEventListener("submit", async function(e) {
-      e.preventDefault();
-      var query = normalizeFlightQuery(input.value);
-      if (!query) {
-        setControlsFeedback("Enter a flight like WN1234 or a 6-character ICAO hex.", "warning", { timeoutMs: 6000 });
+    function clearRemoteLookup() {
+      clearLookupTimer();
+      remoteLookup = {
+        key: "",
+        query: null,
+        status: "idle",
+        result: null
+      };
+    }
+
+    function searchLookupKey(query) {
+      return query ? (query.type + ":" + query.value) : "";
+    }
+
+    function setSearchResultsVisible(visible) {
+      resultsEl.hidden = !visible;
+      input.setAttribute("aria-expanded", visible ? "true" : "false");
+    }
+
+    function closeSearchResults() {
+      renderedResults = [];
+      highlightIndex = -1;
+      resultsEl.innerHTML = "";
+      setSearchResultsVisible(false);
+    }
+
+    function matchScore(text, queryText) {
+      if (!text) return -1;
+      if (text === queryText) return 120;
+      if (text.indexOf(queryText) === 0) return 90 - Math.min(20, text.length - queryText.length);
+      var idx = text.indexOf(queryText);
+      if (idx !== -1) return 65 - Math.min(20, idx);
+      return -1;
+    }
+
+    function buildLocalResultMeta(plane, preferredLabel, aliasLabel) {
+      var liveCallsign = plane.callsign ? plane.callsign.toUpperCase() : null;
+      var airline = plane.callsign ? airlineName(plane.callsign) : null;
+      var metaParts = [];
+      if (liveCallsign && preferredLabel !== liveCallsign) metaParts.push("live " + liveCallsign);
+      if (aliasLabel && aliasLabel !== preferredLabel) metaParts.push(aliasLabel);
+      if (airline) metaParts.push(airline);
+      metaParts.push(plane.icao24.toUpperCase());
+      return metaParts.join(" · ");
+    }
+
+    function buildGlobalResultMeta(query, found) {
+      var liveCallsign = found.callsign || null;
+      var airline = liveCallsign ? airlineName(liveCallsign) : null;
+      var metaParts = [];
+      if (liveCallsign && query.display !== liveCallsign) metaParts.push("matched " + query.display);
+      if (airline) metaParts.push(airline);
+      metaParts.push(found.hex.toUpperCase());
+      metaParts.push("exact live lookup");
+      return metaParts.join(" · ");
+    }
+
+    function buildLocalResults(rawValue) {
+      var queryText = normalizeSearchText(rawValue);
+      if (!queryText) return [];
+      var matches = [];
+      for (var i = 0; i < aircraft.length; i++) {
+        var plane = aircraft[i];
+        var callsign = plane.callsign ? plane.callsign.toUpperCase() : "";
+        var preferredLabel = callsign || plane.icao24.toUpperCase();
+        var aliasLabel = null;
+        var bestScore = -1;
+        var variants = callsignVariants(plane.callsign);
+        for (var v = 0; v < variants.length; v++) {
+          var variant = variants[v];
+          var variantScore = matchScore(variant, queryText);
+          if (variant !== callsign) aliasLabel = variant;
+          if (variantScore > bestScore) {
+            bestScore = variantScore;
+            preferredLabel = variant !== callsign ? variant : (callsign || plane.icao24.toUpperCase());
+          }
+        }
+        var hexScore = matchScore(plane.icao24.toUpperCase(), queryText);
+        if (hexScore > bestScore) {
+          bestScore = hexScore;
+          preferredLabel = plane.icao24.toUpperCase();
+        }
+        var airline = plane.callsign ? airlineName(plane.callsign) : null;
+        var airlineScore = matchScore(normalizeSearchText(airline), queryText);
+        if (airlineScore >= 0) bestScore = Math.max(bestScore, airlineScore - 4);
+        if (bestScore < 0) continue;
+        matches.push({
+          key: "local:" + plane.icao24,
+          type: "local",
+          disabled: false,
+          aircraft: plane,
+          label: preferredLabel,
+          meta: buildLocalResultMeta(plane, preferredLabel, aliasLabel),
+          badge: "live",
+          score: bestScore
+        });
+      }
+      matches.sort(function(a, b) {
+        if (b.score !== a.score) return b.score - a.score;
+        var distA = a.aircraft.slantKm != null ? a.aircraft.slantKm : (a.aircraft.viewDistKm != null ? a.aircraft.viewDistKm : 999999);
+        var distB = b.aircraft.slantKm != null ? b.aircraft.slantKm : (b.aircraft.viewDistKm != null ? b.aircraft.viewDistKm : 999999);
+        return distA - distB;
+      });
+      if (matches.length > SEARCH_SUGGESTION_LIMIT) matches.length = SEARCH_SUGGESTION_LIMIT;
+      return matches;
+    }
+
+    function buildRemoteResult(query, localExactMatch) {
+      if (!query || localExactMatch) return null;
+      var lookupKey = searchLookupKey(query);
+      if (remoteLookup.key !== lookupKey || remoteLookup.status === "loading") {
+        return {
+          key: "global-loading:" + lookupKey,
+          type: "status",
+          disabled: true,
+          label: "Finding " + query.display + "…",
+          meta: "Checking live traffic beyond the currently loaded aircraft.",
+          badge: "global"
+        };
+      }
+      if (remoteLookup.status === "ready" && remoteLookup.result) {
+        return {
+          key: "global:" + remoteLookup.result.hex,
+          type: "global",
+          disabled: false,
+          query: query,
+          result: remoteLookup.result,
+          label: remoteLookup.result.callsign || remoteLookup.result.hex.toUpperCase(),
+          meta: buildGlobalResultMeta(query, remoteLookup.result),
+          badge: "global"
+        };
+      }
+      if (remoteLookup.status === "empty") {
+        return {
+          key: "global-empty:" + lookupKey,
+          type: "status",
+          disabled: true,
+          label: "No live match for " + query.display,
+          meta: "Nothing exact is reporting right now.",
+          badge: "global"
+        };
+      }
+      if (remoteLookup.status === "error") {
+        return {
+          key: "global-error:" + lookupKey,
+          type: "status",
+          disabled: true,
+          label: "Global lookup unavailable",
+          meta: "Couldn't check " + query.display + " right now.",
+          badge: "global"
+        };
+      }
+      return null;
+    }
+
+    function firstSelectableIndex() {
+      for (var i = 0; i < renderedResults.length; i++) {
+        if (!renderedResults[i].disabled) return i;
+      }
+      return -1;
+    }
+
+    function stepHighlight(direction) {
+      if (!renderedResults.length) return -1;
+      var index = highlightIndex;
+      if (index < 0 || index >= renderedResults.length) index = direction > 0 ? -1 : 0;
+      for (var step = 0; step < renderedResults.length; step++) {
+        index = (index + direction + renderedResults.length) % renderedResults.length;
+        if (!renderedResults[index].disabled) return index;
+      }
+      return -1;
+    }
+
+    function renderResults(rawValue, options) {
+      options = options || {};
+      var queryText = normalizeSearchText(rawValue);
+      if (!queryText) {
+        clearRemoteLookup();
+        closeSearchResults();
         return;
       }
 
-      var localMatch = findAircraftByQuery(query);
-      if (localMatch) {
-        focusAircraftById(localMatch.icao24, {
+      var localResults = buildLocalResults(rawValue);
+      var exactQuery = normalizeFlightQuery(rawValue);
+      var localExactMatch = exactQuery ? findAircraftByQuery(exactQuery) : null;
+      var remoteResult = buildRemoteResult(exactQuery, localExactMatch);
+      renderedResults = remoteResult ? localResults.concat(remoteResult) : localResults;
+
+      if (!options.preserveHighlight) highlightIndex = -1;
+      if (highlightIndex < 0 || highlightIndex >= renderedResults.length || renderedResults[highlightIndex].disabled) {
+        highlightIndex = firstSelectableIndex();
+      }
+
+      if (!renderedResults.length) {
+        resultsEl.innerHTML = '<div class="search-empty">No loaded matches yet. Keep typing a full flight or hex for a wider live lookup.</div>';
+        setSearchResultsVisible(true);
+        return;
+      }
+
+      var html = "";
+      for (var i = 0; i < renderedResults.length; i++) {
+        var result = renderedResults[i];
+        var classes = "search-option";
+        if (i === highlightIndex) classes += " active";
+        html += '<button type="button" class="' + classes + '" data-index="' + i + '" role="option" aria-selected="' + (i === highlightIndex ? "true" : "false") + '"' + (result.disabled ? " disabled" : "") + '>' +
+          '<span class="search-option-main">' +
+            '<span class="search-option-label">' + escapeHtml(result.label) + '</span>' +
+            '<span class="search-option-meta">' + escapeHtml(result.meta) + '</span>' +
+          '</span>' +
+          '<span class="search-option-badge">' + escapeHtml(result.badge) + '</span>' +
+        '</button>';
+      }
+      resultsEl.innerHTML = html;
+      setSearchResultsVisible(true);
+    }
+
+    function scheduleRemoteLookup(query, localExactMatch) {
+      var lookupKey = searchLookupKey(query);
+      if (!query || localExactMatch) {
+        clearRemoteLookup();
+        return;
+      }
+      if (remoteLookup.key === lookupKey && (remoteLookup.status === "loading" || remoteLookup.status === "ready" || remoteLookup.status === "empty" || remoteLookup.status === "error")) {
+        return;
+      }
+      clearLookupTimer();
+      remoteLookup = {
+        key: lookupKey,
+        query: query,
+        status: "loading",
+        result: null
+      };
+      var requestSeq = ++lookupSeq;
+      lookupTimer = setTimeout(async function() {
+        lookupTimer = 0;
+        try {
+          var found = await lookupAircraftQuery(query);
+          if (requestSeq !== lookupSeq || !remoteLookup.query || remoteLookup.key !== lookupKey) return;
+          remoteLookup.status = found ? "ready" : "empty";
+          remoteLookup.result = found;
+        } catch (_) {
+          if (requestSeq !== lookupSeq || !remoteLookup.query || remoteLookup.key !== lookupKey) return;
+          remoteLookup.status = "error";
+          remoteLookup.result = null;
+        }
+        renderResults(input.value, { preserveHighlight: true });
+      }, SEARCH_LOOKUP_DEBOUNCE_MS);
+    }
+
+    function refreshSearch(rawValue, options) {
+      var exactQuery = normalizeFlightQuery(rawValue);
+      var localExactMatch = exactQuery ? findAircraftByQuery(exactQuery) : null;
+      scheduleRemoteLookup(exactQuery, localExactMatch);
+      renderResults(rawValue, options);
+    }
+
+    function chooseResult(index) {
+      var result = renderedResults[index];
+      if (!result || result.disabled) return;
+      if (result.type === "local") {
+        focusAircraftById(result.aircraft.icao24, {
           center: true,
           minZoom: SEARCH_MIN_ZOOM,
-          openPopup: true
+          openPopup: true,
+          reveal: true
         });
+        input.value = result.label;
         input.blur();
+        closeSearchResults();
         setControlsExpanded(false);
-        setControlsFeedback("Centered on " + (localMatch.callsign || localMatch.icao24.toUpperCase()) + ".", "success", { timeoutMs: 3200 });
+        setControlsFeedback("Centered on " + (result.aircraft.callsign || result.aircraft.icao24.toUpperCase()) + ".", "success", { timeoutMs: 3200 });
         return;
       }
-
-      setSearchBusy(true);
-      try {
-        var found = await lookupAircraftQuery(query);
-        if (!found) {
-          setControlsFeedback('No live plane found for "' + query.display + '".', "warning", { timeoutMs: 6000 });
-          return;
-        }
+      if (result.type === "global") {
+        var found = result.result;
         setSelectedAircraft(null);
         queuePendingPlaneFocus(found.hex, {
           keepUrl: true,
-          label: query.display,
+          label: result.query.display,
           reason: "search"
         });
         if (map) map.closePopup();
+        input.value = result.query.display;
         input.blur();
+        closeSearchResults();
         setControlsExpanded(false);
         setControlsFeedback("Centering on " + (found.callsign || found.hex.toUpperCase()) + "…", "info", { timeoutMs: 4500 });
         centerMapOnPlane(found.lat, found.lng, SEARCH_MIN_ZOOM);
-      } catch (_) {
-        setControlsFeedback('Couldn\'t look up "' + query.display + '" right now.', "warning", { timeoutMs: 6000 });
-      } finally {
-        setSearchBusy(false);
+      }
+    }
+
+    input.addEventListener("input", function() {
+      refreshSearch(input.value);
+    });
+    input.addEventListener("search", function() {
+      refreshSearch(input.value);
+    });
+    input.addEventListener("focus", function() {
+      refreshSearch(input.value, { preserveHighlight: true });
+    });
+    input.addEventListener("keydown", function(e) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        highlightIndex = stepHighlight(1);
+        renderResults(input.value, { preserveHighlight: true });
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        highlightIndex = stepHighlight(-1);
+        renderResults(input.value, { preserveHighlight: true });
+        return;
+      }
+      if (e.key === "Enter") {
+        if (highlightIndex >= 0) {
+          e.preventDefault();
+          chooseResult(highlightIndex);
+        }
+        return;
+      }
+      if (e.key === "Escape") {
+        closeSearchResults();
+        input.blur();
       }
     });
-
-    shareBtn.addEventListener("click", function(e) {
-      e.preventDefault();
-      shareSelectedPlane();
+    resultsEl.addEventListener("mousedown", function(e) {
+      if (e.target && e.target.closest && e.target.closest(".search-option")) e.preventDefault();
+    });
+    resultsEl.addEventListener("click", function(e) {
+      var option = e.target && e.target.closest ? e.target.closest(".search-option") : null;
+      if (!option) return;
+      var index = parseInt(option.getAttribute("data-index"), 10);
+      if (!isFinite(index)) return;
+      chooseResult(index);
+    });
+    document.addEventListener("click", function(e) {
+      if (shell.contains(e.target)) return;
+      closeSearchResults();
     });
 
-    updateShareButton();
+    refreshSearchUi = function() {
+      if (!normalizeSearchText(input.value)) {
+        closeSearchResults();
+        return;
+      }
+      refreshSearch(input.value, { preserveHighlight: true });
+    };
   })();
 
   // --- Filter toggles ---
@@ -2138,6 +2524,7 @@
         updateStatus();
         updateAlerts();
         updateViewHint(visibleAircraftCount());
+        if (refreshSearchUi) refreshSearchUi();
       });
     }
     updateFilterButtons();

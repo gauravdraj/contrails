@@ -270,6 +270,13 @@
     SV:"SVA", TG:"THA", TK:"THY", TP:"TAP", UA:"UAL", VS:"VIR",
     WN:"SWA", WS:"WJA"
   };
+  var AIRLINE_ICAO_TO_IATA_ALIASES = {};
+  for (var iataAlias in AIRLINE_IATA_ALIASES) {
+    var icaoAlias = AIRLINE_IATA_ALIASES[iataAlias];
+    if (icaoAlias && !AIRLINE_ICAO_TO_IATA_ALIASES[icaoAlias]) {
+      AIRLINE_ICAO_TO_IATA_ALIASES[icaoAlias] = iataAlias;
+    }
+  }
 
   var SQUAWK_ALERTS = { "7700": "EMERGENCY", "7600": "RADIO FAILURE", "7500": "HIJACK" };
 
@@ -282,6 +289,22 @@
     if (value == null) return null;
     var normalized = String(value).trim().replace(/^~/, "").toLowerCase();
     return /^[0-9a-f]{6}$/.test(normalized) ? normalized : null;
+  }
+
+  function normalizeSearchText(value) {
+    if (value == null) return "";
+    return String(value).trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+  }
+
+  function callsignVariants(callsign) {
+    var normalized = normalizeSearchText(callsign);
+    if (!normalized) return [];
+    var variants = [normalized];
+    if (normalized.length >= 3) {
+      var aliasPrefix = AIRLINE_ICAO_TO_IATA_ALIASES[normalized.substring(0, 3)];
+      if (aliasPrefix) variants.push(aliasPrefix + normalized.substring(3));
+    }
+    return variants;
   }
 
   function kmToMiles(km) {
@@ -306,8 +329,7 @@
   }
 
   function normalizeFlightQuery(value) {
-    if (value == null) return null;
-    var compact = String(value).trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+    var compact = normalizeSearchText(value);
     if (!compact) return null;
 
     var hex = normalizeAircraftHex(compact);
@@ -387,8 +409,10 @@
     isLikelyPrivateCallsign: isLikelyPrivateCallsign,
     kmToMiles: kmToMiles,
     knotsToMph: knotsToMph,
+    callsignVariants: callsignVariants,
     normalizeAircraftHex: normalizeAircraftHex,
     normalizeFlightQuery: normalizeFlightQuery,
+    normalizeSearchText: normalizeSearchText,
     parseCoordinate: parseCoordinate,
     projectLatLng: projectLatLng,
     roundTenths: roundTenths,
