@@ -291,7 +291,7 @@ export function formatRouteLabel(origin, destination, phase) {
         if (oIata) return `arrived in ${regionName} from ${oIata}`;
         return `arrived in ${regionName}`;
       default:
-        if (oIata) return `${oIata} \u2192 ${display}`;
+        if (oIata) return `heading to ${regionName} from ${oIata}`;
         return display;
     }
   }
@@ -314,8 +314,8 @@ export function formatRouteLabel(origin, destination, phase) {
       if (oIata) return `arrived from ${oIata}`;
       return `arrived at ${dIata}`;
     default:
-      if (oIata && dIata) return `${oIata} \u2192 ${dIata}`;
+      if (oIata && dIata) return `heading to ${dIata} from ${oIata}`;
       if (oIata) return `from ${oIata}`;
-      return `to ${dIata}`;
+      return `heading to ${dIata}`;
   }
 }

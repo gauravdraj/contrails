@@ -31,7 +31,7 @@
     throw new Error("Contrails core helpers failed to load.");
   }
 
-  const APP_VERSION = "v2.6";
+  const APP_VERSION = "v2.7";
   const isLocal = location.hostname === "localhost" || location.hostname === "127.0.0.1";
   const isIOSDevice = /iP(ad|hone|od)/.test(navigator.userAgent) ||
     (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
@@ -1531,46 +1531,48 @@
 
   function formatClientRouteLabel(origin, destination, phase) {
     var oIata = origin ? origin.iata : null;
+    var oName = oIata ? airportDisplayName(oIata) : null;
 
     if (destination && destination.region) {
       var display = destination.display;
       var regionName = destination.region;
       if (phase === "departing") {
-        if (oIata) return "departed " + oIata + " for " + display;
+        if (oName) return "departed " + oName + " for " + display;
         return display;
       }
       if (phase === "arriving") {
-        if (oIata) return display + " from " + oIata;
+        if (oName) return display + " from " + oName;
         return display;
       }
       if (phase === "landed") {
-        if (oIata) return "arrived in " + regionName + " from " + oIata;
+        if (oName) return "arrived in " + regionName + " from " + oName;
         return "arrived in " + regionName;
       }
-      if (oIata) return oIata + " to " + regionName;
+      if (oName) return "heading to " + regionName + " from " + oName;
       return display;
     }
 
     var dIata = destination ? destination.iata : null;
-    if (!oIata && !dIata) return "";
+    var dName = dIata ? airportDisplayName(dIata) : null;
+    if (!oName && !dName) return "";
     if (phase === "departing") {
-      if (oIata && dIata) return "departed " + oIata + " for " + dIata;
-      if (oIata) return "departed " + oIata;
-      return "departing for " + dIata;
+      if (oName && dName) return "departed " + oName + " for " + dName;
+      if (oName) return "departed " + oName;
+      return "departing for " + dName;
     }
     if (phase === "arriving") {
-      if (dIata && oIata) return "landing at " + dIata + " from " + oIata;
-      if (dIata) return "landing at " + dIata;
-      return "arriving from " + oIata;
+      if (dName && oName) return "landing at " + dName + " from " + oName;
+      if (dName) return "landing at " + dName;
+      return "arriving from " + oName;
     }
     if (phase === "landed") {
-      if (dIata && oIata) return "arrived at " + dIata + " from " + oIata;
-      if (oIata) return "arrived from " + oIata;
-      return "arrived at " + dIata;
+      if (dName && oName) return "arrived at " + dName + " from " + oName;
+      if (oName) return "arrived from " + oName;
+      return "arrived at " + dName;
     }
-    if (oIata && dIata) return oIata + " to " + dIata;
-    if (oIata) return "from " + oIata;
-    return "to " + dIata;
+    if (oName && dName) return "heading to " + dName + " from " + oName;
+    if (oName) return "from " + oName;
+    return "heading to " + dName;
   }
 
   var lastProactiveFetch = 0;
@@ -1834,8 +1836,27 @@
       var resp = await fetch("airports.json");
       if (!resp.ok) return;
       airportData = await resp.json();
+      buildAirportCityIndex();
       renderAirports();
     } catch (e) { console.warn("Airport fetch failed:", e); }
+  }
+
+  var airportCityIndex = {};
+  function buildAirportCityIndex() {
+    if (!airportData) return;
+    for (var i = 0; i < airportData.length; i++) {
+      var ap = airportData[i];
+      if (ap[4]) airportCityIndex[ap[0]] = ap[4];
+    }
+  }
+
+  function airportCityName(iata) {
+    return airportCityIndex[iata] || null;
+  }
+
+  function airportDisplayName(iata) {
+    var city = airportCityName(iata);
+    return city ? city + " (" + iata + ")" : iata;
   }
 
   function buildAirportLabelHtml(iata) {
@@ -2108,13 +2129,11 @@
     var airline = !a.private && a.callsign ? airlineName(a.callsign) : "";
     var routeDisplay = popupRouteDisplay(routeEntry);
     if (!airline && !routeDisplay) return "";
-    var html = '<div class="popup-subheader">';
-    if (airline) html += '<span class="popup-airline">' + escapeHtml(airline) + "</span>";
+    var html = "";
+    if (airline) html += '<span class="popup-airline"> &middot; ' + escapeHtml(airline) + "</span>";
     if (routeDisplay) {
-      if (airline) html += '<span class="popup-route-sep"> &middot; </span>';
-      html += '<span class="popup-route">' + escapeHtml(routeDisplay) + "</span>";
+      html += '<div class="popup-route">' + escapeHtml(routeDisplay) + "</div>";
     }
-    html += "</div>";
     return html;
   }
 
@@ -2792,7 +2811,9 @@
       }
 
       var isSelected = selectedAircraftId === a.icao24;
-      var label = a.callsign || a.icao24;
+      var labelCs = a.callsign || a.icao24;
+      var labelAirline = !a.private && a.callsign ? airlineName(a.callsign) : "";
+      var label = labelAirline ? labelCs + " \u00B7 " + labelAirline : labelCs;
 
       var state = extraState[a.icao24] || {};
       var samples = state.samples ? state.samples.slice() : [];
