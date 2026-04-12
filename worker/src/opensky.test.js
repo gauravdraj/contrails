@@ -116,6 +116,19 @@ test("extractOriginDest finds origin from low-altitude first point", () => {
   assert.equal(origin.iata, "SAN");
 });
 
+test("extractOriginDest detects origin at high-elevation airport (SLC)", () => {
+  const track = {
+    path: [
+      [1000, 40.788, -111.978, 1219, 280, false],
+      [1010, 40.80, -112.0, 1500, 280, false],
+      [1020, 40.82, -112.05, 2000, 280, false],
+      [1030, 40.85, -112.10, 3000, 280, false],
+    ],
+  };
+  const { origin } = extractOriginDest(track);
+  assert.equal(origin.iata, "SLC");
+});
+
 test("extractOriginDest returns null origin when all points are high altitude", () => {
   const track = {
     path: [
@@ -200,6 +213,29 @@ test("mergeRoutes keeps ADSBDB destination when origins match", () => {
   assert.equal(result.origin.iata, "BOS");
   assert.equal(result.destination.iata, "SFO");
   assert.equal(result.originSource, "track");
+});
+
+test("mergeRoutes uses track destination when track origin is missing", () => {
+  const track = {
+    path: [
+      ...Array.from({ length: 40 }, (_, i) => [
+        1000 + i * 60, 39.0 - i * 0.05, -115.0 - i * 0.15, 10000, 250, false,
+      ]),
+      ...Array.from({ length: 15 }, (_, i) => [
+        3400 + i * 60, 37.2 + i * 0.03, -122.1 - i * 0.02,
+        2500 - i * 160, 280, false,
+      ]),
+    ],
+  };
+  const adsbdb = {
+    origin: { iata: "ORD", name: "Chicago" },
+    destination: { iata: "TVC", name: "Traverse City" },
+    airline: "United Airlines",
+  };
+  const result = mergeRoutes(track, adsbdb);
+  assert.equal(result.origin.iata, "ORD");
+  assert.notEqual(result.destination.iata, "TVC");
+  assert.equal(result.originSource, "route");
 });
 
 test("mergeRoutes falls back to ADSBDB when no track", () => {

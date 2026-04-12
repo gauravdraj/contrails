@@ -8,7 +8,7 @@ const OPENSKY_CACHE_TTL = 7200;
 const TRACK_STALE_MS = 20 * 60 * 1000;
 const TOKEN_CACHE_TTL = 1500;
 
-const ORIGIN_MAX_ALT_M = 500;
+const ORIGIN_MAX_ALT_M = 2500;
 const ORIGIN_MAX_DIST_KM = 8;
 const CONVERGENCE_TAIL_SIZE = 50;
 const CONVERGENCE_SEARCH_RADIUS_KM = 80;
@@ -68,7 +68,9 @@ export function extractOriginDest(track) {
   if (!path || path.length < 2) return { origin: null, destination: null };
 
   let origin = null;
-  for (const pt of path) {
+  const originScanLimit = Math.max(20, Math.ceil(path.length * 0.25));
+  for (let i = 0; i < Math.min(originScanLimit, path.length); i++) {
+    const pt = path[i];
     if (pt[3] <= ORIGIN_MAX_ALT_M) {
       const match = nearestAirport(pt[1], pt[2], ORIGIN_MAX_DIST_KM);
       if (match) {
@@ -199,8 +201,17 @@ export function mergeRoutes(trackResult, adsbdbEntry) {
   if (dbOrigin) {
     return {
       origin: dbOrigin,
-      destination: dbDest,
+      destination: trackDest || dbDest,
       originSource: "route",
+      airline: adsbdbEntry?.airline || null,
+    };
+  }
+
+  if (trackDest) {
+    return {
+      origin: null,
+      destination: trackDest,
+      originSource: "track",
       airline: adsbdbEntry?.airline || null,
     };
   }
