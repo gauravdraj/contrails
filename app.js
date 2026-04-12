@@ -457,6 +457,19 @@
         loadPopupPhoto(photoEl);
         loadPopupTrack(hex);
         matchScheduleRoute(hex);
+        var clickedPlane = findAircraftById(hex);
+        if (clickedPlane && clickedPlane.callsign && !clickedPlane.private) {
+          var clickRc = routeCache[clickedPlane.callsign];
+          if (!clickRc || (clickRc.destSource !== "fr24-search" && clickRc.destSource !== "schedule")) {
+            tryFr24Search(clickedPlane).then(function() {
+              var m = markerMap[hex];
+              if (m && m.getPopup() && m.getPopup().isOpen()) {
+                var updA = findAircraftById(hex);
+                if (updA) m.getPopup().setContent(buildPopup(updA));
+              }
+            });
+          }
+        }
       }
     });
     map.on("moveend", function() {
