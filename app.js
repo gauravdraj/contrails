@@ -31,7 +31,7 @@
     throw new Error("Contrails core helpers failed to load.");
   }
 
-  const APP_VERSION = "v2.8";
+  const APP_VERSION = "v2.9";
   const isLocal = location.hostname === "localhost" || location.hostname === "127.0.0.1";
   const isIOSDevice = /iP(ad|hone|od)/.test(navigator.userAgent) ||
     (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
@@ -397,10 +397,12 @@
     map.getPane("airportTooltipPane").style.zIndex = 640;
     L.tileLayer(TILE_LAYER_URL, TILE_LAYER_OPTIONS).addTo(map);
 
-    userMarker = L.circleMarker([lat, lng], {
-      radius: 7, fillColor: "#5bbcf5", fillOpacity: 1,
-      color: "#fff", weight: 2
-    }).addTo(map);
+    if (shouldWatchUserPosition) {
+      userMarker = L.circleMarker([lat, lng], {
+        radius: 7, fillColor: "#5bbcf5", fillOpacity: 1,
+        color: "#fff", weight: 2
+      }).addTo(map);
+    }
 
     var _autoPanning = false;
     map.on("autopanstart", function() { _autoPanning = true; });
@@ -1116,6 +1118,12 @@
   function updateUserPosition(lat, lng) {
     userLat = lat;
     userLng = lng;
+    if (shouldWatchUserPosition && map && !userMarker) {
+      userMarker = L.circleMarker([lat, lng], {
+        radius: 7, fillColor: "#5bbcf5", fillOpacity: 1,
+        color: "#fff", weight: 2
+      }).addTo(map);
+    }
     if (userMarker) userMarker.setLatLng([lat, lng]);
     refreshAircraftProximity();
     renderMap();
@@ -1333,25 +1341,15 @@
         var dest = r.destination;
         var destIata = dest ? (dest.region ? dest.display : dest.iata) : null;
         var iataParts = [r.origin ? r.origin.iata : null, destIata].filter(Boolean);
-        var workerPhase = r.phase || null;
-        if (workerPhase === "landed" && r.origin && r.destination) {
-          var matchedPlane = aircraft.find(function(p) { return p.callsign === r.callsign; });
-          if (matchedPlane && matchedPlane.ground) {
-            workerPhase = resolveGroundPhase(matchedPlane, r.origin, r.destination);
-          }
-        }
-        var workerDisplay = (workerPhase !== r.phase)
-          ? formatClientRouteLabel(r.origin || null, dest || null, workerPhase)
-          : (r.display || iataParts.join(" to "));
         routeCache[r.callsign] = {
-          display: workerDisplay,
+          display: r.display || iataParts.join(" to "),
           iata: iataParts.join(" to "),
           origin: r.origin || null,
           destination: dest || null,
           originSource: r.originSource || null,
           destSource: r.destSource || null,
           confidence: r.confidence || null,
-          phase: workerPhase,
+          phase: r.phase || null,
           fetchedAt: Date.now()
         };
         if (r.destSource === "adsbdb" || r.originSource === "adsbdb") {
@@ -1515,13 +1513,13 @@
         }
         var iataParts = [rc.origin ? rc.origin.iata : null, dest.iata].filter(Boolean);
         rc.iata = iataParts.join(" to ");
-        var phase = a.ground ? resolveGroundPhase(a, rc.origin, dest) :
+        var phase = a.ground ? "landed" :
           (a.altFt < 15000 && a.vRate != null && a.vRate * 60 < -100) ? "arriving" :
           (a.altFt < 15000 && a.vRate != null && a.vRate * 60 > 100) ? "departing" : "cruising";
         rc.display = formatClientRouteLabel(rc.origin, dest, phase);
         rc.phase = phase;
       } else {
-        var phase2 = a.ground ? resolveGroundPhase(a, null, dest) :
+        var phase2 = a.ground ? "landed" :
           (a.altFt < 15000 && a.vRate != null && a.vRate * 60 < -100) ? "arriving" :
           (a.altFt < 15000 && a.vRate != null && a.vRate * 60 > 100) ? "departing" : "cruising";
         routeCache[a.callsign] = {
@@ -1539,79 +1537,19 @@
     }
   }
 
-  function resolveGroundPhase(a, origin, destination) {
-    if (!airportData) return "landed";
-    var oLat = null, oLng = null, dLat = null, dLng = null;
-    if (origin && origin.iata) {
-      for (var i = 0; i < airportData.length; i++) {
-        if (airportData[i][0] === origin.iata) { oLat = airportData[i][1]; oLng = airportData[i][2]; break; }
-      }
-    }
-    if (destination && destination.iata) {
-      for (var i = 0; i < airportData.length; i++) {
-        if (airportData[i][0] === destination.iata) { dLat = airportData[i][1]; dLng = airportData[i][2]; break; }
-      }
-    }
-    var distToOrigin = (oLat != null) ? haversineKm(a.lat, a.lng, oLat, oLng) : Infinity;
-    var distToDest = (dLat != null) ? haversineKm(a.lat, a.lng, dLat, dLng) : Infinity;
-    if (distToOrigin < 5 && distToOrigin <= distToDest) return "at gate";
-    if (distToDest < 5) return "landed";
-    return "landed";
-  }
-
   function formatClientRouteLabel(origin, destination, phase) {
     var oIata = origin ? origin.iata : null;
     var oName = oIata ? airportDisplayName(oIata) : null;
-
+    var dName = null;
     if (destination && destination.region) {
-      var display = destination.display;
-      var regionName = destination.region;
-      if (phase === "departing") {
-        if (oName) return "departed " + oName + " for " + display;
-        return display;
-      }
-      if (phase === "arriving") {
-        if (oName) return display + " from " + oName;
-        return display;
-      }
-      if (phase === "landed") {
-        if (oName) return "arrived in " + regionName + " from " + oName;
-        return "arrived in " + regionName;
-      }
-      if (phase === "at gate") {
-        if (oName) return "at gate at " + oName + " for " + display;
-        return display;
-      }
-      if (oName) return "heading to " + regionName + " from " + oName;
-      return display;
+      dName = destination.display || destination.region;
+    } else if (destination && destination.iata) {
+      dName = airportDisplayName(destination.iata);
     }
-
-    var dIata = destination ? destination.iata : null;
-    var dName = dIata ? airportDisplayName(dIata) : null;
-    if (!oName && !dName) return "";
-    if (phase === "departing") {
-      if (oName && dName) return "departed " + oName + " for " + dName;
-      if (oName) return "departed " + oName;
-      return "departing for " + dName;
-    }
-    if (phase === "arriving") {
-      if (dName && oName) return "landing at " + dName + " from " + oName;
-      if (dName) return "landing at " + dName;
-      return "arriving from " + oName;
-    }
-    if (phase === "landed") {
-      if (dName && oName) return "arrived at " + dName + " from " + oName;
-      if (oName) return "arrived from " + oName;
-      return "arrived at " + dName;
-    }
-    if (phase === "at gate") {
-      if (oName && dName) return "at gate at " + oName + " for " + dName;
-      if (oName) return "at gate at " + oName;
-      return "departing for " + dName;
-    }
-    if (oName && dName) return "heading to " + dName + " from " + oName;
-    if (oName) return "from " + oName;
-    return "heading to " + dName;
+    if (oName && dName) return oName + " to " + dName;
+    if (oName) return oName;
+    if (dName) return dName;
+    return "";
   }
 
   var lastProactiveFetch = 0;
@@ -2403,7 +2341,7 @@
       }
     }
 
-    var phase = a.ground ? resolveGroundPhase(a, origin, destination) :
+    var phase = a.ground ? "landed" :
       (a.altFt < 15000 && a.vRate != null && a.vRate * 60 < -100) ? "arriving" :
       (a.altFt < 15000 && a.vRate != null && a.vRate * 60 > 100) ? "departing" : "cruising";
 
@@ -2560,7 +2498,7 @@
 
       var origin = { iata: from, name: from };
       var destination = { iata: to, name: to };
-      var phase = a.ground ? resolveGroundPhase(a, origin, destination) :
+      var phase = a.ground ? "landed" :
         (a.altFt < 15000 && a.vRate != null && a.vRate * 60 < -100) ? "arriving" :
         (a.altFt < 15000 && a.vRate != null && a.vRate * 60 > 100) ? "departing" : "cruising";
 
@@ -3590,16 +3528,19 @@
     return sign + h + "h" + (m < 10 ? "0" : "") + m + "m";
   }
 
+  var LANDING_SCAN_RADIUS_KM = 350;
+
   function buildLiveScheduleData(airportIata, airportLat, airportLng) {
     var arrivals = [];
     var departures = [];
     for (var i = 0; i < aircraft.length; i++) {
       var a = aircraft[i];
-      if (!a.callsign || isFiltered(a)) continue;
+      if (!a.callsign) continue;
       var rc = routeCache[a.callsign];
       if (!a.ground) {
         if (rc && rc.destination && rc.destination.iata === airportIata) {
           var distKm = haversineKm(a.lat, a.lng, airportLat, airportLng);
+          if (distKm > LANDING_SCAN_RADIUS_KM) continue;
           var spdKts = a.speedKts || 0;
           var etaMin = spdKts > 0 ? (distKm / (spdKts * 1.852)) * 60 : null;
           arrivals.push({
@@ -3614,12 +3555,6 @@
       } else {
         var distKm = haversineKm(a.lat, a.lng, airportLat, airportLng);
         if (distKm < 5) {
-          var isPreDeparture = true;
-          if (rc && rc.destination && rc.destination.iata) {
-            var gndPhase = resolveGroundPhase(a, rc.origin, rc.destination);
-            if (gndPhase === "landed") isPreDeparture = false;
-          }
-          if (!isPreDeparture) continue;
           var spdKts = a.speedKts || 0;
           var status = spdKts > 80 ? "Rolling" : spdKts > 30 ? "Taxiing" : "At gate";
           departures.push({

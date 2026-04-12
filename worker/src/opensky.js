@@ -276,46 +276,11 @@ export function mergeRoutes(trackResult, adsbdbEntry, aircraftInfo) {
 
 export function formatRouteLabel(origin, destination, phase) {
   const oIata = origin?.iata;
-
-  if (destination?.region) {
-    const display = destination.display;
-    const regionName = destination.region;
-    switch (phase) {
-      case "departing":
-        if (oIata) return `departed ${oIata} for ${display}`;
-        return display;
-      case "arriving":
-        if (oIata) return `${display} from ${oIata}`;
-        return display;
-      case "landed":
-        if (oIata) return `arrived in ${regionName} from ${oIata}`;
-        return `arrived in ${regionName}`;
-      default:
-        if (oIata) return `heading to ${regionName} from ${oIata}`;
-        return display;
-    }
-  }
-
-  const dIata = destination?.iata;
-
-  if (!oIata && !dIata) return "";
-
-  switch (phase) {
-    case "departing":
-      if (oIata && dIata) return `departed ${oIata} for ${dIata}`;
-      if (oIata) return `departed ${oIata}`;
-      return `departing for ${dIata}`;
-    case "arriving":
-      if (dIata && oIata) return `landing at ${dIata} from ${oIata}`;
-      if (dIata) return `landing at ${dIata}`;
-      return `arriving from ${oIata}`;
-    case "landed":
-      if (dIata && oIata) return `arrived at ${dIata} from ${oIata}`;
-      if (oIata) return `arrived from ${oIata}`;
-      return `arrived at ${dIata}`;
-    default:
-      if (oIata && dIata) return `heading to ${dIata} from ${oIata}`;
-      if (oIata) return `from ${oIata}`;
-      return `heading to ${dIata}`;
-  }
+  const dName = destination?.region
+    ? (destination.display || destination.region)
+    : destination?.iata;
+  if (oIata && dName) return `${oIata} to ${dName}`;
+  if (oIata) return oIata;
+  if (dName) return dName;
+  return "";
 }
