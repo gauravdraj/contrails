@@ -31,7 +31,7 @@
     throw new Error("Contrails core helpers failed to load.");
   }
 
-  const APP_VERSION = "v2.1";
+  const APP_VERSION = "v2.2";
   const isLocal = location.hostname === "localhost" || location.hostname === "127.0.0.1";
   const isIOSDevice = /iP(ad|hone|od)/.test(navigator.userAgent) ||
     (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
@@ -139,6 +139,8 @@
   function routesetUrl() {
     return WORKER_URL + "/routeset";
   }
+  const OPENSKY_PROXY = "https://opensky.therealgraj.com";
+  var openskyProxyOk = null;
   function trackUrl(hex) {
     return WORKER_URL + "/track/" + hex;
   }
@@ -1229,6 +1231,7 @@
     updateViewHint(visibleAircraftCount());
     fetchRoutes();
     clientConvergenceRefine();
+    proactiveFetchTracks();
   }
 
   async function fetchRoutes() {
@@ -1384,6 +1387,37 @@
     if (oIata && dIata) return oIata + " \u2192 " + dIata;
     if (oIata) return "from " + oIata;
     return "to " + dIata;
+  }
+
+  var lastProactiveFetch = 0;
+  var proactivePending = {};
+  function proactiveFetchTracks() {
+    if (openskyProxyOk === false) return;
+    var now = Date.now();
+    if (now - lastProactiveFetch < 30000) return;
+    lastProactiveFetch = now;
+    var targets = [];
+    for (var i = 0; i < aircraft.length; i++) {
+      var a = aircraft[i];
+      if (!a.callsign || a.private || a.ground || isFiltered(a)) continue;
+      if (trackExtended[a.icao24] || proactivePending[a.icao24]) continue;
+      var rc = routeCache[a.callsign];
+      if (rc && rc.origin && rc.originSource === "track") continue;
+      targets.push(a.icao24);
+      if (targets.length >= 2) break;
+    }
+    for (var j = 0; j < targets.length; j++) {
+      (function(hex) {
+        proactivePending[hex] = true;
+        fetchProxyTrack(hex).then(function(data) {
+          delete proactivePending[hex];
+          if (data && (data.path ? data.path.length : data.length)) {
+            trackExtended[hex] = true;
+            ingestTrackPath(hex, data);
+          }
+        }).catch(function() { delete proactivePending[hex]; });
+      })(targets[j]);
+    }
   }
 
   function proximityMetrics(lat, lng, fallbackBearing) {
@@ -1997,33 +2031,101 @@
       '<img src="' + escapeHtml(photo.src) + '" style="width:100%;border-radius:6px;display:block;margin-bottom:6px" alt="Aircraft photo">';
   }
 
+  function ingestTrackPath(hex, data) {
+    var path = data.path || data;
+    if (!path || !path.length) return;
+    var history = posHistory[hex];
+    if (!history) { posHistory[hex] = []; history = posHistory[hex]; }
+    var earliestLive = history.length ? history[0][2] : Infinity;
+    var converted = [];
+    for (var i = 0; i < path.length; i++) {
+      var pt = path[i];
+      var ts = pt[0], lat = pt[1], lon = pt[2], altM = pt[3];
+      var tsMs = ts > 1e12 ? ts : ts * 1000;
+      if (tsMs >= earliestLive - 5000) break;
+      var altFt = altM != null ? Math.round(altM * 3.28084) : null;
+      var onGround = altFt != null && altFt <= 0;
+      converted.push([lat, lon, tsMs, onGround ? null : altFt, onGround, i === 0]);
+    }
+    if (converted.length) {
+      posHistory[hex] = converted.concat(history);
+      runOriginDetection(hex, data);
+    }
+  }
+
+  function runOriginDetection(hex, data) {
+    if (!airportData) return;
+    var cs = null;
+    for (var i = 0; i < aircraft.length; i++) {
+      if (aircraft[i].icao24 === hex) { cs = aircraft[i].callsign; break; }
+    }
+    if (!cs) return;
+    var rc = routeCache[cs];
+    if (rc && rc.origin && rc.originSource === "track") return;
+    var path = data.path || data;
+    if (!path || path.length < 5) return;
+    var scanEnd = Math.max(20, Math.floor(path.length * 0.25));
+    var originPt = null;
+    for (var i = 0; i < scanEnd && i < path.length; i++) {
+      var altM = path[i][3];
+      if (altM != null && altM <= 2500) { originPt = path[i]; break; }
+    }
+    if (!originPt) return;
+    var bestDist = Infinity, bestApt = null;
+    for (var j = 0; j < airportData.length; j++) {
+      var ap = airportData[j];
+      var d = haversineKm(originPt[1], originPt[2], ap[1], ap[2]);
+      if (d < bestDist) { bestDist = d; bestApt = ap; }
+    }
+    if (!bestApt || bestDist > 15) return;
+    var origin = { iata: bestApt[0], name: bestApt[3] };
+    if (rc) {
+      rc.origin = origin;
+      rc.originSource = "track";
+      var oIata = origin.iata;
+      var dIata = rc.destination ? rc.destination.iata : null;
+      rc.iata = [oIata, dIata].filter(Boolean).join(" \u2192 ");
+      rc.display = formatClientRouteLabel(origin, rc.destination, rc.phase || "cruising");
+    } else {
+      routeCache[cs] = {
+        display: formatClientRouteLabel(origin, null, "cruising"),
+        iata: origin.iata,
+        origin: origin,
+        destination: null,
+        originSource: "track",
+        phase: "cruising",
+        fetchedAt: Date.now()
+      };
+    }
+  }
+
+  function fetchProxyTrack(hex) {
+    if (openskyProxyOk === false) return Promise.resolve(null);
+    return fetch(OPENSKY_PROXY + "/track?hex=" + hex, { signal: AbortSignal.timeout(5000) })
+      .then(function(r) {
+        if (!r.ok) throw new Error(r.status);
+        openskyProxyOk = true;
+        return r.json();
+      })
+      .catch(function() {
+        openskyProxyOk = false;
+        setTimeout(function() { openskyProxyOk = null; }, 5 * 60 * 1000);
+        return null;
+      });
+  }
+
   function loadPopupTrack(hex) {
     if (!hex || trackExtended[hex]) return;
     trackExtended[hex] = true;
-    fetch(trackUrl(hex))
-      .then(function(r) { return r.json(); })
-      .then(function(path) {
-        if (!path || !path.length) return;
-        var history = posHistory[hex];
-        if (!history) {
-          posHistory[hex] = [];
-          history = posHistory[hex];
-        }
-        var earliestLive = history.length ? history[0][2] : Infinity;
-        var converted = [];
-        for (var i = 0; i < path.length; i++) {
-          var pt = path[i];
-          var tsMs = pt[0] * 1000;
-          if (tsMs >= earliestLive - 5000) break;
-          var altFt = pt[3] != null ? Math.round(pt[3] * 3.28084) : null;
-          var onGround = altFt != null && altFt <= 0;
-          converted.push([pt[1], pt[2], tsMs, onGround ? null : altFt, onGround, i === 0]);
-        }
-        if (converted.length) {
-          posHistory[hex] = converted.concat(history);
-        }
-      })
-      .catch(function() {});
+    fetchProxyTrack(hex).then(function(data) {
+      if (data && (data.path ? data.path.length : data.length)) {
+        ingestTrackPath(hex, data);
+        return;
+      }
+      return fetch(trackUrl(hex))
+        .then(function(r) { return r.json(); })
+        .then(function(fallback) { ingestTrackPath(hex, fallback); });
+    }).catch(function() {});
   }
 
 
