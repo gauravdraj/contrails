@@ -31,7 +31,7 @@
     throw new Error("Contrails core helpers failed to load.");
   }
 
-  const APP_VERSION = "v2.4";
+  const APP_VERSION = "v2.5";
   const isLocal = location.hostname === "localhost" || location.hostname === "127.0.0.1";
   const isIOSDevice = /iP(ad|hone|od)/.test(navigator.userAgent) ||
     (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
@@ -197,6 +197,8 @@
   const photoPending = {};
   const dormantHistory = {};
   const trackExtended = {};
+  const scheduleDataCache = {};
+  const SCHEDULE_CACHE_TTL = 2 * 60 * 1000;
 
   let map, userMarker, aircraftLayer, trailLayer, airportLayer, runwayLayer;
   let airportData = null;
@@ -465,8 +467,10 @@
       }
       var photoEl = el.querySelector(".popup-photo");
       if (photoEl) {
+        var hex = photoEl.getAttribute("data-hex");
         loadPopupPhoto(photoEl);
-        loadPopupTrack(photoEl.getAttribute("data-hex"));
+        loadPopupTrack(hex);
+        matchScheduleRoute(hex);
       }
     });
     map.on("moveend", function() {
@@ -1279,6 +1283,7 @@
     fetchRoutes();
     clientConvergenceRefine();
     proactiveFetchTracks();
+    proactiveScheduleSweep();
   }
 
   async function fetchRoutes() {
@@ -2262,6 +2267,199 @@
     }).catch(function() {});
   }
 
+  function fetchScheduleData(iata) {
+    var cached = scheduleDataCache[iata];
+    if (cached && Date.now() - cached.ts < SCHEDULE_CACHE_TTL) return Promise.resolve(cached.data);
+    var url = (isLocal ? "/api/fr24/schedule/" : WORKER_URL + "/schedule/") + encodeURIComponent(iata);
+    return fetch(url).then(function(r) {
+      if (!r.ok) return null;
+      return r.json();
+    }).then(function(data) {
+      if (data) scheduleDataCache[iata] = { data: data, ts: Date.now() };
+      return data;
+    }).catch(function() { return null; });
+  }
+
+  function findScheduleMatch(variants, schedData, iata) {
+    var arrs = schedData.arrivals || [];
+    var deps = schedData.departures || [];
+    for (var v = 0; v < variants.length; v++) {
+      var vUpper = variants[v].toUpperCase();
+      for (var ai = 0; ai < arrs.length; ai++) {
+        var row = arrs[ai];
+        if ((row.callsign || "").toUpperCase() === vUpper ||
+            (row.flight || "").replace(/\s/g, "").toUpperCase() === vUpper) {
+          return { dir: "arrival", airport: iata, airportName: schedData.name || iata, row: row, from: row.from_iata || null };
+        }
+      }
+      for (var di = 0; di < deps.length; di++) {
+        var row = deps[di];
+        if ((row.callsign || "").toUpperCase() === vUpper ||
+            (row.flight || "").replace(/\s/g, "").toUpperCase() === vUpper) {
+          return { dir: "departure", airport: iata, airportName: schedData.name || iata, row: row, to: row.to_iata || null };
+        }
+      }
+    }
+    return null;
+  }
+
+  function applyScheduleMatch(a, match) {
+    if (!a || !match) return false;
+    var currentRc = routeCache[a.callsign];
+    var origin = null, destination = null, originSource = null, destSource = null;
+
+    if (match.dir === "arrival") {
+      destination = { iata: match.airport, name: match.airportName };
+      destSource = "schedule";
+      if (match.from) {
+        origin = { iata: match.from, name: match.row.from_name || match.from };
+        originSource = "schedule";
+      } else if (currentRc && currentRc.origin) {
+        origin = currentRc.origin;
+        originSource = currentRc.originSource;
+      }
+    } else {
+      origin = { iata: match.airport, name: match.airportName };
+      originSource = "schedule";
+      if (match.to) {
+        destination = { iata: match.to, name: match.row.to_name || match.to };
+        destSource = "schedule";
+      } else if (currentRc && currentRc.destination) {
+        destination = currentRc.destination;
+        destSource = currentRc.destSource;
+      }
+    }
+
+    var phase = a.ground ? "landed" :
+      (a.altFt < 10000 && a.vRate != null && a.vRate * 60 < -300) ? "arriving" :
+      (a.altFt < 10000 && a.vRate != null && a.vRate * 60 > 300) ? "departing" : "cruising";
+
+    routeCache[a.callsign] = {
+      display: formatClientRouteLabel(origin, destination, phase),
+      iata: [origin ? origin.iata : null, destination ? destination.iata : null].filter(Boolean).join(" \u2192 "),
+      origin: origin,
+      destination: destination,
+      originSource: originSource || (currentRc ? currentRc.originSource : null),
+      destSource: destSource || (currentRc ? currentRc.destSource : null),
+      confidence: "high",
+      phase: phase,
+      fetchedAt: Date.now()
+    };
+    return true;
+  }
+
+  var lastScheduleFetch = 0;
+
+  function proactiveScheduleSweep() {
+    if (!aircraft.length || !airportData) return;
+    var policy = currentViewPolicy(visibleAircraftCount());
+    if (!policy.allowRoutes) return;
+
+    cascadeScheduleMatches();
+
+    var now = Date.now();
+    if (now - lastScheduleFetch < SCHEDULE_CACHE_TTL) return;
+    lastScheduleFetch = now;
+
+    var bounds = currentViewBounds(AIRPORT_VIEW_PAD);
+    if (!bounds) return;
+    var visible = [];
+    for (var i = 0; i < airportData.length; i++) {
+      var ap = airportData[i];
+      if (bounds.contains([ap[1], ap[2]])) visible.push(ap[0]);
+    }
+    if (!visible.length) return;
+    if (visible.length > 3) visible.length = 3;
+
+    var fetches = visible.map(function(iata) { return fetchScheduleData(iata); });
+    Promise.all(fetches).then(function() {
+      cascadeScheduleMatches();
+    });
+  }
+
+  function cascadeScheduleMatches() {
+    var updated = 0;
+    for (var i = 0; i < aircraft.length; i++) {
+      var a = aircraft[i];
+      if (!a.callsign || a.private) continue;
+      var rc = routeCache[a.callsign];
+      if (rc && rc.destSource === "schedule") continue;
+      var variants = callsignVariants(a.callsign);
+      if (!variants.length) continue;
+      for (var iata in scheduleDataCache) {
+        var cached = scheduleDataCache[iata];
+        if (!cached || Date.now() - cached.ts > SCHEDULE_CACHE_TTL) continue;
+        var match = findScheduleMatch(variants, cached.data, iata);
+        if (match && applyScheduleMatch(a, match)) {
+          updated++;
+          break;
+        }
+      }
+    }
+    if (updated > 0) refreshAirportLabels();
+    return updated;
+  }
+
+  function matchScheduleRoute(hex) {
+    var a = findAircraftById(hex);
+    if (!a || !a.callsign || a.private) return;
+    var rc = routeCache[a.callsign];
+    if (rc && rc.destSource === "schedule") return;
+
+    var variants = callsignVariants(a.callsign);
+    if (!variants.length) return;
+
+    var candidateIatas = [];
+    if (rc && rc.destination && rc.destination.iata) candidateIatas.push(rc.destination.iata);
+    if (rc && rc.origin && rc.origin.iata) candidateIatas.push(rc.origin.iata);
+
+    var hasRouteCandidates = candidateIatas.length > 0;
+    if (!hasRouteCandidates && a.altFt != null && a.altFt > 25000 && !a.ground) return;
+
+    if (!candidateIatas.length && airportData) {
+      var nearby = [];
+      for (var i = 0; i < airportData.length; i++) {
+        var ap = airportData[i];
+        var d = haversineKm(a.lat, a.lng, ap[1], ap[2]);
+        if (d < 120) nearby.push({ iata: ap[0], dist: d });
+      }
+      nearby.sort(function(x, y) { return x.dist - y.dist; });
+      for (var j = 0; j < Math.min(nearby.length, 3); j++) {
+        candidateIatas.push(nearby[j].iata);
+      }
+    }
+
+    var unique = [];
+    var seen = {};
+    for (var k = 0; k < candidateIatas.length; k++) {
+      if (!seen[candidateIatas[k]]) {
+        seen[candidateIatas[k]] = true;
+        unique.push(candidateIatas[k]);
+      }
+    }
+    if (!unique.length) return;
+
+    var fetches = unique.map(function(iata) { return fetchScheduleData(iata); });
+    Promise.all(fetches).then(function(results) {
+      for (var r = 0; r < results.length; r++) {
+        if (!results[r]) continue;
+        var match = findScheduleMatch(variants, results[r], unique[r]);
+        if (match) {
+          applyScheduleMatch(a, match);
+          break;
+        }
+      }
+
+      var cascaded = cascadeScheduleMatches();
+
+      var marker = markerMap[hex];
+      if (marker && marker.getPopup() && marker.getPopup().isOpen()) {
+        var updatedA = findAircraftById(hex);
+        if (updatedA) marker.getPopup().setContent(buildPopup(updatedA));
+      }
+      refreshAirportLabels();
+    });
+  }
 
   function collectOccupiedScreenPoints() {
     if (!map) return [];
