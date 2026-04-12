@@ -52,13 +52,13 @@ test("convergenceScore returns high score for converging path", () => {
   assert.ok(score > 0, "score should be positive for converging path");
 });
 
-test("convergenceScore returns 0 for diverging path", () => {
+test("convergenceScore returns 0 for diverging path far from airport", () => {
   const tail = [
-    [0, 37.62, -122.375, 0, 0, false],
-    [1, 37.60, -122.35, 500, 0, false],
-    [2, 37.55, -122.30, 1000, 0, false],
-    [3, 37.50, -122.25, 2000, 0, false],
-    [4, 37.40, -122.20, 3000, 0, false],
+    [0, 36.0, -120.0, 5000, 0, false],
+    [1, 35.9, -119.9, 5500, 0, false],
+    [2, 35.8, -119.8, 6000, 0, false],
+    [3, 35.7, -119.7, 6500, 0, false],
+    [4, 35.6, -119.6, 7000, 0, false],
   ];
   const score = convergenceScore(tail, 37.62, -122.375);
   assert.equal(score, 0);
@@ -81,6 +81,25 @@ test("convergenceScore resolves SFO vs OAK correctly", () => {
   assert.ok(sfoScore > oakScore, `SFO (${sfoScore}) should beat OAK (${oakScore})`);
 });
 
+test("convergenceScore handles approach pattern with close pass then diverging", () => {
+  const tail = [
+    [0, 37.4, -122.1, 2000, 280, false],
+    [1, 37.45, -122.15, 1500, 280, false],
+    [2, 37.5, -122.2, 1000, 280, false],
+    [3, 37.55, -122.25, 500, 280, false],
+    [4, 37.58, -122.3, 300, 280, false],
+    [5, 37.61, -122.37, 100, 280, false],
+    [6, 37.62, -122.38, 50, 280, false],
+    [7, 37.60, -122.35, 300, 280, false],
+    [8, 37.55, -122.30, 800, 280, false],
+    [9, 37.50, -122.26, 1500, 280, false],
+  ];
+  const sfoScore = convergenceScore(tail, 37.62, -122.375);
+  const oakScore = convergenceScore(tail, 37.72, -122.221);
+  assert.ok(sfoScore > oakScore, `SFO (${sfoScore}) should beat OAK (${oakScore}) even with diverging tail`);
+  assert.ok(sfoScore > 0, "close pass should produce positive score");
+});
+
 // --- extractOriginDest ---
 
 test("extractOriginDest finds origin from low-altitude first point", () => {
@@ -97,7 +116,7 @@ test("extractOriginDest finds origin from low-altitude first point", () => {
   assert.equal(origin.iata, "SAN");
 });
 
-test("extractOriginDest returns null origin when first point is high altitude", () => {
+test("extractOriginDest returns null origin when all points are high altitude", () => {
   const track = {
     path: [
       [1000, 37.5, -122.0, 10000, 280, false],
@@ -106,6 +125,15 @@ test("extractOriginDest returns null origin when first point is high altitude", 
   };
   const { origin } = extractOriginDest(track);
   assert.equal(origin, null);
+});
+
+test("extractOriginDest returns null destination when all points are high altitude", () => {
+  const pts = [];
+  for (let i = 0; i < 15; i++) {
+    pts.push([1000 + i * 60, 35 + i * 0.2, -120 + i * 0.1, 10000 - i * 50, 280, false]);
+  }
+  const { destination } = extractOriginDest({ path: pts });
+  assert.equal(destination, null);
 });
 
 test("extractOriginDest returns null for empty/missing path", () => {

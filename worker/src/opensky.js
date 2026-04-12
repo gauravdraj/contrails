@@ -9,9 +9,12 @@ const TOKEN_CACHE_TTL = 1500;
 
 const ORIGIN_MAX_ALT_M = 500;
 const ORIGIN_MAX_DIST_KM = 8;
-const CONVERGENCE_TAIL_SIZE = 20;
+const CONVERGENCE_TAIL_SIZE = 50;
 const CONVERGENCE_SEARCH_RADIUS_KM = 80;
 const CONVERGENCE_MIN_POINTS = 10;
+const DESTINATION_LOW_ALT_M = 3000;
+const CLOSE_PASS_KM = 5;
+const CLOSE_PASS_BONUS = 8;
 
 export function nearestAirport(lat, lon, maxKm) {
   let best = null;
@@ -46,9 +49,17 @@ export function convergenceScore(pathTail, airportLat, airportLon) {
   }
   const pct = decreasing / total;
   const net = dists[dists.length - 1] - dists[0];
-  const final = dists[dists.length - 1];
-  if (net >= 0) return 0;
-  return pct * Math.abs(net) / Math.max(final, 0.1);
+  const finalDist = dists[dists.length - 1];
+  const minDist = Math.min(...dists);
+
+  let score = 0;
+  if (net < 0) {
+    score = pct * Math.abs(net) / Math.max(finalDist, 0.1);
+  }
+  if (minDist < CLOSE_PASS_KM) {
+    score += (CLOSE_PASS_KM - minDist) / CLOSE_PASS_KM * CLOSE_PASS_BONUS;
+  }
+  return score;
 }
 
 export function extractOriginDest(track) {
@@ -71,7 +82,8 @@ export function extractOriginDest(track) {
     ? path.slice(-CONVERGENCE_TAIL_SIZE)
     : path;
 
-  if (tail.length >= CONVERGENCE_MIN_POINTS && tail[tail.length - 1][3] < tail[0][3]) {
+  const minAlt = Math.min(...tail.map((pt) => pt[3]));
+  if (tail.length >= CONVERGENCE_MIN_POINTS && minAlt < DESTINATION_LOW_ALT_M) {
     const last = tail[tail.length - 1];
     const candidates = nearbyAirports(last[1], last[2], CONVERGENCE_SEARCH_RADIUS_KM, 5);
 
