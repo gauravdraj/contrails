@@ -2483,10 +2483,14 @@
       var matched = null;
       for (var i = 0; i < results.length; i++) {
         var entry = results[i];
-        if (entry.type !== "live") continue;
-        var entryId = (entry.id || "").replace(/\s/g, "").toUpperCase();
+        if (entry.type !== "live" || !entry.detail) continue;
+        var candidates = [
+          (entry.detail.callsign || "").replace(/\s/g, "").toUpperCase(),
+          (entry.detail.flight || "").replace(/\s/g, "").toUpperCase(),
+          (entry.id || "").replace(/\s/g, "").toUpperCase()
+        ];
         for (var v = 0; v < variantsUpper.length; v++) {
-          if (entryId === variantsUpper[v]) { matched = entry; break; }
+          if (candidates.indexOf(variantsUpper[v]) !== -1) { matched = entry; break; }
         }
         if (matched) break;
       }
