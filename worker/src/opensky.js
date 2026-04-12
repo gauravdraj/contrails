@@ -5,6 +5,7 @@ import { json } from "./http.js";
 const OPENSKY_API = "https://opensky-network.org/api";
 const OPENSKY_AUTH_URL = "https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token";
 const OPENSKY_CACHE_TTL = 7200;
+const TRACK_STALE_MS = 20 * 60 * 1000;
 const TOKEN_CACHE_TTL = 1500;
 
 const ORIGIN_MAX_ALT_M = 500;
@@ -135,7 +136,13 @@ export async function fetchCachedTrack(hex, cache, ctx, env) {
 
   const cacheKey = new Request(`https://opensky-track-cache/${normalized}`);
   const cached = await cache.match(cacheKey);
-  if (cached) return cached.json();
+  if (cached) {
+    const track = await cached.json();
+    const lastPt = track?.path?.[track.path.length - 1];
+    if (lastPt && (Date.now() - lastPt[0] * 1000) < TRACK_STALE_MS) {
+      return track;
+    }
+  }
 
   const headers = { "User-Agent": "contrails/1.0" };
   const token = await fetchToken(env, cache);

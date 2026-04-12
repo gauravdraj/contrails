@@ -222,6 +222,7 @@
   let controlsFeedbackTimer = 0;
   const markerMap = {};
   const extraState = {};
+  const airportMarkers = {};
   var refreshSearchUi = null;
   let markerAnimationFrame = 0;
   let markerAnimationTimer = 0;
@@ -343,8 +344,9 @@
       doubleTapDragZoom: isIOSSafari ? false : "center",
       doubleTapDragZoomOptions: { reverse: true }
     });
+    map.createPane("planeLabelPane");
+    map.getPane("planeLabelPane").style.zIndex = 630;
     map.createPane("airportTooltipPane");
-    // Keep airport labels above markers but below plane labels and popups.
     map.getPane("airportTooltipPane").style.zIndex = 640;
     L.tileLayer(TILE_LAYER_URL, TILE_LAYER_OPTIONS).addTo(map);
 
@@ -1225,6 +1227,7 @@
     pruneStaleHistoryEntries(activeIds, now);
 
     renderMap();
+    refreshAirportLabels();
     if (refreshSearchUi) refreshSearchUi();
     if (!tryResolvePendingPlaneFocus()) maybeLookupPendingPlaneFocus();
     updateStatus();
@@ -1239,9 +1242,12 @@
     var policy = currentViewPolicy(visible.length);
     if (!policy.allowRoutes) return;
     var needed = [];
+    var now = Date.now();
     for (var i = 0; i < visible.length && needed.length < 20; i++) {
       var a = visible[i];
-      if (a.callsign && !a.private && !routeCache[a.callsign]) {
+      var cached = a.callsign ? routeCache[a.callsign] : null;
+      var stale = cached && cached.fetchedAt && (now - cached.fetchedAt > 10 * 60 * 1000);
+      if (a.callsign && !a.private && (!cached || stale)) {
         needed.push({
           callsign: a.callsign,
           hex: a.icao24,
@@ -1272,9 +1278,11 @@
           origin: r.origin || null,
           destination: r.destination || null,
           originSource: r.originSource || null,
-          phase: r.phase || null
+          phase: r.phase || null,
+          fetchedAt: Date.now()
         };
       }
+      refreshAirportLabels();
     } catch (e) {
       console.warn("Route fetch failed:", e);
     }
@@ -1514,8 +1522,87 @@
     } catch (e) { console.warn("Airport fetch failed:", e); }
   }
 
+  function computeNextFlight(iata, lat, lng) {
+    var bestArr = null, bestArrEta = Infinity;
+    var bestDep = null, bestDepDist = Infinity;
+    for (var i = 0; i < aircraft.length; i++) {
+      var a = aircraft[i];
+      if (!a.callsign || isFiltered(a)) continue;
+      var rc = routeCache[a.callsign];
+
+      if (rc && rc.destination && rc.destination.iata === iata) {
+        var d = haversineKm(a.lat, a.lng, lat, lng);
+        if (d < 200 && a.speedKts > 50) {
+          var eta = d / (a.speedKts * 1.852 / 60);
+          if (eta < bestArrEta) {
+            bestArrEta = eta;
+            bestArr = { callsign: a.callsign, etaMin: Math.round(eta) };
+          }
+        }
+      }
+
+      if (rc && rc.origin && rc.origin.iata === iata &&
+          (rc.phase === "departing" || (a.vRate != null && a.vRate > 5))) {
+        var d = haversineKm(a.lat, a.lng, lat, lng);
+        if (d < 80 && d < bestDepDist) {
+          bestDepDist = d;
+          bestDep = { callsign: a.callsign, dest: rc.destination ? rc.destination.iata : "" };
+        }
+      }
+
+      if (!rc && a.vRate != null && a.vRate < -5 && a.altFt != null && a.altFt < 15000 && a.track != null) {
+        var d = haversineKm(a.lat, a.lng, lat, lng);
+        if (d < 50 && a.speedKts > 50) {
+          var toBearing = bearingDegrees(a.lat, a.lng, lat, lng);
+          var diff = Math.abs(toBearing - a.track);
+          if (diff > 180) diff = 360 - diff;
+          if (diff < 45) {
+            var eta = d / (a.speedKts * 1.852 / 60);
+            if (eta < bestArrEta) {
+              bestArrEta = eta;
+              bestArr = { callsign: a.callsign, etaMin: Math.round(eta) };
+            }
+          }
+        }
+      }
+    }
+    return { arrival: bestArr, departure: bestDep };
+  }
+
+  function buildAirportLabelHtml(iata, lat, lng) {
+    var next = computeNextFlight(iata, lat, lng);
+    var html = escapeHtml(iata);
+    if (next.arrival) {
+      var cs = next.arrival.callsign;
+      var name = airlineName(cs);
+      var short = name ? name + " " + cs.substring(3) : cs;
+      html += '<span class="ap-next arr">\u2009\u2193 ' + escapeHtml(short);
+      if (next.arrival.etaMin <= 60) html += " ~" + next.arrival.etaMin + "m";
+      html += "</span>";
+    } else if (next.departure) {
+      var cs = next.departure.callsign;
+      var name = airlineName(cs);
+      var short = name ? name + " " + cs.substring(3) : cs;
+      html += '<span class="ap-next dep">\u2009\u2191 ' + escapeHtml(short);
+      if (next.departure.dest) html += " \u2192 " + escapeHtml(next.departure.dest);
+      html += "</span>";
+    }
+    return html;
+  }
+
+  function refreshAirportLabels() {
+    for (var iata in airportMarkers) {
+      var info = airportMarkers[iata];
+      var tooltip = info.marker.getTooltip();
+      if (!tooltip) continue;
+      var content = buildAirportLabelHtml(iata, info.lat, info.lng);
+      if (tooltip.getContent() !== content) tooltip.setContent(content);
+    }
+  }
+
   function renderAirports() {
     airportLayer.clearLayers();
+    for (var k in airportMarkers) delete airportMarkers[k];
     var bounds = currentViewBounds(AIRPORT_VIEW_PAD);
     if (!airportData || !bounds) return;
     for (var i = 0; i < airportData.length; i++) {
@@ -1527,7 +1614,7 @@
           radius: 6, fillColor: "#2a3f55", fillOpacity: 1,
           color: "#8aa0b8", weight: 2
         })
-        .bindTooltip(code, {
+        .bindTooltip(buildAirportLabelHtml(code, lat, lng), {
           permanent: true,
           direction: "right",
           offset: [8, 0],
@@ -1537,6 +1624,7 @@
         })
         .on("click", function() { openAirportSchedulePopup(code, apName, lat, lng); })
         .addTo(airportLayer);
+        airportMarkers[code] = { marker: m, lat: lat, lng: lng };
         var el = m.getTooltip() && m.getTooltip().getElement();
         if (el) el.addEventListener("click", function() { openAirportSchedulePopup(code, apName, lat, lng); });
       })(iata, name, ap[1], ap[2]);
@@ -1914,8 +2002,75 @@
     popup.update();
   }
 
-  function bindPlaneLabel(marker, text, yOffset) {
-    marker.bindTooltip(text, { permanent: true, direction: "top", offset: [0, -yOffset], className: "plane-label" });
+  function collectOccupiedScreenPoints() {
+    if (!map) return [];
+    var points = [];
+    var bounds = map.getBounds();
+    if (airportData) {
+      for (var i = 0; i < airportData.length; i++) {
+        var ap = airportData[i];
+        if (bounds.contains([ap[1], ap[2]])) {
+          var pt = map.latLngToContainerPoint([ap[1], ap[2]]);
+          points.push({ x: pt.x, y: pt.y, w: 50, h: 22 });
+        }
+      }
+    }
+    for (var id in markerMap) {
+      var m = markerMap[id];
+      var ll = m.getLatLng();
+      if (ll && bounds.contains(ll)) {
+        var pt = map.latLngToContainerPoint(ll);
+        points.push({ x: pt.x, y: pt.y, w: 30, h: 30 });
+      }
+    }
+    var popup = map._popup;
+    if (popup && popup._latlng && bounds.contains(popup._latlng)) {
+      var pt = map.latLngToContainerPoint(popup._latlng);
+      points.push({ x: pt.x, y: pt.y - 80, w: 220, h: 160 });
+    }
+    return points;
+  }
+
+  var LABEL_DIRS = ["top", "right", "bottom", "left"];
+  var LABEL_W = 56, LABEL_H = 18;
+
+  function chooseLabelDirection(markerLatLng, occupiedPoints) {
+    if (!map || !occupiedPoints || occupiedPoints.length < 2) return "top";
+    var mp = map.latLngToContainerPoint(markerLatLng);
+    var bestDir = "top";
+    var bestScore = -Infinity;
+    for (var d = 0; d < LABEL_DIRS.length; d++) {
+      var dir = LABEL_DIRS[d];
+      var lx, ly;
+      if (dir === "top") { lx = mp.x; ly = mp.y - 26; }
+      else if (dir === "bottom") { lx = mp.x; ly = mp.y + 26; }
+      else if (dir === "right") { lx = mp.x + 34; ly = mp.y; }
+      else { lx = mp.x - 34; ly = mp.y; }
+
+      var hw = LABEL_W / 2, hh = LABEL_H / 2;
+      var minDist = Infinity;
+      for (var i = 0; i < occupiedPoints.length; i++) {
+        var op = occupiedPoints[i];
+        if (Math.abs(op.x - mp.x) < 4 && Math.abs(op.y - mp.y) < 4) continue;
+        var ox = Math.max(0, Math.abs(lx - op.x) - (hw + op.w / 2));
+        var oy = Math.max(0, Math.abs(ly - op.y) - (hh + op.h / 2));
+        var gap = ox * ox + oy * oy;
+        if (gap < minDist) minDist = gap;
+      }
+      if (minDist > bestScore) {
+        bestScore = minDist;
+        bestDir = dir;
+      }
+    }
+    return bestDir;
+  }
+
+  function bindPlaneLabel(marker, text, yOffset, direction) {
+    direction = direction || "top";
+    var offset = direction === "top" ? [0, -yOffset] :
+                 direction === "bottom" ? [0, yOffset] :
+                 direction === "right" ? [yOffset, 0] : [-yOffset, 0];
+    marker.bindTooltip(text, { permanent: true, direction: direction, offset: offset, className: "plane-label", pane: "planeLabelPane" });
     if (marker.getTooltip() && marker.getLatLng()) {
       marker.getTooltip().setLatLng(marker.getLatLng());
       marker.getTooltip().update();
@@ -1939,7 +2094,7 @@
     return iconSize && iconSize[1] ? iconSize[1] / 2 : 15;
   }
 
-  function syncMarkerVisualState(marker, a, markerState, policy, isSelected, popupHtml, label) {
+  function syncMarkerVisualState(marker, a, markerState, policy, isSelected, popupHtml, label, labelDir) {
     var iconKey = markerIconKey(a);
     if (markerState.iconKey !== iconKey) {
       marker.setIcon(planeIcon(a.track, a.aircraftType, a.private, a.category, a.altFt, a.ground));
@@ -1955,10 +2110,11 @@
     }
     var showLabels = !!policy.showLabels;
     var labelOffset = currentMarkerLabelOffset(marker);
+    labelDir = labelDir || "top";
     if (showLabels) {
-      if (!marker.getTooltip() || markerState.labelText !== label || markerState.labelOffset !== labelOffset || markerState.showLabels !== showLabels) {
+      if (!marker.getTooltip() || markerState.labelText !== label || markerState.labelOffset !== labelOffset || markerState.showLabels !== showLabels || markerState.labelDir !== labelDir) {
         if (marker.getTooltip()) marker.unbindTooltip();
-        bindPlaneLabel(marker, label, labelOffset);
+        bindPlaneLabel(marker, label, labelOffset, labelDir);
       }
     } else if (marker.getTooltip()) {
       marker.unbindTooltip();
@@ -1966,6 +2122,7 @@
     markerState.showLabels = showLabels;
     markerState.labelText = showLabels ? label : "";
     markerState.labelOffset = showLabels ? labelOffset : 0;
+    markerState.labelDir = showLabels ? labelDir : "";
   }
 
   function syncMarkerPose(marker, pose) {
@@ -2030,6 +2187,7 @@
       if (!isFiltered(aircraft[vc])) visibleCount++;
     }
     var policy = currentViewPolicy(visibleCount);
+    var occupiedPts = policy.showLabels ? collectOccupiedScreenPoints() : null;
     var newThisFrame = 0;
     var deferredNew = false;
     for (var i = 0; i < aircraft.length; i++) {
@@ -2079,9 +2237,11 @@
       extraState[a.icao24] = state;
       var popupHtml = buildPopup(a, policy);
 
+      var labelDir = policy.showLabels ? chooseLabelDirection([displayPose.lat, displayPose.lng], occupiedPts) : "top";
+
       if (existing) {
         syncMarkerPose(existing, displayPose);
-        syncMarkerVisualState(existing, a, state, policy, isSelected, popupHtml, label);
+        syncMarkerVisualState(existing, a, state, policy, isSelected, popupHtml, label, labelDir);
       } else {
         newThisFrame++;
         var icon = planeIcon(a.track, a.aircraftType, a.private, a.category, a.altFt, a.ground);
@@ -2094,7 +2254,7 @@
         marker.setZIndexOffset(isSelected ? 1000 : 0);
         marker.addTo(aircraftLayer);
         if (policy.showLabels) {
-          bindPlaneLabel(marker, label, icon.options.iconSize[1] / 2);
+          bindPlaneLabel(marker, label, icon.options.iconSize[1] / 2, labelDir);
         }
         markerMap[a.icao24] = marker;
         state.iconKey = markerIconKey(a);
@@ -2103,6 +2263,7 @@
         state.showLabels = !!policy.showLabels;
         state.labelText = policy.showLabels ? label : "";
         state.labelOffset = policy.showLabels ? icon.options.iconSize[1] / 2 : 0;
+        state.labelDir = policy.showLabels ? labelDir : "";
       }
     }
     for (var id in markerMap) {
