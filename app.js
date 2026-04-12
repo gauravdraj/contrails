@@ -31,7 +31,7 @@
     throw new Error("Contrails core helpers failed to load.");
   }
 
-  const APP_VERSION = "v2.0.2";
+  const APP_VERSION = "v2.1";
   const isLocal = location.hostname === "localhost" || location.hostname === "127.0.0.1";
   const isIOSDevice = /iP(ad|hone|od)/.test(navigator.userAgent) ||
     (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
@@ -1228,6 +1228,7 @@
     updateAlerts();
     updateViewHint(visibleAircraftCount());
     fetchRoutes();
+    clientConvergenceRefine();
   }
 
   async function fetchRoutes() {
@@ -1280,6 +1281,109 @@
     } catch (e) {
       console.warn("Route fetch failed:", e);
     }
+  }
+
+  function clientConvergenceRefine() {
+    if (!airportData) return;
+    for (var i = 0; i < aircraft.length; i++) {
+      var a = aircraft[i];
+      if (!a.callsign || a.private || a.ground) continue;
+      var rc = routeCache[a.callsign];
+      if (rc && rc.destination && rc.originSource === "track") continue;
+      var h = posHistory[a.icao24];
+      if (!h || h.length < 15) continue;
+      var tail = h.length > 50 ? h.slice(-50) : h;
+      var minAlt = Infinity;
+      for (var t = 0; t < tail.length; t++) {
+        if (tail[t][3] != null && tail[t][3] < minAlt) minAlt = tail[t][3];
+      }
+      if (minAlt > 10000) continue;
+      var last = tail[tail.length - 1];
+      var candidates = [];
+      for (var j = 0; j < airportData.length; j++) {
+        var ap = airportData[j];
+        var d = haversineKm(last[0], last[1], ap[1], ap[2]);
+        if (d < 80) candidates.push({ iata: ap[0], name: ap[3], lat: ap[1], lon: ap[2], dist: d });
+      }
+      candidates.sort(function(x, y) { return x.dist - y.dist; });
+      if (candidates.length > 5) candidates.length = 5;
+      if (!candidates.length) continue;
+      var bestScore = 0, secondScore = 0, bestApt = null;
+      for (var c = 0; c < candidates.length; c++) {
+        var apt = candidates[c];
+        var dists = [];
+        for (var p = 0; p < tail.length; p++) {
+          dists.push(haversineKm(tail[p][0], tail[p][1], apt.lat, apt.lon));
+        }
+        var dec = 0;
+        for (var k = 1; k < dists.length; k++) { if (dists[k] < dists[k - 1]) dec++; }
+        var pct = dec / (dists.length - 1);
+        var net = dists[dists.length - 1] - dists[0];
+        var finalD = dists[dists.length - 1];
+        var minD = Math.min.apply(null, dists);
+        var score = 0;
+        if (net < 0) score = pct * Math.abs(net) / Math.max(finalD, 0.1);
+        if (minD < 5) score += (5 - minD) / 5 * 8;
+        if (score > bestScore) {
+          secondScore = bestScore;
+          bestScore = score;
+          bestApt = apt;
+        } else if (score > secondScore) {
+          secondScore = score;
+        }
+      }
+      if (!bestApt || bestScore <= 0) continue;
+      if (secondScore > 0 && secondScore / bestScore > 0.8) continue;
+      var dest = { iata: bestApt.iata, name: bestApt.name };
+      if (rc) {
+        if (rc.destination && rc.destination.iata === dest.iata) continue;
+        rc.destination = dest;
+        var iataParts = [rc.origin ? rc.origin.iata : null, dest.iata].filter(Boolean);
+        rc.iata = iataParts.join(" \u2192 ");
+        var phase = a.ground ? "landed" :
+          (a.altFt < 10000 && a.vRate != null && a.vRate * 60 < -300) ? "arriving" :
+          (a.altFt < 10000 && a.vRate != null && a.vRate * 60 > 300) ? "departing" : "cruising";
+        rc.display = formatClientRouteLabel(rc.origin, dest, phase);
+        rc.phase = phase;
+      } else {
+        var phase2 = a.ground ? "landed" :
+          (a.altFt < 10000 && a.vRate != null && a.vRate * 60 < -300) ? "arriving" :
+          (a.altFt < 10000 && a.vRate != null && a.vRate * 60 > 300) ? "departing" : "cruising";
+        routeCache[a.callsign] = {
+          display: formatClientRouteLabel(null, dest, phase2),
+          iata: dest.iata,
+          origin: null,
+          destination: dest,
+          originSource: "client",
+          phase: phase2,
+          fetchedAt: Date.now()
+        };
+      }
+    }
+  }
+
+  function formatClientRouteLabel(origin, destination, phase) {
+    var oIata = origin ? origin.iata : null;
+    var dIata = destination ? destination.iata : null;
+    if (!oIata && !dIata) return "";
+    if (phase === "departing") {
+      if (oIata && dIata) return "departed " + oIata + " for " + dIata;
+      if (oIata) return "departed " + oIata;
+      return "departing for " + dIata;
+    }
+    if (phase === "arriving") {
+      if (dIata && oIata) return "landing at " + dIata + " from " + oIata;
+      if (dIata) return "landing at " + dIata;
+      return "arriving from " + oIata;
+    }
+    if (phase === "landed") {
+      if (dIata && oIata) return "arrived at " + dIata + " from " + oIata;
+      if (oIata) return "arrived from " + oIata;
+      return "arrived at " + dIata;
+    }
+    if (oIata && dIata) return oIata + " \u2192 " + dIata;
+    if (oIata) return "from " + oIata;
+    return "to " + dIata;
   }
 
   function proximityMetrics(lat, lng, fallbackBearing) {

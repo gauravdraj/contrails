@@ -122,11 +122,17 @@ async function fetchToken(env, cache) {
     return data.token;
   }
 
-  const resp = await fetch(OPENSKY_AUTH_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: `grant_type=client_credentials&client_id=${encodeURIComponent(clientId)}&client_secret=${encodeURIComponent(clientSecret)}`,
-  });
+  let resp;
+  try {
+    resp = await fetch(OPENSKY_AUTH_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: `grant_type=client_credentials&client_id=${encodeURIComponent(clientId)}&client_secret=${encodeURIComponent(clientSecret)}`,
+      signal: AbortSignal.timeout(5000),
+    });
+  } catch (_) {
+    return null;
+  }
   if (!resp.ok) return null;
 
   const data = await resp.json();
@@ -161,7 +167,7 @@ export async function fetchCachedTrack(hex, cache, ctx, env) {
   try {
     resp = await fetch(
       `${OPENSKY_API}/tracks/all?icao24=${normalized}&time=0`,
-      { headers },
+      { headers, signal: AbortSignal.timeout(8000) },
     );
   } catch (_) {
     return null;
