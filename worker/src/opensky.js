@@ -91,12 +91,19 @@ export function extractOriginDest(track) {
     const candidates = nearbyAirports(last[1], last[2], CONVERGENCE_SEARCH_RADIUS_KM, 5);
 
     let bestScore = 0;
+    let secondScore = 0;
     for (const apt of candidates) {
       const score = convergenceScore(tail, apt.lat, apt.lon);
       if (score > bestScore) {
+        secondScore = bestScore;
         bestScore = score;
         destination = { iata: apt.iata, name: apt.name };
+      } else if (score > secondScore) {
+        secondScore = score;
       }
+    }
+    if (secondScore > 0 && secondScore / bestScore > 0.8) {
+      destination = null;
     }
   }
 

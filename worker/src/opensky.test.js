@@ -100,6 +100,22 @@ test("convergenceScore handles approach pattern with close pass then diverging",
   assert.ok(sfoScore > 0, "close pass should produce positive score");
 });
 
+test("extractOriginDest withholds destination when top scores are ambiguous", () => {
+  const pts = [];
+  for (let i = 0; i < 50; i++) {
+    const t = i / 49;
+    pts.push([
+      1000 + i * 120,
+      35.0 + t * 2.5,
+      -125.0 + t * 2.8,
+      10000 - i * 170,
+      60, false,
+    ]);
+  }
+  const { destination } = extractOriginDest({ path: pts });
+  assert.equal(destination, null, "should not pick when SFO and OAK converge similarly");
+});
+
 // --- extractOriginDest ---
 
 test("extractOriginDest finds origin from low-altitude first point", () => {
