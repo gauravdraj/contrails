@@ -2308,22 +2308,45 @@
     var currentRc = routeCache[a.callsign];
     var origin = null, destination = null, originSource = null, destSource = null;
 
-    if (match.dir === "arrival") {
+    var descending = a.altFt != null && a.altFt < 18000 && a.vRate != null && a.vRate * 60 < -200;
+    var climbing = a.altFt != null && a.altFt < 18000 && a.vRate != null && a.vRate * 60 > 200;
+    var nearAirport = airportData && (function() {
+      for (var i = 0; i < airportData.length; i++) {
+        if (airportData[i][0] === match.airport &&
+            haversineKm(a.lat, a.lng, airportData[i][1], airportData[i][2]) < 80) return true;
+      }
+      return false;
+    })();
+
+    var dir = match.dir;
+    if (dir === "departure" && descending && nearAirport) {
+      dir = "arrival-flipped";
+    } else if (dir === "arrival" && climbing && nearAirport) {
+      dir = "departure-flipped";
+    }
+
+    var flipped = dir === "arrival-flipped" || dir === "departure-flipped";
+
+    if (dir === "arrival" || dir === "arrival-flipped") {
       destination = { iata: match.airport, name: match.airportName };
-      destSource = "schedule";
-      if (match.from) {
-        origin = { iata: match.from, name: match.row.from_name || match.from };
-        originSource = "schedule";
+      destSource = flipped ? "convergence" : "schedule";
+      var counterIata = dir === "arrival" ? match.from : match.to;
+      var counterName = dir === "arrival" ? (match.row.from_name || match.from) : (match.row.to_name || match.to);
+      if (counterIata) {
+        origin = { iata: counterIata, name: counterName || counterIata };
+        originSource = flipped ? "schedule-inferred" : "schedule";
       } else if (currentRc && currentRc.origin) {
         origin = currentRc.origin;
         originSource = currentRc.originSource;
       }
     } else {
       origin = { iata: match.airport, name: match.airportName };
-      originSource = "schedule";
-      if (match.to) {
-        destination = { iata: match.to, name: match.row.to_name || match.to };
-        destSource = "schedule";
+      originSource = flipped ? "convergence" : "schedule";
+      var counterIata = dir === "departure" ? match.to : match.from;
+      var counterName = dir === "departure" ? (match.row.to_name || match.to) : (match.row.from_name || match.from);
+      if (counterIata) {
+        destination = { iata: counterIata, name: counterName || counterIata };
+        destSource = flipped ? "schedule-inferred" : "schedule";
       } else if (currentRc && currentRc.destination) {
         destination = currentRc.destination;
         destSource = currentRc.destSource;
@@ -2341,7 +2364,7 @@
       destination: destination,
       originSource: originSource || (currentRc ? currentRc.originSource : null),
       destSource: destSource || (currentRc ? currentRc.destSource : null),
-      confidence: "high",
+      confidence: flipped ? "medium" : "high",
       phase: phase,
       fetchedAt: Date.now()
     };

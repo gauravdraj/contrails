@@ -187,14 +187,24 @@ async function handleSchedule(url, ctx) {
   if (cached) return cached;
 
   try {
-    const fr24Url =
-      `${FR24_API}/airport.json?code=${encodeURIComponent(iata)}` +
-      "&plugin[]=schedule&plugin[]=details&limit=100&page=1";
-    const resp = await fetch(fr24Url, { headers: FR24_HEADERS });
-    if (!resp.ok) throw new Error("FR24 HTTP " + resp.status);
+    const lookback = Math.floor(Date.now() / 1000) - 2 * 3600;
+    const base = `${FR24_API}/airport.json?code=${encodeURIComponent(iata)}&plugin[]=schedule&plugin[]=details&limit=100&plugin-setting[schedule][timestamp]=${lookback}`;
+    const [r1, r2] = await Promise.all([
+      fetch(base + "&page=1", { headers: FR24_HEADERS }),
+      fetch(base + "&page=2", { headers: FR24_HEADERS }),
+    ]);
+    if (!r1.ok) throw new Error("FR24 HTTP " + r1.status);
 
-    const raw = await resp.json();
-    const result = buildSchedulePayload(raw, iata);
+    const raw1 = await r1.json();
+    const result = buildSchedulePayload(raw1, iata);
+
+    if (r2.ok) {
+      const raw2 = await r2.json();
+      const page2 = buildSchedulePayload(raw2, iata);
+      result.arrivals = result.arrivals.concat(page2.arrivals);
+      result.departures = result.departures.concat(page2.departures);
+    }
+
     const response = json(200, result);
     response.headers.set("Cache-Control", `s-maxage=${FR24_CACHE_TTL}`);
     ctx.waitUntil(cache.put(cacheKey, response.clone()));
