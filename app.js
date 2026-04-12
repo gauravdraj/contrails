@@ -1268,6 +1268,13 @@
     updateViewHint(visibleAircraftCount());
     fetchRoutes();
     clientConvergenceRefine();
+    if (_activeAirportPopup && _activeAirportScheduleData) {
+      var now = Date.now();
+      if (now - _lastScheduleRefresh >= 3000) {
+        _lastScheduleRefresh = now;
+        renderSchedulePopup(_activeScheduleDir);
+      }
+    }
     proactiveFetchTracks();
     proactiveScheduleSweep();
   }
@@ -1311,8 +1318,8 @@
         var destIata = dest ? (dest.region ? dest.display : dest.iata) : null;
         var iataParts = [r.origin ? r.origin.iata : null, destIata].filter(Boolean);
         routeCache[r.callsign] = {
-          display: r.display || iataParts.join(" \u2192 "),
-          iata: iataParts.join(" \u2192 "),
+          display: r.display || iataParts.join(" to "),
+          iata: iataParts.join(" to "),
           origin: r.origin || null,
           destination: dest || null,
           originSource: r.originSource || null,
@@ -1335,6 +1342,42 @@
       if (!a.callsign || a.private || a.ground) continue;
       var rc = routeCache[a.callsign];
       if (rc && rc.destination && rc.originSource === "track") continue;
+      if (a.altFt != null && a.altFt < 15000 && a.vRate != null && a.vRate * 60 > 100) {
+        var hiSrc = ["adsbdb", "track", "cross-validated", "schedule", "fr24-search"];
+        if (!rc || !rc.origin || hiSrc.indexOf(rc.originSource) === -1) {
+          var depCands = [];
+          for (var dc = 0; dc < airportData.length; dc++) {
+            var dap = airportData[dc];
+            var dd = haversineKm(a.lat, a.lng, dap[1], dap[2]);
+            if (dd < 30) depCands.push({ iata: dap[0], name: dap[3], dist: dd });
+          }
+          if (depCands.length > 0) {
+            depCands.sort(function(x, y) { return x.dist - y.dist; });
+            if (depCands.length >= 2 && depCands[1].dist <= depCands[0].dist * 1.5) continue;
+            var depOrigin = { iata: depCands[0].iata, name: depCands[0].name };
+            if (rc) {
+              rc.origin = depOrigin;
+              rc.originSource = "convergence";
+              var depParts = [depOrigin.iata, rc.destination ? rc.destination.iata : null].filter(Boolean);
+              rc.iata = depParts.join(" to ");
+              rc.display = formatClientRouteLabel(depOrigin, rc.destination, "departing");
+            } else {
+              routeCache[a.callsign] = {
+                display: formatClientRouteLabel(depOrigin, null, "departing"),
+                iata: depOrigin.iata,
+                origin: depOrigin,
+                destination: null,
+                originSource: "convergence",
+                destSource: null,
+                confidence: "medium",
+                phase: "departing",
+                fetchedAt: Date.now()
+              };
+            }
+            continue;
+          }
+        }
+      }
       var h = posHistory[a.icao24];
       if (!h || h.length < 15) continue;
       var tail = h.length > 50 ? h.slice(-50) : h;
@@ -1380,7 +1423,7 @@
       if (!bestApt || bestScore <= 0) continue;
       if (secondScore > 0 && secondScore / bestScore > 0.8) {
         if (!a.private && !isLikelyPrivateCallsign(a.callsign) &&
-            a.altFt != null && a.altFt < 15000 && a.vRate != null && a.vRate * 60 < -300) {
+            a.altFt != null && a.altFt < 15000 && a.vRate != null && a.vRate * 60 < -100) {
           var region = findNearestRegion(last[0], last[1], 100);
           if (region) {
             var regionDest = { region: region.name, display: "Landing in " + region.name };
@@ -1389,7 +1432,7 @@
               rc.destination = regionDest;
               rc.destSource = "region";
               rc.confidence = "low";
-              rc.iata = rc.origin ? rc.origin.iata + " \u2192 " + regionDest.display : regionDest.display;
+              rc.iata = rc.origin ? rc.origin.iata + " to " + regionDest.display : regionDest.display;
               rc.display = formatClientRouteLabel(rc.origin, regionDest, regionPhase);
               rc.phase = regionPhase;
             } else {
@@ -1426,16 +1469,16 @@
           rc.destSource = "convergence";
         }
         var iataParts = [rc.origin ? rc.origin.iata : null, dest.iata].filter(Boolean);
-        rc.iata = iataParts.join(" \u2192 ");
+        rc.iata = iataParts.join(" to ");
         var phase = a.ground ? "landed" :
-          (a.altFt < 10000 && a.vRate != null && a.vRate * 60 < -300) ? "arriving" :
-          (a.altFt < 10000 && a.vRate != null && a.vRate * 60 > 300) ? "departing" : "cruising";
+          (a.altFt < 15000 && a.vRate != null && a.vRate * 60 < -100) ? "arriving" :
+          (a.altFt < 15000 && a.vRate != null && a.vRate * 60 > 100) ? "departing" : "cruising";
         rc.display = formatClientRouteLabel(rc.origin, dest, phase);
         rc.phase = phase;
       } else {
         var phase2 = a.ground ? "landed" :
-          (a.altFt < 10000 && a.vRate != null && a.vRate * 60 < -300) ? "arriving" :
-          (a.altFt < 10000 && a.vRate != null && a.vRate * 60 > 300) ? "departing" : "cruising";
+          (a.altFt < 15000 && a.vRate != null && a.vRate * 60 < -100) ? "arriving" :
+          (a.altFt < 15000 && a.vRate != null && a.vRate * 60 > 100) ? "departing" : "cruising";
         routeCache[a.callsign] = {
           display: formatClientRouteLabel(null, dest, phase2),
           iata: dest.iata,
@@ -1469,7 +1512,7 @@
         if (oIata) return "arrived in " + regionName + " from " + oIata;
         return "arrived in " + regionName;
       }
-      if (oIata) return oIata + " \u2192 " + display;
+      if (oIata) return oIata + " to " + regionName;
       return display;
     }
 
@@ -1490,7 +1533,7 @@
       if (oIata) return "arrived from " + oIata;
       return "arrived at " + dIata;
     }
-    if (oIata && dIata) return oIata + " \u2192 " + dIata;
+    if (oIata && dIata) return oIata + " to " + dIata;
     if (oIata) return "from " + oIata;
     return "to " + dIata;
   }
@@ -2123,7 +2166,7 @@
       rc.originSource = "track";
       var oIata = origin.iata;
       var dIata = rc.destination ? (rc.destination.region ? rc.destination.display : rc.destination.iata) : null;
-      rc.iata = [oIata, dIata].filter(Boolean).join(" \u2192 ");
+      rc.iata = [oIata, dIata].filter(Boolean).join(" to ");
       rc.display = formatClientRouteLabel(origin, rc.destination, rc.phase || "cruising");
     } else {
       routeCache[cs] = {
@@ -2268,12 +2311,12 @@
     }
 
     var phase = a.ground ? "landed" :
-      (a.altFt < 10000 && a.vRate != null && a.vRate * 60 < -300) ? "arriving" :
-      (a.altFt < 10000 && a.vRate != null && a.vRate * 60 > 300) ? "departing" : "cruising";
+      (a.altFt < 15000 && a.vRate != null && a.vRate * 60 < -100) ? "arriving" :
+      (a.altFt < 15000 && a.vRate != null && a.vRate * 60 > 100) ? "departing" : "cruising";
 
     routeCache[a.callsign] = {
       display: formatClientRouteLabel(origin, destination, phase),
-      iata: [origin ? origin.iata : null, destination ? destination.iata : null].filter(Boolean).join(" \u2192 "),
+      iata: [origin ? origin.iata : null, destination ? destination.iata : null].filter(Boolean).join(" to "),
       origin: origin,
       destination: destination,
       originSource: originSource || (currentRc ? currentRc.originSource : null),
@@ -2374,12 +2417,12 @@
       var origin = { iata: from, name: from };
       var destination = { iata: to, name: to };
       var phase = a.ground ? "landed" :
-        (a.altFt < 10000 && a.vRate != null && a.vRate * 60 < -300) ? "arriving" :
-        (a.altFt < 10000 && a.vRate != null && a.vRate * 60 > 300) ? "departing" : "cruising";
+        (a.altFt < 15000 && a.vRate != null && a.vRate * 60 < -100) ? "arriving" :
+        (a.altFt < 15000 && a.vRate != null && a.vRate * 60 > 100) ? "departing" : "cruising";
 
       routeCache[a.callsign] = {
         display: formatClientRouteLabel(origin, destination, phase),
-        iata: from + " \u2192 " + to,
+        iata: from + " to " + to,
         origin: origin,
         destination: destination,
         originSource: "fr24-search",
@@ -3388,6 +3431,8 @@
   var _activeAirportIata = null;
   var _activeAirportScheduleData = null;
   var _activeAirportName = null;
+  var _activeScheduleDir = "arrivals";
+  var _lastScheduleRefresh = 0;
 
   function relativeMinutes(unixTs) {
     var diffSec = unixTs - Math.floor(Date.now() / 1000);
@@ -3426,18 +3471,109 @@
         var route = isArr ? (f.from_iata || "") : (f.to_iata || "");
         var flightNum = escapeHtml((f.flight || "\u2014").replace(/^([A-Za-z]+)(\d+)$/, "$1 $2"));
         var status = f.status ? escapeHtml(f.status) : "";
+        var dotCls = 'sched-dot ' + color + (f._liveAircraft ? ' live' : '');
         html += '<div class="sched-row">' +
-          '<span class="sched-dot ' + color + '"></span>' +
+          '<span class="' + dotCls + '"></span>' +
           '<span class="sched-flight">' + flightNum + '</span>' +
           (route ? '<span class="sched-route">' + escapeHtml(route) + '</span>' : '') +
           '<span class="sched-time">' + timeStr + '</span>' +
           '<span class="sched-rel">' + rel + '</span>' +
-          (status ? '<span class="sched-status">' + status + '</span>' : '') +
-        '</div>';
+          (status ? '<span class="sched-status">' + status + '</span>' : '');
+        if (f._liveAircraft) {
+          var la = f._liveAircraft;
+          var altStr = la.altFt != null ? la.altFt.toLocaleString() + 'ft' : '';
+          var distNm = la.distKm != null ? Math.round(la.distKm / 1.852) + 'nm' : '';
+          var parts = [];
+          if (altStr) parts.push(altStr);
+          if (distNm) parts.push(distNm);
+          if (parts.length) {
+            html += '<div class="sched-subtitle">' + parts.join(' \u00b7 ') + '</div>';
+          }
+        }
+        html += '</div>';
       }
     }
     html += '</div>';
     return html;
+  }
+
+  function enrichScheduleWithLiveData(flights, isArr, airportIata, airportLat, airportLng) {
+    if (!flights || !flights.length) return flights || [];
+    var ap = airportMarkers[airportIata];
+    if (!ap && (airportLat == null || airportLng == null)) return flights;
+    var aLat = airportLat != null ? airportLat : ap.lat;
+    var aLng = airportLng != null ? airportLng : ap.lng;
+    if (!aircraft || !aircraft.length) return flights;
+
+    var cloned = [];
+    for (var i = 0; i < flights.length; i++) {
+      cloned.push(Object.assign({}, flights[i]));
+    }
+
+    for (var i = 0; i < cloned.length; i++) {
+      var f = cloned[i];
+      var srcs = [];
+      if (f.flight) srcs = srcs.concat(callsignVariants(f.flight));
+      if (f.callsign) srcs = srcs.concat(callsignVariants(f.callsign));
+      if (!srcs.length) continue;
+
+      var variants = [];
+      for (var s = 0; s < srcs.length; s++) {
+        variants.push(srcs[s].replace(/\s/g, "").toUpperCase());
+      }
+
+      for (var j = 0; j < aircraft.length; j++) {
+        var a = aircraft[j];
+        if (!a.callsign || isFiltered(a)) continue;
+        var acs = a.callsign.toUpperCase();
+        var matched = false;
+        for (var v = 0; v < variants.length; v++) {
+          if (acs === variants[v]) { matched = true; break; }
+        }
+        if (matched) {
+          f._liveAircraft = {
+            lat: a.lat, lng: a.lng,
+            altFt: a.altFt, vRate: a.vRate,
+            ground: a.ground,
+            distKm: haversineKm(a.lat, a.lng, aLat, aLng)
+          };
+          break;
+        }
+      }
+    }
+
+    var live = [], rest = [];
+    for (var i = 0; i < cloned.length; i++) {
+      if (cloned[i]._liveAircraft) live.push(cloned[i]);
+      else rest.push(cloned[i]);
+    }
+
+    if (isArr) {
+      live.sort(function(a, b) {
+        var altA = a._liveAircraft.altFt != null ? a._liveAircraft.altFt : 99999;
+        var altB = b._liveAircraft.altFt != null ? b._liveAircraft.altFt : 99999;
+        if (altA !== altB) return altA - altB;
+        return (a._liveAircraft.distKm || 0) - (b._liveAircraft.distKm || 0);
+      });
+    } else {
+      var ground = [], airborne = [];
+      for (var i = 0; i < live.length; i++) {
+        var la = live[i]._liveAircraft;
+        if (la.ground) ground.push(live[i]);
+        else airborne.push(live[i]);
+      }
+      ground.sort(function(a, b) {
+        return (a._liveAircraft.distKm || 0) - (b._liveAircraft.distKm || 0);
+      });
+      airborne.sort(function(a, b) {
+        var altA = a._liveAircraft.altFt != null ? a._liveAircraft.altFt : 99999;
+        var altB = b._liveAircraft.altFt != null ? b._liveAircraft.altFt : 99999;
+        return altA - altB;
+      });
+      live = ground.concat(airborne);
+    }
+
+    return live.concat(rest);
   }
 
   function filterAndSortFlights(flights, isArr) {
@@ -3462,8 +3598,12 @@
 
   function renderSchedulePopup(dir) {
     if (!_activeAirportPopup || !_activeAirportScheduleData) return;
+    _activeScheduleDir = dir;
     var isArr = dir === "arrivals";
     var flights = filterAndSortFlights(_activeAirportScheduleData[dir] || [], isArr);
+    var ap = airportMarkers[_activeAirportIata];
+    flights = enrichScheduleWithLiveData(flights, isArr, _activeAirportIata,
+      ap ? ap.lat : null, ap ? ap.lng : null);
     _activeAirportPopup.setContent(
       buildScheduleCardContent(_activeAirportIata, _activeAirportName, flights, dir)
     );
@@ -3510,7 +3650,9 @@
         var resolvedName = data.name || name;
         _activeAirportScheduleData = data;
         _activeAirportName = resolvedName;
+        _activeScheduleDir = "arrivals";
         var flights = filterAndSortFlights(data.arrivals || [], true);
+        flights = enrichScheduleWithLiveData(flights, true, iata, lat, lng);
         popup.setContent(buildScheduleCardContent(iata, resolvedName, flights, "arrivals"));
       })
       .catch(function() {
