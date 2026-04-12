@@ -2,6 +2,7 @@ import { fetchCachedRouteEntry } from "./adsbdb.js";
 import { buildSchedulePayload } from "./fr24.js";
 import { CORS_HEADERS, json, jsonFromCache } from "./http.js";
 import { handleNearby } from "./nearby.js";
+import { fetchCachedTrack, mergeRoutes, detectPhase, formatRouteLabel } from "./opensky.js";
 
 const ADSB_API = "https://api.adsb.lol/v2";
 const ADSB_ROUTE_API = "https://api.adsb.lol/api/0";
@@ -34,11 +35,12 @@ export default {
     if (url.pathname.startsWith("/adsb/")) return proxyAdsb(url);
     if (url.pathname.startsWith("/route/")) return proxyRoute(url, request);
     if (url.pathname.startsWith("/photo/")) return handlePhoto(url, ctx);
-    if (url.pathname === "/routeset") return handleRouteset(request, ctx);
+    if (url.pathname === "/routeset") return handleRouteset(request, env, ctx);
+    if (url.pathname.startsWith("/track/")) return handleTrack(url, env, ctx);
     if (url.pathname.startsWith("/flight/")) return handleFlight(url, env, ctx);
     if (url.pathname === "/geo") return handleGeo(request);
     if (url.pathname.startsWith("/schedule/")) return handleSchedule(url, ctx);
-    if (url.pathname === "/nearby") return handleNearby(url);
+    if (url.pathname === "/nearby") return handleNearby(url, env, ctx);
 
     return new Response("Not found", { status: 404 });
   },
@@ -127,7 +129,17 @@ async function handlePhoto(url, ctx) {
   }
 }
 
-async function handleRouteset(request, ctx) {
+async function handleTrack(url, env, ctx) {
+  const hex = url.pathname.split("/").pop().toLowerCase();
+  if (!/^[0-9a-f]{6}$/.test(hex)) return json(400, { error: "Invalid hex" });
+
+  const cache = caches.default;
+  const track = await fetchCachedTrack(hex, cache, ctx, env);
+  if (!track?.path) return json(200, null);
+  return json(200, track.path);
+}
+
+async function handleRouteset(request, env, ctx) {
   if (request.method !== "POST") return json(405, { error: "POST required" });
 
   let planes;
@@ -141,8 +153,25 @@ async function handleRouteset(request, ctx) {
 
   const cache = caches.default;
   const limited = planes.slice(0, 20);
+
   const results = await Promise.allSettled(
-    limited.map((plane) => fetchCachedRouteEntry(plane.callsign, cache, ctx, ADSBDB_CACHE_TTL)),
+    limited.map(async (plane) => {
+      const [trackResult, adsbdbResult] = await Promise.allSettled([
+        plane.hex ? fetchCachedTrack(plane.hex, cache, ctx, env) : Promise.resolve(null),
+        fetchCachedRouteEntry(plane.callsign, cache, ctx, ADSBDB_CACHE_TTL),
+      ]);
+      const track = trackResult.status === "fulfilled" ? trackResult.value : null;
+      const adsbdb = adsbdbResult.status === "fulfilled" ? adsbdbResult.value : null;
+      const merged = mergeRoutes(track, adsbdb);
+      if (!merged) return null;
+      const phase = detectPhase(plane.altFt, plane.vRate, plane.ground);
+      return {
+        callsign: plane.callsign,
+        ...merged,
+        phase,
+        display: formatRouteLabel(merged.origin, merged.destination, phase),
+      };
+    }),
   );
 
   const routes = results

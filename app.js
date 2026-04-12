@@ -142,6 +142,9 @@
   function flightUrl(callsign) {
     return WORKER_URL + "/flight/" + encodeURIComponent(callsign);
   }
+  function trackUrl(hex) {
+    return WORKER_URL + "/track/" + hex;
+  }
   function geoUrl() {
     if (isLocal) return "/api/geo";
     return WORKER_URL + "/geo";
@@ -194,6 +197,7 @@
   const photoPending = {};
   const flightCache = {};
   const dormantHistory = {};
+  const trackExtended = {};
 
   let map, userMarker, aircraftLayer, trailLayer, airportLayer, runwayLayer;
   let airportData = null;
@@ -413,7 +417,10 @@
         });
       }
       var photoEl = el.querySelector(".popup-photo");
-      if (photoEl) loadPopupPhoto(photoEl);
+      if (photoEl) {
+        loadPopupPhoto(photoEl);
+        loadPopupTrack(photoEl.getAttribute("data-hex"));
+      }
       var routeEl = el.querySelector(".popup-route");
       if (routeEl) loadPopupFlight(routeEl, e.popup);
     });
@@ -1078,6 +1085,7 @@
         delete posHistory[id];
         delete trailBreakPending[id];
         delete dormantHistory[id];
+        delete trackExtended[id];
       } else {
         dormantHistory[id] = true;
       }
@@ -1211,7 +1219,8 @@
         reportTs - lastPt[2] > Math.max(1500, fetchInterval * 0.9);
       if (moved) h.push([a.lat, a.lng, reportTs, a.altFt, a.ground, breakBefore]);
       pruneSeededTrailPrefix(h);
-      if (h.length > 120) h.splice(0, h.length - 120);
+      var maxPts = trackExtended[a.icao24] ? 600 : 120;
+      if (h.length > maxPts) h.splice(0, h.length - maxPts);
     }
     pruneStaleHistoryEntries(activeIds, now);
 
@@ -1233,7 +1242,15 @@
     for (var i = 0; i < visible.length && needed.length < 20; i++) {
       var a = visible[i];
       if (a.callsign && !a.private && !routeCache[a.callsign]) {
-        needed.push({ callsign: a.callsign, lat: a.lat, lng: a.lng });
+        needed.push({
+          callsign: a.callsign,
+          hex: a.icao24,
+          lat: a.lat,
+          lng: a.lng,
+          altFt: a.altFt,
+          vRate: a.vRate != null ? Math.round(a.vRate * 60) : null,
+          ground: a.ground
+        });
       }
     }
     if (!needed.length) return;
@@ -1247,12 +1264,15 @@
       var routes = await resp.json();
       for (var j = 0; j < routes.length; j++) {
         var r = routes[j];
-        if (!r.callsign || !r.origin || !r.destination) continue;
-        var displayParts = [r.origin.name || r.origin.iata, r.destination.name || r.destination.iata].filter(Boolean);
-        var iataParts = [r.origin.iata, r.destination.iata].filter(Boolean);
+        if (!r.callsign || (!r.origin && !r.destination)) continue;
+        var iataParts = [r.origin ? r.origin.iata : null, r.destination ? r.destination.iata : null].filter(Boolean);
         routeCache[r.callsign] = {
-          display: displayParts.join(" \u2192 "),
-          iata: iataParts.join(" \u2192 ")
+          display: r.display || iataParts.join(" \u2192 "),
+          iata: iataParts.join(" \u2192 "),
+          origin: r.origin || null,
+          destination: r.destination || null,
+          originSource: r.originSource || null,
+          phase: r.phase || null
         };
       }
     } catch (e) {
@@ -1749,7 +1769,7 @@
 
   function popupRouteDisplay(routeEntry) {
     if (!routeEntry) return "";
-    return routeEntry.iata || routeEntry.display || "";
+    return routeEntry.display || routeEntry.iata || "";
   }
 
   function buildPopupSubheader(a, routeEntry) {
@@ -1793,10 +1813,42 @@
       '<img src="' + escapeHtml(photo.src) + '" style="width:100%;border-radius:6px;display:block;margin-bottom:6px" alt="Aircraft photo">';
   }
 
+  function loadPopupTrack(hex) {
+    if (!hex || trackExtended[hex]) return;
+    trackExtended[hex] = true;
+    fetch(trackUrl(hex))
+      .then(function(r) { return r.json(); })
+      .then(function(path) {
+        if (!path || !path.length) return;
+        var history = posHistory[hex];
+        if (!history) {
+          posHistory[hex] = [];
+          history = posHistory[hex];
+        }
+        var earliestLive = history.length ? history[0][2] : Infinity;
+        var converted = [];
+        for (var i = 0; i < path.length; i++) {
+          var pt = path[i];
+          var tsMs = pt[0] * 1000;
+          if (tsMs >= earliestLive - 5000) break;
+          var altFt = pt[3] != null ? Math.round(pt[3] * 3.28084) : null;
+          var onGround = altFt != null && altFt <= 0;
+          converted.push([pt[1], pt[2], tsMs, onGround ? null : altFt, onGround, i === 0]);
+        }
+        if (converted.length) {
+          posHistory[hex] = converted.concat(history);
+        }
+      })
+      .catch(function() {});
+  }
+
   function buildFlightRouteCacheEntry(data) {
+    var iataParts = [data.origin ? data.origin.iata : null, data.destination ? data.destination.iata : null].filter(Boolean);
     return {
-      display: (data.origin.name || data.origin.iata) + " → " + (data.destination.name || data.destination.iata),
-      iata: [data.origin.iata, data.destination.iata].filter(Boolean).join(" → ")
+      display: iataParts.join(" \u2192 "),
+      iata: iataParts.join(" \u2192 "),
+      origin: data.origin || null,
+      destination: data.destination || null
     };
   }
 
@@ -1814,11 +1866,25 @@
   function loadPopupFlight(routeEl, popup) {
     var cs = routeEl.getAttribute("data-callsign");
     if (!cs) return;
+    var existing = routeCache[cs];
+    if (existing && existing.originSource === "track") {
+      applyFlightRoute(routeEl, existing, popup);
+      if (existing.destination) return;
+    }
     if (flightCache[cs] === null) return;
     if (flightCache[cs]) {
-      var cachedRoute = routeCache[cs] || buildFlightRouteCacheEntry(flightCache[cs]);
-      routeCache[cs] = cachedRoute;
-      applyFlightRoute(routeEl, cachedRoute, popup);
+      var entry = buildFlightRouteCacheEntry(flightCache[cs]);
+      if (existing && existing.originSource === "track") {
+        if (!existing.destination && entry.destination) {
+          existing.destination = entry.destination;
+          existing.iata = [existing.origin ? existing.origin.iata : null, entry.destination.iata].filter(Boolean).join(" \u2192 ");
+          existing.display = existing.iata;
+        }
+        applyFlightRoute(routeEl, existing, popup);
+      } else {
+        routeCache[cs] = entry;
+        applyFlightRoute(routeEl, entry, popup);
+      }
       return;
     }
     fetch(flightUrl(cs))
@@ -1826,8 +1892,19 @@
       .then(function(data) {
         if (!data || !data.origin || !data.destination) { flightCache[cs] = null; return; }
         flightCache[cs] = data;
-        routeCache[cs] = buildFlightRouteCacheEntry(data);
-        applyFlightRoute(routeEl, routeCache[cs], popup);
+        var entry = buildFlightRouteCacheEntry(data);
+        var cur = routeCache[cs];
+        if (cur && cur.originSource === "track") {
+          if (!cur.destination && entry.destination) {
+            cur.destination = entry.destination;
+            cur.iata = [cur.origin ? cur.origin.iata : null, entry.destination.iata].filter(Boolean).join(" \u2192 ");
+            cur.display = cur.iata;
+          }
+          applyFlightRoute(routeEl, cur, popup);
+        } else {
+          routeCache[cs] = entry;
+          applyFlightRoute(routeEl, entry, popup);
+        }
       })
       .catch(function() { flightCache[cs] = null; });
   }

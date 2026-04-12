@@ -1,0 +1,216 @@
+import { MAJOR_AIRPORTS } from "./airports.js";
+import { haversineKm } from "./geo.js";
+import { json } from "./http.js";
+
+const OPENSKY_API = "https://opensky-network.org/api";
+const OPENSKY_AUTH_URL = "https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token";
+const OPENSKY_CACHE_TTL = 7200;
+const TOKEN_CACHE_TTL = 1500;
+
+const ORIGIN_MAX_ALT_M = 500;
+const ORIGIN_MAX_DIST_KM = 8;
+const CONVERGENCE_TAIL_SIZE = 20;
+const CONVERGENCE_SEARCH_RADIUS_KM = 80;
+const CONVERGENCE_MIN_POINTS = 10;
+
+export function nearestAirport(lat, lon, maxKm) {
+  let best = null;
+  let bestDist = maxKm;
+  for (const [iata, name, aLat, aLon] of MAJOR_AIRPORTS) {
+    const d = haversineKm(lat, lon, aLat, aLon);
+    if (d < bestDist) {
+      bestDist = d;
+      best = { iata, name };
+    }
+  }
+  return best ? { ...best, dist: bestDist } : null;
+}
+
+function nearbyAirports(lat, lon, maxKm, limit) {
+  const results = [];
+  for (const [iata, name, aLat, aLon] of MAJOR_AIRPORTS) {
+    const d = haversineKm(lat, lon, aLat, aLon);
+    if (d < maxKm) results.push({ iata, name, lat: aLat, lon: aLon, dist: d });
+  }
+  results.sort((a, b) => a.dist - b.dist);
+  return results.slice(0, limit);
+}
+
+export function convergenceScore(pathTail, airportLat, airportLon) {
+  if (pathTail.length < 2) return 0;
+  const dists = pathTail.map((pt) => haversineKm(pt[1], pt[2], airportLat, airportLon));
+  const total = dists.length - 1;
+  let decreasing = 0;
+  for (let i = 1; i <= total; i++) {
+    if (dists[i] < dists[i - 1]) decreasing++;
+  }
+  const pct = decreasing / total;
+  const net = dists[dists.length - 1] - dists[0];
+  const final = dists[dists.length - 1];
+  if (net >= 0) return 0;
+  return pct * Math.abs(net) / Math.max(final, 0.1);
+}
+
+export function extractOriginDest(track) {
+  const path = track?.path;
+  if (!path || path.length < 2) return { origin: null, destination: null };
+
+  let origin = null;
+  for (const pt of path) {
+    if (pt[3] <= ORIGIN_MAX_ALT_M) {
+      const match = nearestAirport(pt[1], pt[2], ORIGIN_MAX_DIST_KM);
+      if (match) {
+        origin = { iata: match.iata, name: match.name };
+        break;
+      }
+    }
+  }
+
+  let destination = null;
+  const tail = path.length >= CONVERGENCE_TAIL_SIZE
+    ? path.slice(-CONVERGENCE_TAIL_SIZE)
+    : path;
+
+  if (tail.length >= CONVERGENCE_MIN_POINTS && tail[tail.length - 1][3] < tail[0][3]) {
+    const last = tail[tail.length - 1];
+    const candidates = nearbyAirports(last[1], last[2], CONVERGENCE_SEARCH_RADIUS_KM, 5);
+
+    let bestScore = 0;
+    for (const apt of candidates) {
+      const score = convergenceScore(tail, apt.lat, apt.lon);
+      if (score > bestScore) {
+        bestScore = score;
+        destination = { iata: apt.iata, name: apt.name };
+      }
+    }
+  }
+
+  return { origin, destination };
+}
+
+async function fetchToken(env, cache) {
+  const clientId = env.OPENSKY_CLIENT_ID;
+  const clientSecret = env.OPENSKY_CLIENT_SECRET;
+  if (!clientId || !clientSecret) return null;
+
+  const cacheKey = new Request("https://opensky-token-cache/bearer");
+  const cached = await cache.match(cacheKey);
+  if (cached) {
+    const data = await cached.json();
+    return data.token;
+  }
+
+  const resp = await fetch(OPENSKY_AUTH_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: `grant_type=client_credentials&client_id=${encodeURIComponent(clientId)}&client_secret=${encodeURIComponent(clientSecret)}`,
+  });
+  if (!resp.ok) return null;
+
+  const data = await resp.json();
+  const token = data.access_token;
+  if (!token) return null;
+
+  const cacheResp = json(200, { token });
+  cacheResp.headers.set("Cache-Control", `s-maxage=${TOKEN_CACHE_TTL}`);
+  await cache.put(cacheKey, cacheResp);
+  return token;
+}
+
+export async function fetchCachedTrack(hex, cache, ctx, env) {
+  if (!hex || !/^[0-9a-f]{6}$/i.test(hex)) return null;
+  const normalized = hex.toLowerCase();
+
+  const cacheKey = new Request(`https://opensky-track-cache/${normalized}`);
+  const cached = await cache.match(cacheKey);
+  if (cached) return cached.json();
+
+  const headers = { "User-Agent": "contrails/1.0" };
+  const token = await fetchToken(env, cache);
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+
+  let resp;
+  try {
+    resp = await fetch(
+      `${OPENSKY_API}/tracks/all?icao24=${normalized}&time=0`,
+      { headers },
+    );
+  } catch (_) {
+    return null;
+  }
+
+  if (!resp.ok) return null;
+
+  const track = await resp.json();
+  if (!track?.path?.length) return null;
+
+  const cacheResp = json(200, track);
+  cacheResp.headers.set("Cache-Control", `s-maxage=${OPENSKY_CACHE_TTL}`);
+  ctx.waitUntil(cache.put(cacheKey, cacheResp.clone()));
+  return track;
+}
+
+export function detectPhase(altFt, vRate, ground) {
+  if (ground) return "landed";
+  if (altFt == null) return null;
+  const descending = vRate != null && vRate < -300;
+  const climbing = vRate != null && vRate > 300;
+  if (altFt < 10000 && descending) return "arriving";
+  if (altFt < 10000 && climbing) return "departing";
+  return "cruising";
+}
+
+export function mergeRoutes(trackResult, adsbdbEntry) {
+  const trackOD = trackResult ? extractOriginDest(trackResult) : null;
+  const trackOrigin = trackOD?.origin || null;
+  const trackDest = trackOD?.destination || null;
+  const dbOrigin = adsbdbEntry?.origin || null;
+  const dbDest = adsbdbEntry?.destination || null;
+
+  if (trackOrigin) {
+    const originsMatch = dbOrigin && dbOrigin.iata && trackOrigin.iata === dbOrigin.iata;
+    return {
+      origin: trackOrigin,
+      destination: trackDest || (originsMatch ? dbDest : null),
+      originSource: "track",
+      airline: adsbdbEntry?.airline || null,
+    };
+  }
+
+  if (dbOrigin) {
+    return {
+      origin: dbOrigin,
+      destination: dbDest,
+      originSource: "route",
+      airline: adsbdbEntry?.airline || null,
+    };
+  }
+
+  return null;
+}
+
+export function formatRouteLabel(origin, destination, phase) {
+  const oIata = origin?.iata;
+  const dIata = destination?.iata;
+
+  if (!oIata && !dIata) return "";
+
+  switch (phase) {
+    case "departing":
+      if (oIata && dIata) return `departed ${oIata} for ${dIata}`;
+      if (oIata) return `departed ${oIata}`;
+      return `departing for ${dIata}`;
+    case "arriving":
+      if (dIata && oIata) return `landing at ${dIata} from ${oIata}`;
+      if (dIata) return `landing at ${dIata}`;
+      return `arriving from ${oIata}`;
+    case "landed":
+      if (dIata && oIata) return `arrived at ${dIata} from ${oIata}`;
+      if (oIata) return `arrived from ${oIata}`;
+      return `arrived at ${dIata}`;
+    default:
+      if (oIata && dIata) return `${oIata} \u2192 ${dIata}`;
+      if (oIata) return `from ${oIata}`;
+      return `to ${dIata}`;
+  }
+}

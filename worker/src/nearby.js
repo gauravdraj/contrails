@@ -2,6 +2,7 @@ import { MAJOR_AIRPORTS } from "./airports.js";
 import { fetchRouteAirports } from "./adsbdb.js";
 import { bearingDeg, cardinalFromBearing, haversineKm } from "./geo.js";
 import { json, plainText } from "./http.js";
+import { fetchCachedTrack, extractOriginDest, mergeRoutes, detectPhase, formatRouteLabel } from "./opensky.js";
 
 const ADSB_API = "https://api.adsb.lol/v2";
 const MAP_URL = "https://gauravdraj.github.io/contrails";
@@ -158,23 +159,38 @@ function selectVisiblePlanes(planes) {
   return visible;
 }
 
-async function fetchRouteMap(visible) {
+async function fetchRouteMap(visible, env, ctx) {
   const routeMap = Object.create(null);
   const routable = visible.filter((plane) => plane.callsign && !plane.priv);
   if (!routable.length) return routeMap;
 
+  const cache = caches.default;
   const results = await Promise.allSettled(
     routable.map(async (plane) => {
-      const airports = await fetchRouteAirports(plane.callsign);
-      return airports ? [plane.callsign.trim().toUpperCase(), airports] : null;
+      const [trackResult, airportsResult] = await Promise.allSettled([
+        plane.icao24 ? fetchCachedTrack(plane.icao24, cache, ctx, env) : Promise.resolve(null),
+        fetchRouteAirports(plane.callsign),
+      ]);
+      const track = trackResult.status === "fulfilled" ? trackResult.value : null;
+      const airports = airportsResult.status === "fulfilled" ? airportsResult.value : null;
+
+      const trackOD = track ? extractOriginDest(track) : null;
+      const cs = plane.callsign.trim().toUpperCase();
+      const phase = detectPhase(plane.altFt, plane.vRate, plane.altFt == null);
+
+      if (trackOD?.origin || trackOD?.destination) {
+        routeMap[cs] = {
+          origin: trackOD.origin,
+          destination: trackOD.destination,
+          phase,
+          airports,
+        };
+      } else if (airports) {
+        routeMap[cs] = { airports, phase };
+      }
     }),
   );
 
-  for (const result of results) {
-    if (result.status !== "fulfilled" || !result.value) continue;
-    const [callsign, airports] = result.value;
-    routeMap[callsign] = airports;
-  }
   return routeMap;
 }
 
@@ -220,8 +236,16 @@ function airportLabel(airport) {
   return airport.iata || airport.location || "?";
 }
 
-function formatRouteContext(plane, airports) {
-  if (airports && airports.length >= 2) {
+function formatRouteContext(plane, routeData) {
+  if (!routeData) return null;
+
+  if (routeData.origin || routeData.destination) {
+    const label = formatRouteLabel(routeData.origin, routeData.destination, routeData.phase);
+    if (label) return label;
+  }
+
+  const airports = routeData.airports || routeData;
+  if (Array.isArray(airports) && airports.length >= 2) {
     if (plane.altFt <= LANDING_MAX_FT && (plane.vertical === "descending" || plane.vertical === "climbing")) {
       const { airport, dist, idx } = nearestAirport(plane, airports);
       if (airport && dist <= LANDING_AIRPORT_KM) {
@@ -234,6 +258,7 @@ function formatRouteContext(plane, airports) {
         return `Departing ${name} — to ${airportLabel(toAirport)}`;
       }
     }
+    return airports.map((airport) => airportLabel(airport)).join(" → ");
   }
 
   if (plane.altFt <= LANDING_MAX_FT && plane.vertical === "descending") {
@@ -241,14 +266,10 @@ function formatRouteContext(plane, airports) {
     if (match) return `Landing at ${match.name}`;
   }
 
-  if (airports && airports.length >= 2) {
-    return airports.map((airport) => airportLabel(airport)).join(" → ");
-  }
-
   return null;
 }
 
-function formatNearbyEntry(num, plane, airports) {
+function formatNearbyEntry(num, plane, routeData) {
   const parts = [];
   const alert = SQUAWK_ALERTS[plane.squawk];
   if (alert) parts.push(`${num}. \u26A0 ${alert} (${plane.squawk})`);
@@ -262,7 +283,7 @@ function formatNearbyEntry(num, plane, airports) {
   if (plane.priv) identifier += " [PRIVATE]";
   parts.push(identifier);
 
-  const routeLine = formatRouteContext(plane, airports);
+  const routeLine = formatRouteContext(plane, routeData);
   const distance = `${shortMiles(plane.slantKm)} mi \u2191${plane.elevDeg}\u00B0 ${plane.cardinal}`;
   let info = distance + ", " + shortAlt(plane.altFt);
   if (!routeLine) info += ", " + plane.vertical;
@@ -272,7 +293,7 @@ function formatNearbyEntry(num, plane, airports) {
   return parts.join("\n");
 }
 
-export async function handleNearby(url) {
+export async function handleNearby(url, env, ctx) {
   const lat = parseFloat(url.searchParams.get("lat"));
   const lng = parseFloat(url.searchParams.get("lng"));
   if (!isFinite(lat) || !isFinite(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) {
@@ -307,7 +328,7 @@ export async function handleNearby(url) {
 
   let routeMap = Object.create(null);
   try {
-    routeMap = await fetchRouteMap(visible);
+    routeMap = await fetchRouteMap(visible, env, ctx);
   } catch (_) {
     routeMap = Object.create(null);
   }
@@ -315,8 +336,8 @@ export async function handleNearby(url) {
   const lines = [`${visible.length} aircraft nearby:\n`];
   for (let index = 0; index < visible.length; index++) {
     const plane = visible[index];
-    const routeAirports = routeMap[plane.callsign?.trim().toUpperCase()];
-    lines.push(formatNearbyEntry(index + 1, plane, routeAirports));
+    const routeData = routeMap[plane.callsign?.trim().toUpperCase()];
+    lines.push(formatNearbyEntry(index + 1, plane, routeData));
   }
   const body = lines.join("\n");
 
