@@ -31,7 +31,7 @@
     throw new Error("Contrails core helpers failed to load.");
   }
 
-  const APP_VERSION = "v2.7";
+  const APP_VERSION = "v2.8";
   const isLocal = location.hostname === "localhost" || location.hostname === "127.0.0.1";
   const isIOSDevice = /iP(ad|hone|od)/.test(navigator.userAgent) ||
     (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
@@ -1281,7 +1281,7 @@
     updateViewHint(visibleAircraftCount());
     fetchRoutes();
     clientConvergenceRefine();
-    if (_activeAirportPopup && _activeAirportScheduleData) {
+    if (_activeAirportPopup && _activeAirportLat != null) {
       var now = Date.now();
       if (now - _lastScheduleRefresh >= 3000) {
         _lastScheduleRefresh = now;
@@ -1333,15 +1333,25 @@
         var dest = r.destination;
         var destIata = dest ? (dest.region ? dest.display : dest.iata) : null;
         var iataParts = [r.origin ? r.origin.iata : null, destIata].filter(Boolean);
+        var workerPhase = r.phase || null;
+        if (workerPhase === "landed" && r.origin && r.destination) {
+          var matchedPlane = aircraft.find(function(p) { return p.callsign === r.callsign; });
+          if (matchedPlane && matchedPlane.ground) {
+            workerPhase = resolveGroundPhase(matchedPlane, r.origin, r.destination);
+          }
+        }
+        var workerDisplay = (workerPhase !== r.phase)
+          ? formatClientRouteLabel(r.origin || null, dest || null, workerPhase)
+          : (r.display || iataParts.join(" to "));
         routeCache[r.callsign] = {
-          display: r.display || iataParts.join(" to "),
+          display: workerDisplay,
           iata: iataParts.join(" to "),
           origin: r.origin || null,
           destination: dest || null,
           originSource: r.originSource || null,
           destSource: r.destSource || null,
           confidence: r.confidence || null,
-          phase: r.phase || null,
+          phase: workerPhase,
           fetchedAt: Date.now()
         };
         if (r.destSource === "adsbdb" || r.originSource === "adsbdb") {
@@ -1505,13 +1515,13 @@
         }
         var iataParts = [rc.origin ? rc.origin.iata : null, dest.iata].filter(Boolean);
         rc.iata = iataParts.join(" to ");
-        var phase = a.ground ? "landed" :
+        var phase = a.ground ? resolveGroundPhase(a, rc.origin, dest) :
           (a.altFt < 15000 && a.vRate != null && a.vRate * 60 < -100) ? "arriving" :
           (a.altFt < 15000 && a.vRate != null && a.vRate * 60 > 100) ? "departing" : "cruising";
         rc.display = formatClientRouteLabel(rc.origin, dest, phase);
         rc.phase = phase;
       } else {
-        var phase2 = a.ground ? "landed" :
+        var phase2 = a.ground ? resolveGroundPhase(a, null, dest) :
           (a.altFt < 15000 && a.vRate != null && a.vRate * 60 < -100) ? "arriving" :
           (a.altFt < 15000 && a.vRate != null && a.vRate * 60 > 100) ? "departing" : "cruising";
         routeCache[a.callsign] = {
@@ -1527,6 +1537,26 @@
         };
       }
     }
+  }
+
+  function resolveGroundPhase(a, origin, destination) {
+    if (!airportData) return "landed";
+    var oLat = null, oLng = null, dLat = null, dLng = null;
+    if (origin && origin.iata) {
+      for (var i = 0; i < airportData.length; i++) {
+        if (airportData[i][0] === origin.iata) { oLat = airportData[i][1]; oLng = airportData[i][2]; break; }
+      }
+    }
+    if (destination && destination.iata) {
+      for (var i = 0; i < airportData.length; i++) {
+        if (airportData[i][0] === destination.iata) { dLat = airportData[i][1]; dLng = airportData[i][2]; break; }
+      }
+    }
+    var distToOrigin = (oLat != null) ? haversineKm(a.lat, a.lng, oLat, oLng) : Infinity;
+    var distToDest = (dLat != null) ? haversineKm(a.lat, a.lng, dLat, dLng) : Infinity;
+    if (distToOrigin < 5 && distToOrigin <= distToDest) return "at gate";
+    if (distToDest < 5) return "landed";
+    return "landed";
   }
 
   function formatClientRouteLabel(origin, destination, phase) {
@@ -1547,6 +1577,10 @@
       if (phase === "landed") {
         if (oName) return "arrived in " + regionName + " from " + oName;
         return "arrived in " + regionName;
+      }
+      if (phase === "at gate") {
+        if (oName) return "at gate at " + oName + " for " + display;
+        return display;
       }
       if (oName) return "heading to " + regionName + " from " + oName;
       return display;
@@ -1569,6 +1603,11 @@
       if (dName && oName) return "arrived at " + dName + " from " + oName;
       if (oName) return "arrived from " + oName;
       return "arrived at " + dName;
+    }
+    if (phase === "at gate") {
+      if (oName && dName) return "at gate at " + oName + " for " + dName;
+      if (oName) return "at gate at " + oName;
+      return "departing for " + dName;
     }
     if (oName && dName) return "heading to " + dName + " from " + oName;
     if (oName) return "from " + oName;
@@ -2364,7 +2403,7 @@
       }
     }
 
-    var phase = a.ground ? "landed" :
+    var phase = a.ground ? resolveGroundPhase(a, origin, destination) :
       (a.altFt < 15000 && a.vRate != null && a.vRate * 60 < -100) ? "arriving" :
       (a.altFt < 15000 && a.vRate != null && a.vRate * 60 > 100) ? "departing" : "cruising";
 
@@ -2521,7 +2560,7 @@
 
       var origin = { iata: from, name: from };
       var destination = { iata: to, name: to };
-      var phase = a.ground ? "landed" :
+      var phase = a.ground ? resolveGroundPhase(a, origin, destination) :
         (a.altFt < 15000 && a.vRate != null && a.vRate * 60 < -100) ? "arriving" :
         (a.altFt < 15000 && a.vRate != null && a.vRate * 60 > 100) ? "departing" : "cruising";
 
@@ -3534,8 +3573,9 @@
   // --- Airport schedule popup card ---
   var _activeAirportPopup = null;
   var _activeAirportIata = null;
-  var _activeAirportScheduleData = null;
   var _activeAirportName = null;
+  var _activeAirportLat = null;
+  var _activeAirportLng = null;
   var _activeScheduleDir = "arrivals";
   var _lastScheduleRefresh = 0;
 
@@ -3550,8 +3590,66 @@
     return sign + h + "h" + (m < 10 ? "0" : "") + m + "m";
   }
 
-  function buildScheduleCardContent(iata, name, flights, dir) {
+  function buildLiveScheduleData(airportIata, airportLat, airportLng) {
+    var arrivals = [];
+    var departures = [];
+    for (var i = 0; i < aircraft.length; i++) {
+      var a = aircraft[i];
+      if (!a.callsign || isFiltered(a)) continue;
+      var rc = routeCache[a.callsign];
+      if (!a.ground) {
+        if (rc && rc.destination && rc.destination.iata === airportIata) {
+          var distKm = haversineKm(a.lat, a.lng, airportLat, airportLng);
+          var spdKts = a.speedKts || 0;
+          var etaMin = spdKts > 0 ? (distKm / (spdKts * 1.852)) * 60 : null;
+          arrivals.push({
+            callsign: a.callsign,
+            originIata: rc.origin ? rc.origin.iata : null,
+            altFt: a.altFt,
+            distKm: distKm,
+            etaMin: etaMin != null ? Math.round(etaMin) : null,
+            estLandingTime: etaMin != null ? Date.now() + etaMin * 60000 : null
+          });
+        }
+      } else {
+        var distKm = haversineKm(a.lat, a.lng, airportLat, airportLng);
+        if (distKm < 5) {
+          var isPreDeparture = true;
+          if (rc && rc.destination && rc.destination.iata) {
+            var gndPhase = resolveGroundPhase(a, rc.origin, rc.destination);
+            if (gndPhase === "landed") isPreDeparture = false;
+          }
+          if (!isPreDeparture) continue;
+          var spdKts = a.speedKts || 0;
+          var status = spdKts > 80 ? "Rolling" : spdKts > 30 ? "Taxiing" : "At gate";
+          departures.push({
+            callsign: a.callsign,
+            destIata: rc && rc.destination ? rc.destination.iata : null,
+            speedKts: spdKts,
+            status: status,
+            distKm: distKm
+          });
+        }
+      }
+    }
+    arrivals.sort(function(a, b) {
+      var altA = a.altFt != null ? a.altFt : 99999;
+      var altB = b.altFt != null ? b.altFt : 99999;
+      if (altA !== altB) return altA - altB;
+      return a.distKm - b.distKm;
+    });
+    departures.sort(function(a, b) {
+      if (b.speedKts !== a.speedKts) return b.speedKts - a.speedKts;
+      return a.distKm - b.distKm;
+    });
+    if (arrivals.length > 15) arrivals.length = 15;
+    if (departures.length > 15) departures.length = 15;
+    return { arrivals: arrivals, departures: departures };
+  }
+
+  function buildScheduleCardContent(iata, name, liveData, dir) {
     var isArr = dir === "arrivals";
+    var items = isArr ? (liveData.arrivals || []) : (liveData.departures || []);
     var safeName = escapeHtml(name || "").replace(/"/g, "&quot;");
     var html = '<div class="sched-card" data-sched-iata="' + escapeHtml(iata) +
       '" data-sched-name="' + safeName +
@@ -3561,156 +3659,58 @@
         '<div class="sched-name">' + escapeHtml(name) + '</div>' +
       '</div>' +
       '<div class="sched-toggle">' +
-        '<button class="sched-toggle-btn' + (isArr ? " active" : "") + '" data-dir="arrivals">Arrivals</button>' +
-        '<button class="sched-toggle-btn' + (isArr ? "" : " active") + '" data-dir="departures">Departures</button>' +
+        '<button class="sched-toggle-btn' + (isArr ? " active" : "") + '" data-dir="arrivals">Landings</button>' +
+        '<button class="sched-toggle-btn' + (isArr ? "" : " active") + '" data-dir="departures">Takeoffs</button>' +
       '</div>';
-    if (!flights || !flights.length) {
-      html += '<div class="sched-empty">No upcoming flights</div>';
-    } else {
-      for (var i = 0; i < flights.length; i++) {
-        var f = flights[i];
-        var color = f.color || "gray";
-        var tsKey = isArr ? (f.est_arr || f.sched_arr) : (f.est_dep || f.sched_dep);
-        var timeStr = fidsTime(isArr ? f.sched_arr : f.sched_dep);
-        var rel = tsKey ? relativeMinutes(tsKey) : "";
-        var route = isArr ? (f.from_iata || "") : (f.to_iata || "");
-        var flightNum = escapeHtml((f.flight || "\u2014").replace(/^([A-Za-z]+)(\d+)$/, "$1 $2"));
-        var status = f.status ? escapeHtml(f.status) : "";
-        var dotCls = 'sched-dot ' + color + (f._liveAircraft ? ' live' : '');
-        html += '<div class="sched-row">' +
-          '<span class="' + dotCls + '"></span>' +
-          '<span class="sched-flight">' + flightNum + '</span>' +
-          (route ? '<span class="sched-route">' + escapeHtml(route) + '</span>' : '') +
-          '<span class="sched-time">' + timeStr + '</span>' +
-          '<span class="sched-rel">' + rel + '</span>' +
-          (status ? '<span class="sched-status">' + status + '</span>' : '');
-        if (f._liveAircraft) {
-          var la = f._liveAircraft;
-          var altStr = la.altFt != null ? la.altFt.toLocaleString() + 'ft' : '';
-          var distNm = la.distKm != null ? Math.round(la.distKm / 1.852) + 'nm' : '';
-          var parts = [];
-          if (altStr) parts.push(altStr);
-          if (distNm) parts.push(distNm);
-          if (parts.length) {
-            html += '<div class="sched-subtitle">' + parts.join(' \u00b7 ') + '</div>';
-          }
+    if (!items.length) {
+      html += '<div class="sched-empty">No aircraft nearby</div>';
+    } else if (isArr) {
+      for (var i = 0; i < items.length; i++) {
+        var f = items[i];
+        var flightNum = escapeHtml((f.callsign || "\u2014").replace(/^([A-Za-z]+)(\d+)$/, "$1 $2"));
+        var fromIata = f.originIata ? escapeHtml(f.originIata) : "\u2014";
+        var altStr = f.altFt != null ? f.altFt.toLocaleString() + "ft" : "\u2014";
+        var distNm = Math.round(f.distKm / 1.852) + "nm";
+        var etaStr = "";
+        if (f.estLandingTime != null) {
+          var d = new Date(f.estLandingTime);
+          etaStr = "~" + d.getHours().toString().padStart(2, "0") + ":" + d.getMinutes().toString().padStart(2, "0");
         }
-        html += '</div>';
+        html += '<div class="sched-row">' +
+          '<span class="sched-dot cyan live"></span>' +
+          '<span class="sched-flight">' + flightNum + '</span>' +
+          '<span class="sched-route">from ' + fromIata + '</span>' +
+          '<span class="sched-alt">' + altStr + '</span>' +
+          '<span class="sched-dist">' + distNm + '</span>' +
+          (etaStr ? '<span class="sched-eta">' + etaStr + '</span>' : '') +
+          '</div>';
+      }
+    } else {
+      for (var i = 0; i < items.length; i++) {
+        var f = items[i];
+        var flightNum = escapeHtml((f.callsign || "\u2014").replace(/^([A-Za-z]+)(\d+)$/, "$1 $2"));
+        var destIata = f.destIata ? escapeHtml(f.destIata) : "\u2014";
+        var spdStr = f.speedKts > 0 ? f.speedKts + "kt" : "\u2014";
+        var dotColor = (f.status === "Taxiing" || f.status === "Rolling") ? "green" : "gray";
+        html += '<div class="sched-row">' +
+          '<span class="sched-dot ' + dotColor + '"></span>' +
+          '<span class="sched-flight">' + flightNum + '</span>' +
+          '<span class="sched-route">to ' + destIata + '</span>' +
+          '<span class="sched-speed">' + spdStr + '</span>' +
+          '<span class="sched-hint">' + escapeHtml(f.status) + '</span>' +
+          '</div>';
       }
     }
     html += '</div>';
     return html;
   }
 
-  function enrichScheduleWithLiveData(flights, isArr, airportIata, airportLat, airportLng) {
-    if (!flights || !flights.length) return flights || [];
-    var ap = airportMarkers[airportIata];
-    if (!ap && (airportLat == null || airportLng == null)) return flights;
-    var aLat = airportLat != null ? airportLat : ap.lat;
-    var aLng = airportLng != null ? airportLng : ap.lng;
-    if (!aircraft || !aircraft.length) return flights;
-
-    var cloned = [];
-    for (var i = 0; i < flights.length; i++) {
-      cloned.push(Object.assign({}, flights[i]));
-    }
-
-    for (var i = 0; i < cloned.length; i++) {
-      var f = cloned[i];
-      var srcs = [];
-      if (f.flight) srcs = srcs.concat(callsignVariants(f.flight));
-      if (f.callsign) srcs = srcs.concat(callsignVariants(f.callsign));
-      if (!srcs.length) continue;
-
-      var variants = [];
-      for (var s = 0; s < srcs.length; s++) {
-        variants.push(srcs[s].replace(/\s/g, "").toUpperCase());
-      }
-
-      for (var j = 0; j < aircraft.length; j++) {
-        var a = aircraft[j];
-        if (!a.callsign || isFiltered(a)) continue;
-        var acs = a.callsign.toUpperCase();
-        var matched = false;
-        for (var v = 0; v < variants.length; v++) {
-          if (acs === variants[v]) { matched = true; break; }
-        }
-        if (matched) {
-          f._liveAircraft = {
-            lat: a.lat, lng: a.lng,
-            altFt: a.altFt, vRate: a.vRate,
-            ground: a.ground,
-            distKm: haversineKm(a.lat, a.lng, aLat, aLng)
-          };
-          break;
-        }
-      }
-    }
-
-    var live = [], rest = [];
-    for (var i = 0; i < cloned.length; i++) {
-      if (cloned[i]._liveAircraft) live.push(cloned[i]);
-      else rest.push(cloned[i]);
-    }
-
-    if (isArr) {
-      live.sort(function(a, b) {
-        var altA = a._liveAircraft.altFt != null ? a._liveAircraft.altFt : 99999;
-        var altB = b._liveAircraft.altFt != null ? b._liveAircraft.altFt : 99999;
-        if (altA !== altB) return altA - altB;
-        return (a._liveAircraft.distKm || 0) - (b._liveAircraft.distKm || 0);
-      });
-    } else {
-      var ground = [], airborne = [];
-      for (var i = 0; i < live.length; i++) {
-        var la = live[i]._liveAircraft;
-        if (la.ground) ground.push(live[i]);
-        else airborne.push(live[i]);
-      }
-      ground.sort(function(a, b) {
-        return (a._liveAircraft.distKm || 0) - (b._liveAircraft.distKm || 0);
-      });
-      airborne.sort(function(a, b) {
-        var altA = a._liveAircraft.altFt != null ? a._liveAircraft.altFt : 99999;
-        var altB = b._liveAircraft.altFt != null ? b._liveAircraft.altFt : 99999;
-        return altA - altB;
-      });
-      live = ground.concat(airborne);
-    }
-
-    return live.concat(rest);
-  }
-
-  function filterAndSortFlights(flights, isArr) {
-    if (!flights || !flights.length) return [];
-    var nowSec = Math.floor(Date.now() / 1000);
-    var lookback = isArr ? 30 * 60 : 15 * 60;
-    var lo = nowSec - lookback;
-    var hi = nowSec + 2 * 60 * 60;
-    function ts(f) {
-      return isArr
-        ? (f.actual_arr || f.est_arr || f.sched_arr || 0)
-        : (f.actual_dep || f.est_dep || f.sched_dep || 0);
-    }
-    var sorted = flights.slice().sort(function(a, b) { return ts(a) - ts(b); });
-    var result = [];
-    for (var i = 0; i < sorted.length && result.length < 15; i++) {
-      var t = ts(sorted[i]);
-      if (t >= lo && t <= hi) result.push(sorted[i]);
-    }
-    return result;
-  }
-
   function renderSchedulePopup(dir) {
-    if (!_activeAirportPopup || !_activeAirportScheduleData) return;
+    if (!_activeAirportPopup || _activeAirportLat == null) return;
     _activeScheduleDir = dir;
-    var isArr = dir === "arrivals";
-    var flights = filterAndSortFlights(_activeAirportScheduleData[dir] || [], isArr);
-    var ap = airportMarkers[_activeAirportIata];
-    flights = enrichScheduleWithLiveData(flights, isArr, _activeAirportIata,
-      ap ? ap.lat : null, ap ? ap.lng : null);
+    var liveData = buildLiveScheduleData(_activeAirportIata, _activeAirportLat, _activeAirportLng);
     _activeAirportPopup.setContent(
-      buildScheduleCardContent(_activeAirportIata, _activeAirportName, flights, dir)
+      buildScheduleCardContent(_activeAirportIata, _activeAirportName, liveData, dir)
     );
   }
 
@@ -3720,53 +3720,30 @@
       _activeAirportPopup = null;
       _activeAirportIata = null;
     }
+
+    _activeAirportIata = iata;
+    _activeAirportName = name;
+    _activeAirportLat = lat;
+    _activeAirportLng = lng;
+    _activeScheduleDir = "arrivals";
+
+    var liveData = buildLiveScheduleData(iata, lat, lng);
     var popup = L.popup({ maxWidth: 320, minWidth: 280, closeButton: true, className: "" })
       .setLatLng([lat, lng])
-      .setContent('<div class="sched-card"><div class="sched-header">' +
-        '<div class="sched-iata">' + escapeHtml(iata) + '</div>' +
-        '<div class="sched-name">' + escapeHtml(name) + '</div>' +
-        '</div><div class="sched-loading"><span class="spinner"></span></div></div>')
+      .setContent(buildScheduleCardContent(iata, name, liveData, "arrivals"))
       .openOn(map);
 
     _activeAirportPopup = popup;
-    _activeAirportIata = iata;
 
     popup.on("remove", function() {
       if (_activeAirportIata === iata) {
         _activeAirportPopup = null;
         _activeAirportIata = null;
-        _activeAirportScheduleData = null;
         _activeAirportName = null;
+        _activeAirportLat = null;
+        _activeAirportLng = null;
       }
     });
-
-    var schedUrl = (isLocal ? "/api/fr24/schedule/" : WORKER_URL + "/schedule/") + encodeURIComponent(iata);
-    fetch(schedUrl)
-      .then(function(r) { return r.json(); })
-      .then(function(data) {
-        if (_activeAirportIata !== iata) return;
-        if (data.error) {
-          popup.setContent('<div class="sched-card"><div class="sched-header">' +
-            '<div class="sched-iata">' + escapeHtml(iata) + '</div>' +
-            '<div class="sched-name">' + escapeHtml(name) + '</div>' +
-            '</div><div class="sched-error">' + escapeHtml(data.error) + '</div></div>');
-          return;
-        }
-        var resolvedName = data.name || name;
-        _activeAirportScheduleData = data;
-        _activeAirportName = resolvedName;
-        _activeScheduleDir = "arrivals";
-        var flights = filterAndSortFlights(data.arrivals || [], true);
-        flights = enrichScheduleWithLiveData(flights, true, iata, lat, lng);
-        popup.setContent(buildScheduleCardContent(iata, resolvedName, flights, "arrivals"));
-      })
-      .catch(function() {
-        if (_activeAirportIata !== iata) return;
-        popup.setContent('<div class="sched-card"><div class="sched-header">' +
-          '<div class="sched-iata">' + escapeHtml(iata) + '</div>' +
-          '<div class="sched-name">' + escapeHtml(name) + '</div>' +
-          '</div><div class="sched-error">Failed to load schedule</div></div>');
-      });
   }
 
   // --- FIDS (airport schedule board) ---

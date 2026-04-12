@@ -906,11 +906,16 @@ body.noscroll { touch-action: none; }
 .sched-dot.orange { background: #fb923c; }
 .sched-dot.red { background: var(--danger); }
 .sched-dot.gray { background: var(--text-muted); }
-.sched-dot.live { background: #4fc3f7; animation: sched-pulse 2s ease-in-out infinite; }
+.sched-dot.cyan { background: #4fc3f7; }
+.sched-dot.live { animation: sched-pulse 2s ease-in-out infinite; }
 @keyframes sched-pulse {
   0%, 100% { opacity: 1; transform: scale(1); }
   50% { opacity: 0.55; transform: scale(1.25); }
 }
+.sched-alt, .sched-dist { font-size: 11px; color: var(--text-soft); flex-shrink: 0; }
+.sched-eta { font-size: 11px; color: var(--accent); margin-left: auto; flex-shrink: 0; font-weight: 600; }
+.sched-speed { font-size: 11px; color: var(--text-soft); flex-shrink: 0; }
+.sched-hint { font-size: 11px; color: var(--text-muted); margin-left: auto; flex-shrink: 0; }
 .sched-subtitle { flex-basis: 100%; font-size: 11px; color: #aaa; padding-left: 13px; margin-top: 2px; }
 .sched-loading {
   padding: 20px 0;
