@@ -1313,6 +1313,7 @@
       });
       if (!resp.ok) return;
       var routes = await resp.json();
+      var adsbdbCallsigns = [];
       for (var j = 0; j < routes.length; j++) {
         var r = routes[j];
         if (!r.callsign || (!r.origin && !r.destination)) continue;
@@ -1330,6 +1331,18 @@
           phase: r.phase || null,
           fetchedAt: Date.now()
         };
+        if (r.destSource === "adsbdb" || r.originSource === "adsbdb") {
+          adsbdbCallsigns.push(r.callsign);
+        }
+      }
+      for (var ac = 0; ac < adsbdbCallsigns.length; ac++) {
+        var cs = adsbdbCallsigns[ac];
+        if (fr24SearchPending[cs] || isLikelyPrivateCallsign(cs)) continue;
+        var plane = aircraft.find(function(p) { return p.callsign === cs; });
+        if (plane) {
+          fr24SearchPending[cs] = true;
+          tryFr24Search(plane).then((function(c) { return function() { delete fr24SearchPending[c]; }; })(cs));
+        }
       }
       refreshAirportLabels();
     } catch (e) {
