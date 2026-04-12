@@ -3553,18 +3553,32 @@
           });
         }
       } else {
+        if (rc && rc.destination && rc.destination.iata === airportIata) continue;
         var distKm = haversineKm(a.lat, a.lng, airportLat, airportLng);
-        if (distKm < 5) {
-          var spdKts = a.speedKts || 0;
-          var status = spdKts > 80 ? "Rolling" : spdKts > 30 ? "Taxiing" : "At gate";
-          departures.push({
-            callsign: a.callsign,
-            destIata: rc && rc.destination ? rc.destination.iata : null,
-            speedKts: spdKts,
-            status: status,
-            distKm: distKm
-          });
+        var hasOriginHere = rc && rc.origin && rc.origin.iata === airportIata;
+        if (distKm > (hasOriginHere ? 8 : 5)) continue;
+        var spdKts = a.speedKts || 0;
+        var status = spdKts > 0 ? "Taxiing" : "Parked";
+        var runwayDistKm = null;
+        var rwys = runwayData && runwayData[airportIata];
+        if (rwys) {
+          var minD = Infinity;
+          for (var r = 0; r < rwys.length; r++) {
+            var rw = rwys[r];
+            var d = haversineKm(a.lat, a.lng, (rw[0] + rw[3]) / 2, (rw[1] + rw[4]) / 2);
+            if (d < minD) minD = d;
+          }
+          if (minD < Infinity) runwayDistKm = minD;
         }
+        departures.push({
+          callsign: a.callsign,
+          destIata: rc && rc.destination ? rc.destination.iata : null,
+          speedKts: spdKts,
+          status: status,
+          distKm: distKm,
+          runwayDistKm: runwayDistKm,
+          hasDest: !!(rc && rc.destination)
+        });
       }
     }
     arrivals.sort(function(a, b) {
@@ -3574,7 +3588,15 @@
       return a.distKm - b.distKm;
     });
     departures.sort(function(a, b) {
-      if (b.speedKts !== a.speedKts) return b.speedKts - a.speedKts;
+      var aTaxi = a.speedKts > 0 ? 0 : 1;
+      var bTaxi = b.speedKts > 0 ? 0 : 1;
+      if (aTaxi !== bTaxi) return aTaxi - bTaxi;
+      if (aTaxi === 0) {
+        if (a.runwayDistKm != null && b.runwayDistKm != null)
+          return a.runwayDistKm - b.runwayDistKm;
+        return b.speedKts - a.speedKts;
+      }
+      if (a.hasDest !== b.hasDest) return a.hasDest ? -1 : 1;
       return a.distKm - b.distKm;
     });
     if (arrivals.length > 15) arrivals.length = 15;
@@ -3626,7 +3648,7 @@
         var flightNum = escapeHtml((f.callsign || "\u2014").replace(/^([A-Za-z]+)(\d+)$/, "$1 $2"));
         var destIata = f.destIata ? escapeHtml(f.destIata) : "\u2014";
         var spdStr = f.speedKts > 0 ? f.speedKts + "kt" : "\u2014";
-        var dotColor = (f.status === "Taxiing" || f.status === "Rolling") ? "green" : "gray";
+        var dotColor = f.status === "Taxiing" ? "green" : "gray";
         html += '<div class="sched-row">' +
           '<span class="sched-dot ' + dotColor + '"></span>' +
           '<span class="sched-flight">' + flightNum + '</span>' +
