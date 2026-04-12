@@ -139,7 +139,7 @@
   function routesetUrl() {
     return WORKER_URL + "/routeset";
   }
-  const OPENSKY_PROXY = "https://opensky.therealgraj.com";
+  const OPENSKY_PROXY = "https://raspberrypi.tail7af116.ts.net";
   var openskyProxyOk = null;
   function trackUrl(hex) {
     return WORKER_URL + "/track/" + hex;

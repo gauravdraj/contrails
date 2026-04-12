@@ -19,6 +19,17 @@ mkdir -p "$PROXY_DIR"
 cp "$(dirname "$0")/server.js" "$PROXY_DIR/server.js"
 
 # 3. Create systemd service for the proxy
+if [ ! -f "$PROXY_DIR/.env" ]; then
+  read -rp "OpenSky username: " OSKY_USER
+  read -rsp "OpenSky password: " OSKY_PASS; echo
+  cat > "$PROXY_DIR/.env" <<ENVEOF
+OPENSKY_USER=$OSKY_USER
+OPENSKY_SECRET=$OSKY_PASS
+ENVEOF
+  chmod 600 "$PROXY_DIR/.env"
+  echo "Credentials saved to $PROXY_DIR/.env"
+fi
+
 sudo tee /etc/systemd/system/${SERVICE_NAME}.service >/dev/null <<EOF
 [Unit]
 Description=OpenSky Track Proxy
@@ -32,6 +43,7 @@ WorkingDirectory=$PROXY_DIR
 ExecStart=/usr/bin/node $PROXY_DIR/server.js
 Restart=always
 RestartSec=5
+EnvironmentFile=$PROXY_DIR/.env
 Environment=PORT=8891
 Environment=BIND=127.0.0.1
 
