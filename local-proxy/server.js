@@ -13,24 +13,31 @@ const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || "https://gauravdraj.gith
 const trackCache = new Map();
 const CACHE_TTL = 15 * 60 * 1000;
 
-const rateWindow = new Map();
-const RATE_LIMIT = 300;
-const RATE_WINDOW_MS = 60 * 1000;
+const backoff = { until: 0, delay: 10_000 };
+const BACKOFF_MAX = 600_000;
 
-function clientIP(req) {
-  return req.headers["cf-connecting-ip"] || req.headers["x-forwarded-for"]?.split(",")[0]?.trim() || req.socket.remoteAddress;
+function isBackedOff() {
+  return Date.now() < backoff.until;
 }
 
-function isRateLimited(ip) {
-  const now = Date.now();
-  let bucket = rateWindow.get(ip);
-  if (!bucket || now - bucket.start > RATE_WINDOW_MS) {
-    bucket = { start: now, count: 0 };
-    rateWindow.set(ip, bucket);
+function triggerBackoff(retryAfterSec) {
+  if (retryAfterSec && retryAfterSec > 0) {
+    const ms = retryAfterSec * 1000;
+    backoff.delay = ms;
+    backoff.until = Date.now() + ms;
+  } else {
+    backoff.delay = Math.min(backoff.delay * 2, BACKOFF_MAX);
+    backoff.until = Date.now() + backoff.delay;
   }
-  bucket.count++;
-  return bucket.count > RATE_LIMIT;
+  const resumeAt = new Date(backoff.until).toISOString();
+  console.log(`OpenSky 429 — backing off ${Math.round(backoff.delay / 1000)}s (resume ~${resumeAt})`);
 }
+
+function resetBackoff() {
+  backoff.delay = 10_000;
+  backoff.until = 0;
+}
+
 
 function corsHeaders(req) {
   const origin = req ? req.headers.origin : ALLOWED_ORIGINS[0];
@@ -52,7 +59,7 @@ function proxyOpenSky(path) {
       (res) => {
         let body = "";
         res.on("data", (c) => (body += c));
-        res.on("end", () => resolve({ status: res.statusCode, body }));
+        res.on("end", () => resolve({ status: res.statusCode, headers: res.headers, body }));
       },
     );
     req.on("timeout", () => { req.destroy(); reject(new Error("timeout")); });
@@ -66,12 +73,6 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "OPTIONS") {
     res.writeHead(204, hdrs);
     return res.end();
-  }
-
-  const ip = clientIP(req);
-  if (isRateLimited(ip)) {
-    res.writeHead(429, hdrs);
-    return res.end(JSON.stringify({ error: "rate limited" }));
   }
 
   const url = new URL(req.url, `http://localhost:${PORT}`);
@@ -89,12 +90,26 @@ const server = http.createServer(async (req, res) => {
       return res.end(cached.body);
     }
 
+    if (isBackedOff()) {
+      const retry = Math.ceil((backoff.until - Date.now()) / 1000);
+      res.writeHead(503, { ...hdrs, "Retry-After": String(retry) });
+      return res.end(JSON.stringify({ error: "opensky rate limited", retryAfter: retry }));
+    }
+
     try {
       const r = await proxyOpenSky(`/tracks/all?icao24=${hex}&time=0`);
       if (r.status === 200) {
+        resetBackoff();
         trackCache.set(hex, { body: r.body, ts: Date.now() });
         res.writeHead(200, hdrs);
         return res.end(r.body);
+      }
+      if (r.status === 429) {
+        const retryAfterSec = parseInt(r.headers["x-rate-limit-retry-after-seconds"], 10) || 0;
+        triggerBackoff(retryAfterSec);
+        const clientRetry = Math.ceil((backoff.until - Date.now()) / 1000);
+        res.writeHead(503, { ...hdrs, "Retry-After": String(clientRetry) });
+        return res.end(JSON.stringify({ error: "opensky rate limited", retryAfter: clientRetry }));
       }
       res.writeHead(r.status, hdrs);
       return res.end(r.body || JSON.stringify({ error: `opensky ${r.status}` }));
@@ -105,8 +120,15 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (url.pathname === "/health") {
+    const backedOff = isBackedOff();
+    const retryIn = backedOff ? Math.ceil((backoff.until - Date.now()) / 1000) : 0;
     res.writeHead(200, hdrs);
-    return res.end(JSON.stringify({ ok: true, cached: trackCache.size }));
+    return res.end(JSON.stringify({
+      ok: !backedOff,
+      cached: trackCache.size,
+      rateLimited: backedOff,
+      ...(backedOff && { retryInSeconds: retryIn, resumesAt: new Date(backoff.until).toISOString() }),
+    }));
   }
 
   res.writeHead(404, hdrs);
