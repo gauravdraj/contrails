@@ -139,9 +139,6 @@
   function routesetUrl() {
     return WORKER_URL + "/routeset";
   }
-  function flightUrl(callsign) {
-    return WORKER_URL + "/flight/" + encodeURIComponent(callsign);
-  }
   function trackUrl(hex) {
     return WORKER_URL + "/track/" + hex;
   }
@@ -195,7 +192,6 @@
   const routeCache = {};
   const photoCache = {};
   const photoPending = {};
-  const flightCache = {};
   const dormantHistory = {};
   const trackExtended = {};
 
@@ -423,8 +419,6 @@
         loadPopupPhoto(photoEl);
         loadPopupTrack(photoEl.getAttribute("data-hex"));
       }
-      var routeEl = el.querySelector(".popup-route");
-      if (routeEl) loadPopupFlight(routeEl, e.popup);
     });
     map.on("moveend", function() {
       if (suppressViewportRefresh) return;
@@ -1863,14 +1857,12 @@
   function buildPopupSubheader(a, routeEntry) {
     var airline = !a.private && a.callsign ? airlineName(a.callsign) : "";
     var routeDisplay = popupRouteDisplay(routeEntry);
-    var canLookupRoute = !!a.callsign && !a.private;
-    if (!airline && !canLookupRoute && !routeDisplay) return "";
-    var hidden = !airline && !routeDisplay ? " hidden" : "";
-    var html = '<div class="popup-subheader"' + hidden + '>';
+    if (!airline && !routeDisplay) return "";
+    var html = '<div class="popup-subheader">';
     if (airline) html += '<span class="popup-airline">' + escapeHtml(airline) + "</span>";
-    if (canLookupRoute) {
-      if (airline) html += '<span class="popup-route-sep"' + (routeDisplay ? "" : " hidden") + '> &middot; </span>';
-      html += '<span class="popup-route" data-callsign="' + escapeHtml(a.callsign) + '">' + escapeHtml(routeDisplay) + "</span>";
+    if (routeDisplay) {
+      if (airline) html += '<span class="popup-route-sep"> &middot; </span>';
+      html += '<span class="popup-route">' + escapeHtml(routeDisplay) + "</span>";
     }
     html += "</div>";
     return html;
@@ -1930,77 +1922,6 @@
       .catch(function() {});
   }
 
-  function buildFlightRouteCacheEntry(data) {
-    var iataParts = [data.origin ? data.origin.iata : null, data.destination ? data.destination.iata : null].filter(Boolean);
-    return {
-      display: iataParts.join(" \u2192 "),
-      iata: iataParts.join(" \u2192 "),
-      origin: data.origin || null,
-      destination: data.destination || null
-    };
-  }
-
-  function syncPopupRouteText(routeEl, routeText) {
-    routeEl.textContent = routeText || "";
-    var wrapper = routeEl.parentElement;
-    if (!wrapper) return;
-    var airlineEl = wrapper.querySelector(".popup-airline");
-    var hasAirline = !!(airlineEl && airlineEl.textContent);
-    var sep = wrapper.querySelector(".popup-route-sep");
-    if (sep) sep.hidden = !hasAirline || !routeText;
-    wrapper.hidden = !hasAirline && !routeText;
-  }
-
-  function loadPopupFlight(routeEl, popup) {
-    var cs = routeEl.getAttribute("data-callsign");
-    if (!cs) return;
-    var existing = routeCache[cs];
-    if (existing && existing.originSource === "track") {
-      applyFlightRoute(routeEl, existing, popup);
-      if (existing.destination) return;
-    }
-    if (flightCache[cs] === null) return;
-    if (flightCache[cs]) {
-      var entry = buildFlightRouteCacheEntry(flightCache[cs]);
-      if (existing && existing.originSource === "track") {
-        if (!existing.destination && entry.destination) {
-          existing.destination = entry.destination;
-          existing.iata = [existing.origin ? existing.origin.iata : null, entry.destination.iata].filter(Boolean).join(" \u2192 ");
-          existing.display = existing.iata;
-        }
-        applyFlightRoute(routeEl, existing, popup);
-      } else {
-        routeCache[cs] = entry;
-        applyFlightRoute(routeEl, entry, popup);
-      }
-      return;
-    }
-    fetch(flightUrl(cs))
-      .then(function(r) { return r.json(); })
-      .then(function(data) {
-        if (!data || !data.origin || !data.destination) { flightCache[cs] = null; return; }
-        flightCache[cs] = data;
-        var entry = buildFlightRouteCacheEntry(data);
-        var cur = routeCache[cs];
-        if (cur && cur.originSource === "track") {
-          if (!cur.destination && entry.destination) {
-            cur.destination = entry.destination;
-            cur.iata = [cur.origin ? cur.origin.iata : null, entry.destination.iata].filter(Boolean).join(" \u2192 ");
-            cur.display = cur.iata;
-          }
-          applyFlightRoute(routeEl, cur, popup);
-        } else {
-          routeCache[cs] = entry;
-          applyFlightRoute(routeEl, entry, popup);
-        }
-      })
-      .catch(function() { flightCache[cs] = null; });
-  }
-
-  function applyFlightRoute(routeEl, routeEntry, popup) {
-    syncPopupRouteText(routeEl, popupRouteDisplay(routeEntry));
-    popup.update();
-  }
 
   function collectOccupiedScreenPoints() {
     if (!map) return [];
