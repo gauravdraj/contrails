@@ -37,6 +37,7 @@ export default {
     if (url.pathname.startsWith("/track/")) return handleTrack(url, env, ctx);
     if (url.pathname === "/geo") return handleGeo(request);
     if (url.pathname.startsWith("/schedule/")) return handleSchedule(url, ctx);
+    if (url.pathname.startsWith("/fr24search/")) return handleFr24Search(url, ctx);
     if (url.pathname === "/nearby") return handleNearby(url, env, ctx);
 
     return new Response("Not found", { status: 404 });
@@ -175,6 +176,30 @@ async function handleRouteset(request, env, ctx) {
     .map((result) => (result.status === "fulfilled" ? result.value : null))
     .filter(Boolean);
   return json(200, routes);
+}
+
+async function handleFr24Search(url, ctx) {
+  const query = url.pathname.split("/").pop();
+  if (!/^[A-Za-z0-9]{2,10}$/.test(query)) return json(400, { error: "Invalid query" });
+
+  const cache = caches.default;
+  const cacheKey = new Request(url.toString());
+  const cached = await cache.match(cacheKey);
+  if (cached) return cached;
+
+  try {
+    const searchUrl = `https://www.flightradar24.com/v1/search/web/find?query=${encodeURIComponent(query)}&limit=8`;
+    const resp = await fetch(searchUrl, { headers: FR24_HEADERS });
+    if (!resp.ok) throw new Error("FR24 HTTP " + resp.status);
+
+    const data = await resp.json();
+    const response = json(200, data);
+    response.headers.set("Cache-Control", `s-maxage=${FR24_CACHE_TTL}`);
+    ctx.waitUntil(cache.put(cacheKey, response.clone()));
+    return response;
+  } catch (error) {
+    return json(502, { error: error.message });
+  }
 }
 
 async function handleSchedule(url, ctx) {

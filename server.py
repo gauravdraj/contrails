@@ -42,6 +42,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._send_json(LOCAL_GEO)
         elif self.path.startswith("/api/fr24/schedule/"):
             self._handle_schedule()
+        elif self.path.startswith("/api/fr24/search/"):
+            self._handle_fr24_search()
         else:
             super().do_GET()
 
@@ -116,6 +118,33 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 "payload": payload,
             }
             self._send_json(payload)
+        except Exception as e:
+            self._send_json({"error": str(e)}, status=502)
+
+    def _handle_fr24_search(self):
+        import re
+        query = self.path.split("/api/fr24/search/", 1)[-1].split("?", 1)[0]
+        if not query or not re.fullmatch(r'[A-Za-z0-9]{2,10}', query):
+            self._send_json({"error": "Invalid query"}, status=400)
+            return
+
+        cached = SCHEDULE_CACHE.get(f"search:{query}")
+        now = time.time()
+        if cached and cached["expires_at"] > now:
+            self._send_json(cached["payload"])
+            return
+
+        try:
+            search_url = f"https://www.flightradar24.com/v1/search/web/find?query={urllib.parse.quote(query)}&limit=8"
+            req = urllib.request.Request(search_url, headers=FR24_HEADERS)
+            with urllib.request.urlopen(req, timeout=12) as resp:
+                data = json.loads(resp.read().decode())
+
+            SCHEDULE_CACHE[f"search:{query}"] = {
+                "expires_at": now + FR24_CACHE_TTL,
+                "payload": data,
+            }
+            self._send_json(data)
         except Exception as e:
             self._send_json({"error": str(e)}, status=502)
 
