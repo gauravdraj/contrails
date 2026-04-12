@@ -2811,9 +2811,7 @@
       }
 
       var isSelected = selectedAircraftId === a.icao24;
-      var labelCs = a.callsign || a.icao24;
-      var labelAirline = !a.private && a.callsign ? airlineName(a.callsign) : "";
-      var label = labelAirline ? labelCs + " \u00B7 " + labelAirline : labelCs;
+      var label = a.callsign || a.icao24;
 
       var state = extraState[a.icao24] || {};
       var samples = state.samples ? state.samples.slice() : [];
