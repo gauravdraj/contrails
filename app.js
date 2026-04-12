@@ -31,7 +31,7 @@
     throw new Error("Contrails core helpers failed to load.");
   }
 
-  const APP_VERSION = "v2.2";
+  const APP_VERSION = "v2.3";
   const isLocal = location.hostname === "localhost" || location.hostname === "127.0.0.1";
   const isIOSDevice = /iP(ad|hone|od)/.test(navigator.userAgent) ||
     (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
@@ -57,6 +57,7 @@
   document.getElementById("version-badge").textContent = APP_VERSION;
   document.getElementById("controls-logo-image").setAttribute("src", "contrails-logo.png?v=" + APP_VERSION);
   document.getElementById("app-touch-icon").setAttribute("href", "apple-touch-icon.png?v=" + APP_VERSION);
+  document.getElementById("app-favicon").setAttribute("href", "apple-touch-icon.png?v=" + APP_VERSION);
   function syncLoadingViewportState() {
     var loading = document.getElementById("loading");
     if (!loading) return;

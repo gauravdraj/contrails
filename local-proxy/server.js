@@ -14,7 +14,7 @@ const trackCache = new Map();
 const CACHE_TTL = 15 * 60 * 1000;
 
 const rateWindow = new Map();
-const RATE_LIMIT = 30;
+const RATE_LIMIT = 300;
 const RATE_WINDOW_MS = 60 * 1000;
 
 function clientIP(req) {
