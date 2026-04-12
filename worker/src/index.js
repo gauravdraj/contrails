@@ -22,6 +22,24 @@ const FR24_HEADERS = {
   "User-Agent": "Mozilla/5.0 (compatible; contrails/1.0)",
 };
 
+let fr24BackoffUntil = 0;
+let fr24BackoffDelay = 10000;
+
+function fr24CheckBackoff() {
+  if (Date.now() < fr24BackoffUntil) return true;
+  return false;
+}
+
+function fr24TriggerBackoff() {
+  fr24BackoffDelay = Math.min(fr24BackoffDelay * 2, 300000);
+  fr24BackoffUntil = Date.now() + fr24BackoffDelay;
+}
+
+function fr24ResetBackoff() {
+  fr24BackoffDelay = 10000;
+  fr24BackoffUntil = 0;
+}
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -187,10 +205,17 @@ async function handleFr24Search(url, ctx) {
   const cached = await cache.match(cacheKey);
   if (cached) return cached;
 
+  if (fr24CheckBackoff()) return json(503, { error: "FR24 temporarily unavailable" });
+
   try {
     const searchUrl = `https://www.flightradar24.com/v1/search/web/find?query=${encodeURIComponent(query)}&limit=8`;
     const resp = await fetch(searchUrl, { headers: FR24_HEADERS });
+    if (resp.status === 429 || resp.status === 403) {
+      fr24TriggerBackoff();
+      return json(503, { error: "FR24 rate limited" });
+    }
     if (!resp.ok) throw new Error("FR24 HTTP " + resp.status);
+    fr24ResetBackoff();
 
     const data = await resp.json();
     const response = json(200, data);
@@ -211,6 +236,8 @@ async function handleSchedule(url, ctx) {
   const cached = await cache.match(cacheKey);
   if (cached) return cached;
 
+  if (fr24CheckBackoff()) return json(503, { error: "FR24 temporarily unavailable" });
+
   try {
     const lookback = Math.floor(Date.now() / 1000) - 2 * 3600;
     const base = `${FR24_API}/airport.json?code=${encodeURIComponent(iata)}&plugin[]=schedule&plugin[]=details&limit=100&plugin-setting[schedule][timestamp]=${lookback}`;
@@ -218,7 +245,12 @@ async function handleSchedule(url, ctx) {
       fetch(base + "&page=1", { headers: FR24_HEADERS }),
       fetch(base + "&page=2", { headers: FR24_HEADERS }),
     ]);
+    if (r1.status === 429 || r1.status === 403) {
+      fr24TriggerBackoff();
+      return json(503, { error: "FR24 rate limited" });
+    }
     if (!r1.ok) throw new Error("FR24 HTTP " + r1.status);
+    fr24ResetBackoff();
 
     const raw1 = await r1.json();
     const result = buildSchedulePayload(raw1, iata);

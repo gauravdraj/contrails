@@ -1277,6 +1277,7 @@
     }
     proactiveFetchTracks();
     proactiveScheduleSweep();
+    proactiveFr24SearchSweep();
   }
 
   async function fetchRoutes() {
@@ -1378,6 +1379,7 @@
           }
         }
       }
+      if (a.altFt != null && a.altFt < 15000 && a.vRate != null && a.vRate * 60 > 100) continue;
       var h = posHistory[a.icao24];
       if (!h || h.length < 15) continue;
       var tail = h.length > 50 ? h.slice(-50) : h;
@@ -2378,6 +2380,45 @@
     }
     if (updated > 0) refreshAirportLabels();
     return updated;
+  }
+
+  var lastFr24SearchSweep = 0;
+  var fr24SearchPending = {};
+  var fr24SearchFailed = {};
+
+  function proactiveFr24SearchSweep() {
+    if (!aircraft.length) return;
+    var policy = currentViewPolicy(visibleAircraftCount());
+    if (!policy.allowRoutes) return;
+    var now = Date.now();
+    if (now - lastFr24SearchSweep < 5000) return;
+    lastFr24SearchSweep = now;
+
+    var targets = [];
+    for (var i = 0; i < aircraft.length; i++) {
+      var a = aircraft[i];
+      if (!a.callsign || a.private) continue;
+      if (fr24SearchPending[a.callsign]) continue;
+      if (fr24SearchFailed[a.callsign] && now - fr24SearchFailed[a.callsign] < 120000) continue;
+      if (isLikelyPrivateCallsign(a.callsign)) continue;
+      var rc = routeCache[a.callsign];
+      if (rc && rc.destSource === "fr24-search") continue;
+      targets.push(a);
+      if (targets.length >= 5) break;
+    }
+
+    for (var t = 0; t < targets.length; t++) {
+      (function(plane) {
+        fr24SearchPending[plane.callsign] = true;
+        tryFr24Search(plane).then(function() {
+          delete fr24SearchPending[plane.callsign];
+          var rc = routeCache[plane.callsign];
+          if (!rc || rc.destSource !== "fr24-search") {
+            fr24SearchFailed[plane.callsign] = Date.now();
+          }
+        });
+      })(targets[t]);
+    }
   }
 
   async function tryFr24Search(a) {
