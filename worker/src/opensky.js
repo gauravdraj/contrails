@@ -1,6 +1,7 @@
 import { MAJOR_AIRPORTS } from "./airports.js";
 import { haversineKm } from "./geo.js";
 import { json } from "./http.js";
+import { findNearestRegion } from "./regions.js";
 
 const OPENSKY_API = "https://opensky-network.org/api";
 const OPENSKY_AUTH_URL = "https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token";
@@ -65,7 +66,12 @@ export function convergenceScore(pathTail, airportLat, airportLon) {
 
 export function extractOriginDest(track) {
   const path = track?.path;
-  if (!path || path.length < 2) return { origin: null, destination: null };
+  if (!path || path.length < 2) {
+    const lastTrackPoint = path?.length ? path[path.length - 1] : null;
+    return { origin: null, destination: null, ambiguous: false, lastTrackPoint };
+  }
+
+  const lastTrackPoint = path[path.length - 1];
 
   let origin = null;
   const originScanLimit = Math.max(20, Math.ceil(path.length * 0.25));
@@ -81,6 +87,7 @@ export function extractOriginDest(track) {
   }
 
   let destination = null;
+  let ambiguous = false;
   const tail = path.length >= CONVERGENCE_TAIL_SIZE
     ? path.slice(-CONVERGENCE_TAIL_SIZE)
     : path;
@@ -104,10 +111,11 @@ export function extractOriginDest(track) {
     }
     if (secondScore > 0 && secondScore / bestScore > 0.8) {
       destination = null;
+      ambiguous = true;
     }
   }
 
-  return { origin, destination };
+  return { origin, destination, ambiguous, lastTrackPoint };
 }
 
 async function fetchToken(env, cache) {
@@ -194,46 +202,100 @@ export function detectPhase(altFt, vRate, ground) {
   return "cruising";
 }
 
-export function mergeRoutes(trackResult, adsbdbEntry) {
+const _PRIV_REG = /^(N\d|C-[FGFI]|G-|D-|F-|I-|EC-|HB-|OE-|PH-|SE-|OH-|OY-|LN-|EI-|CS-|SX-|TC-|VH-|ZK-|PP-|PT-|PR-|JA|B-|HL|VT-|9V-|A[267]-|SU-|5[ABHNXY]-|ZS-|VP-|V[5HPQR]-|RP-|HS-|9M-|PK-|XA-|XB-|LV-|CC-|TI-|HP-|HK-|YV-)/i;
+const _ANON_HEX = /^~[0-9a-f]{4,}$/i;
+
+function isLikelyPrivateCallsign(callsign) {
+  if (!callsign) return true;
+  return _PRIV_REG.test(callsign) || _ANON_HEX.test(callsign);
+}
+
+export function mergeRoutes(trackResult, adsbdbEntry, aircraftInfo) {
   const trackOD = trackResult ? extractOriginDest(trackResult) : null;
   const trackOrigin = trackOD?.origin || null;
   const trackDest = trackOD?.destination || null;
   const dbOrigin = adsbdbEntry?.origin || null;
   const dbDest = adsbdbEntry?.destination || null;
+  const airline = adsbdbEntry?.airline || null;
 
+  const originsMatch = trackOrigin && dbOrigin && trackOrigin.iata === dbOrigin.iata;
+  const destsMatch = trackDest && dbDest && trackDest.iata === dbDest.iata;
+  const originConflict = trackOrigin && dbOrigin && trackOrigin.iata !== dbOrigin.iata;
+  const destConflict = trackDest && dbDest && trackDest.iata !== dbDest.iata;
+  const suppressADSBDB = originConflict && destConflict;
+
+  let origin = null;
+  let originSource = null;
   if (trackOrigin) {
-    const originsMatch = dbOrigin && dbOrigin.iata && trackOrigin.iata === dbOrigin.iata;
-    return {
-      origin: trackOrigin,
-      destination: trackDest || (originsMatch ? dbDest : null),
-      originSource: "track",
-      airline: adsbdbEntry?.airline || null,
-    };
+    origin = trackOrigin;
+    originSource = "track";
+  } else if (destsMatch && dbOrigin) {
+    origin = dbOrigin;
+    originSource = "cross-validated";
+  } else if (dbOrigin && !suppressADSBDB) {
+    origin = dbOrigin;
+    originSource = "adsbdb";
   }
 
-  if (dbOrigin) {
-    return {
-      origin: dbOrigin,
-      destination: trackDest || dbDest,
-      originSource: "route",
-      airline: adsbdbEntry?.airline || null,
-    };
-  }
-
+  let destination = null;
+  let destSource = null;
   if (trackDest) {
-    return {
-      origin: null,
-      destination: trackDest,
-      originSource: "track",
-      airline: adsbdbEntry?.airline || null,
-    };
+    destination = trackDest;
+    destSource = "convergence";
+  } else if (originsMatch && dbDest) {
+    destination = dbDest;
+    destSource = "cross-validated";
+  } else if (!trackOrigin && dbDest && !suppressADSBDB) {
+    destination = dbDest;
+    destSource = "adsbdb";
   }
 
-  return null;
+  const ambiguous = trackOD?.ambiguous || false;
+  const lastTrackPoint = trackOD?.lastTrackPoint || null;
+  if (ambiguous && !destination && aircraftInfo && lastTrackPoint &&
+      !isLikelyPrivateCallsign(aircraftInfo.callsign) &&
+      aircraftInfo.altFt != null && aircraftInfo.altFt < 15000 &&
+      aircraftInfo.vRate != null && aircraftInfo.vRate < -300) {
+    const region = findNearestRegion(lastTrackPoint[1], lastTrackPoint[2], 100);
+    if (region) {
+      destination = { region: region.name, display: "Landing in " + region.name };
+      destSource = "region";
+    }
+  }
+
+  if (!origin && !destination) return null;
+
+  const isRegionalFallback = destSource === "region";
+  const hasCrossValidation = originSource === "cross-validated" || destSource === "cross-validated";
+  const hasBothTrackSources = !!(trackOrigin && trackDest);
+  const confidence = isRegionalFallback ? "low"
+    : (hasCrossValidation || hasBothTrackSources) ? "high" : "medium";
+
+  return { origin, destination, originSource, destSource, confidence, airline };
 }
 
 export function formatRouteLabel(origin, destination, phase) {
   const oIata = origin?.iata;
+
+  if (destination?.region) {
+    const display = destination.display;
+    const regionName = destination.region;
+    switch (phase) {
+      case "departing":
+        if (oIata) return `departed ${oIata} for ${display}`;
+        return display;
+      case "arriving":
+        if (oIata) return `${display} from ${oIata}`;
+        return display;
+      case "landed":
+        if (oIata) return `arrived in ${regionName} from ${oIata}`;
+        return `arrived in ${regionName}`;
+      default:
+        if (oIata) return `${oIata} \u2192 ${display}`;
+        return display;
+    }
+  }
+
   const dIata = destination?.iata;
 
   if (!oIata && !dIata) return "";

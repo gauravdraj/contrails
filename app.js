@@ -31,7 +31,7 @@
     throw new Error("Contrails core helpers failed to load.");
   }
 
-  const APP_VERSION = "v2.3";
+  const APP_VERSION = "v2.4";
   const isLocal = location.hostname === "localhost" || location.hostname === "127.0.0.1";
   const isIOSDevice = /iP(ad|hone|od)/.test(navigator.userAgent) ||
     (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
@@ -201,6 +201,52 @@
   let map, userMarker, aircraftLayer, trailLayer, airportLayer, runwayLayer;
   let airportData = null;
   let runwayData = null;
+
+  var METRO_REGIONS = [
+    { name: "Bay Area", lat: 37.62, lon: -122.38 },
+    { name: "Los Angeles", lat: 33.94, lon: -118.41 },
+    { name: "Chicago", lat: 41.98, lon: -87.90 },
+    { name: "New York", lat: 40.66, lon: -73.78 },
+    { name: "Washington DC", lat: 38.85, lon: -77.04 },
+    { name: "Dallas-Fort Worth", lat: 32.90, lon: -97.04 },
+    { name: "Denver", lat: 39.86, lon: -104.67 },
+    { name: "Atlanta", lat: 33.64, lon: -84.43 },
+    { name: "Seattle", lat: 47.45, lon: -122.31 },
+    { name: "Miami", lat: 25.80, lon: -80.29 },
+    { name: "Boston", lat: 42.37, lon: -71.02 },
+    { name: "Phoenix", lat: 33.44, lon: -112.01 },
+    { name: "Houston", lat: 29.98, lon: -95.34 },
+    { name: "Minneapolis", lat: 44.88, lon: -93.22 },
+    { name: "Detroit", lat: 42.21, lon: -83.35 },
+    { name: "Philadelphia", lat: 39.87, lon: -75.24 },
+    { name: "Orlando", lat: 28.43, lon: -81.31 },
+    { name: "Las Vegas", lat: 36.08, lon: -115.15 },
+    { name: "San Diego", lat: 32.73, lon: -117.19 },
+    { name: "Portland", lat: 45.59, lon: -122.60 },
+    { name: "Honolulu", lat: 21.32, lon: -157.92 },
+    { name: "London", lat: 51.47, lon: -0.46 },
+    { name: "Paris", lat: 49.01, lon: 2.55 },
+    { name: "Frankfurt", lat: 50.03, lon: 8.57 },
+    { name: "Amsterdam", lat: 52.31, lon: 4.76 },
+    { name: "Dubai", lat: 25.25, lon: 55.36 },
+    { name: "Tokyo", lat: 35.55, lon: 139.78 },
+    { name: "Singapore", lat: 1.35, lon: 103.99 },
+    { name: "Sydney", lat: -33.95, lon: 151.18 },
+    { name: "Toronto", lat: 43.68, lon: -79.63 },
+    { name: "Mexico City", lat: 19.44, lon: -99.07 }
+  ];
+
+  function findNearestRegion(lat, lon, maxKm) {
+    var best = null;
+    for (var i = 0; i < METRO_REGIONS.length; i++) {
+      var r = METRO_REGIONS[i];
+      var dist = haversineKm(lat, lon, r.lat, r.lon);
+      if (dist <= maxKm && (best === null || dist < best.dist)) {
+        best = { name: r.name, dist: dist };
+      }
+    }
+    return best;
+  }
   let userLat = null, userLng = null;
   let aircraft = [];
   let refreshTimer = null;
@@ -1270,13 +1316,17 @@
       for (var j = 0; j < routes.length; j++) {
         var r = routes[j];
         if (!r.callsign || (!r.origin && !r.destination)) continue;
-        var iataParts = [r.origin ? r.origin.iata : null, r.destination ? r.destination.iata : null].filter(Boolean);
+        var dest = r.destination;
+        var destIata = dest ? (dest.region ? dest.display : dest.iata) : null;
+        var iataParts = [r.origin ? r.origin.iata : null, destIata].filter(Boolean);
         routeCache[r.callsign] = {
           display: r.display || iataParts.join(" \u2192 "),
           iata: iataParts.join(" \u2192 "),
           origin: r.origin || null,
-          destination: r.destination || null,
+          destination: dest || null,
           originSource: r.originSource || null,
+          destSource: r.destSource || null,
+          confidence: r.confidence || null,
           phase: r.phase || null,
           fetchedAt: Date.now()
         };
@@ -1337,11 +1387,53 @@
         }
       }
       if (!bestApt || bestScore <= 0) continue;
-      if (secondScore > 0 && secondScore / bestScore > 0.8) continue;
+      if (secondScore > 0 && secondScore / bestScore > 0.8) {
+        if (!a.private && !isLikelyPrivateCallsign(a.callsign) &&
+            a.altFt != null && a.altFt < 15000 && a.vRate != null && a.vRate * 60 < -300) {
+          var region = findNearestRegion(last[0], last[1], 100);
+          if (region) {
+            var regionDest = { region: region.name, display: "Landing in " + region.name };
+            var regionPhase = "arriving";
+            if (rc) {
+              rc.destination = regionDest;
+              rc.destSource = "region";
+              rc.confidence = "low";
+              rc.iata = rc.origin ? rc.origin.iata + " \u2192 " + regionDest.display : regionDest.display;
+              rc.display = formatClientRouteLabel(rc.origin, regionDest, regionPhase);
+              rc.phase = regionPhase;
+            } else {
+              routeCache[a.callsign] = {
+                display: formatClientRouteLabel(null, regionDest, regionPhase),
+                iata: regionDest.display,
+                origin: null,
+                destination: regionDest,
+                originSource: null,
+                destSource: "region",
+                confidence: "low",
+                phase: regionPhase,
+                fetchedAt: Date.now()
+              };
+            }
+          }
+        }
+        continue;
+      }
       var dest = { iata: bestApt.iata, name: bestApt.name };
       if (rc) {
-        if (rc.destination && rc.destination.iata === dest.iata) continue;
+        if (rc.destination && rc.destination.iata === dest.iata) {
+          if (rc.destSource === "adsbdb") {
+            if (rc.originSource === "adsbdb") rc.originSource = "cross-validated";
+            rc.confidence = "high";
+          }
+          continue;
+        }
         rc.destination = dest;
+        if (rc.originSource === "adsbdb") {
+          rc.destSource = "cross-validated";
+          rc.confidence = "high";
+        } else {
+          rc.destSource = "convergence";
+        }
         var iataParts = [rc.origin ? rc.origin.iata : null, dest.iata].filter(Boolean);
         rc.iata = iataParts.join(" \u2192 ");
         var phase = a.ground ? "landed" :
@@ -1359,6 +1451,8 @@
           origin: null,
           destination: dest,
           originSource: "client",
+          destSource: "convergence",
+          confidence: "medium",
           phase: phase2,
           fetchedAt: Date.now()
         };
@@ -1368,6 +1462,26 @@
 
   function formatClientRouteLabel(origin, destination, phase) {
     var oIata = origin ? origin.iata : null;
+
+    if (destination && destination.region) {
+      var display = destination.display;
+      var regionName = destination.region;
+      if (phase === "departing") {
+        if (oIata) return "departed " + oIata + " for " + display;
+        return display;
+      }
+      if (phase === "arriving") {
+        if (oIata) return display + " from " + oIata;
+        return display;
+      }
+      if (phase === "landed") {
+        if (oIata) return "arrived in " + regionName + " from " + oIata;
+        return "arrived in " + regionName;
+      }
+      if (oIata) return oIata + " \u2192 " + display;
+      return display;
+    }
+
     var dIata = destination ? destination.iata : null;
     if (!oIata && !dIata) return "";
     if (phase === "departing") {
@@ -1403,7 +1517,7 @@
       if (!a.callsign || a.private || a.ground || isFiltered(a)) continue;
       if (trackExtended[a.icao24] || proactivePending[a.icao24]) continue;
       var rc = routeCache[a.callsign];
-      if (rc && rc.origin && rc.originSource === "track") continue;
+      if (rc && ((rc.origin && rc.originSource === "track") || rc.confidence === "high")) continue;
       targets.push(a.icao24);
       if (targets.length >= 2) break;
     }
@@ -2062,7 +2176,7 @@
     }
     if (!cs) return;
     var rc = routeCache[cs];
-    if (rc && rc.origin && rc.originSource === "track") return;
+    if (rc && rc.origin && (rc.originSource === "track" || rc.originSource === "cross-validated")) return;
     var path = data.path || data;
     if (!path || path.length < 5) return;
     var scanEnd = Math.max(20, Math.floor(path.length * 0.25));
@@ -2081,10 +2195,15 @@
     if (!bestApt || bestDist > 15) return;
     var origin = { iata: bestApt[0], name: bestApt[3] };
     if (rc) {
+      if (rc.originSource === "adsbdb" && rc.origin && rc.origin.iata === origin.iata &&
+          rc.destSource === "adsbdb" && rc.destination) {
+        rc.destSource = "cross-validated";
+        rc.confidence = "high";
+      }
       rc.origin = origin;
       rc.originSource = "track";
       var oIata = origin.iata;
-      var dIata = rc.destination ? rc.destination.iata : null;
+      var dIata = rc.destination ? (rc.destination.region ? rc.destination.display : rc.destination.iata) : null;
       rc.iata = [oIata, dIata].filter(Boolean).join(" \u2192 ");
       rc.display = formatClientRouteLabel(origin, rc.destination, rc.phase || "cruising");
     } else {
@@ -2094,6 +2213,7 @@
         origin: origin,
         destination: null,
         originSource: "track",
+        destSource: null,
         phase: "cruising",
         fetchedAt: Date.now()
       };
@@ -2104,9 +2224,22 @@
     if (openskyProxyOk === false) return Promise.resolve(null);
     return fetch(OPENSKY_PROXY + "/track?hex=" + hex, { signal: AbortSignal.timeout(5000) })
       .then(function(r) {
-        if (!r.ok) throw new Error(r.status);
-        openskyProxyOk = true;
-        return r.json();
+        if (r.ok) {
+          openskyProxyOk = true;
+          return r.json();
+        }
+        return r.json().catch(function() { return {}; }).then(function(body) {
+          if (r.status === 503 && body.retryAfter) {
+            var pauseMs = Math.min(body.retryAfter * 1000, 30 * 60 * 1000);
+            console.warn("[contrails] OpenSky rate-limited — retrying in " + Math.round(pauseMs / 60000) + "m");
+            openskyProxyOk = false;
+            setTimeout(function() { openskyProxyOk = null; }, pauseMs);
+          } else {
+            openskyProxyOk = false;
+            setTimeout(function() { openskyProxyOk = null; }, 5 * 60 * 1000);
+          }
+          return null;
+        });
       })
       .catch(function() {
         openskyProxyOk = false;

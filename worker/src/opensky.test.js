@@ -112,8 +112,10 @@ test("extractOriginDest withholds destination when top scores are ambiguous", ()
       60, false,
     ]);
   }
-  const { destination } = extractOriginDest({ path: pts });
-  assert.equal(destination, null, "should not pick when SFO and OAK converge similarly");
+  const result = extractOriginDest({ path: pts });
+  assert.equal(result.destination, null, "should not pick when SFO and OAK converge similarly");
+  assert.equal(result.ambiguous, true, "should flag ambiguous when top scores are within 80%");
+  assert.deepEqual(result.lastTrackPoint, pts[pts.length - 1]);
 });
 
 // --- extractOriginDest ---
@@ -166,8 +168,8 @@ test("extractOriginDest returns null destination when all points are high altitu
 });
 
 test("extractOriginDest returns null for empty/missing path", () => {
-  assert.deepEqual(extractOriginDest(null), { origin: null, destination: null });
-  assert.deepEqual(extractOriginDest({ path: [] }), { origin: null, destination: null });
+  assert.deepEqual(extractOriginDest(null), { origin: null, destination: null, ambiguous: false, lastTrackPoint: null });
+  assert.deepEqual(extractOriginDest({ path: [] }), { origin: null, destination: null, ambiguous: false, lastTrackPoint: null });
 });
 
 // --- detectPhase ---
@@ -210,6 +212,8 @@ test("mergeRoutes prefers track origin over ADSBDB", () => {
   assert.equal(result.origin.iata, "SAN");
   assert.equal(result.destination, null);
   assert.equal(result.originSource, "track");
+  assert.equal(result.destSource, null);
+  assert.equal(result.confidence, "medium");
   assert.equal(result.airline, "Southwest Airlines");
 });
 
@@ -229,6 +233,8 @@ test("mergeRoutes keeps ADSBDB destination when origins match", () => {
   assert.equal(result.origin.iata, "BOS");
   assert.equal(result.destination.iata, "SFO");
   assert.equal(result.originSource, "track");
+  assert.equal(result.destSource, "cross-validated");
+  assert.equal(result.confidence, "high");
 });
 
 test("mergeRoutes uses track destination when track origin is missing", () => {
@@ -251,7 +257,9 @@ test("mergeRoutes uses track destination when track origin is missing", () => {
   const result = mergeRoutes(track, adsbdb);
   assert.equal(result.origin.iata, "ORD");
   assert.notEqual(result.destination.iata, "TVC");
-  assert.equal(result.originSource, "route");
+  assert.equal(result.originSource, "adsbdb");
+  assert.equal(result.destSource, "convergence");
+  assert.equal(result.confidence, "medium");
 });
 
 test("mergeRoutes falls back to ADSBDB when no track", () => {
@@ -263,7 +271,9 @@ test("mergeRoutes falls back to ADSBDB when no track", () => {
   const result = mergeRoutes(null, adsbdb);
   assert.equal(result.origin.iata, "ORD");
   assert.equal(result.destination.iata, "LAX");
-  assert.equal(result.originSource, "route");
+  assert.equal(result.originSource, "adsbdb");
+  assert.equal(result.destSource, "adsbdb");
+  assert.equal(result.confidence, "medium");
 });
 
 test("mergeRoutes returns null when neither source has data", () => {
@@ -316,4 +326,585 @@ test("formatRouteLabel landed with both", () => {
 
 test("formatRouteLabel returns empty when no airports", () => {
   assert.equal(formatRouteLabel(null, null, "cruising"), "");
+});
+
+// --- formatRouteLabel: region destinations ---
+
+const regionDest = { region: "Bay Area", display: "Landing in Bay Area" };
+
+test("formatRouteLabel arriving with region destination only", () => {
+  assert.equal(formatRouteLabel(null, regionDest, "arriving"), "Landing in Bay Area");
+});
+
+test("formatRouteLabel arriving with origin and region destination", () => {
+  assert.equal(
+    formatRouteLabel({ iata: "ORD" }, regionDest, "arriving"),
+    "Landing in Bay Area from ORD",
+  );
+});
+
+test("formatRouteLabel cruising with origin and region destination", () => {
+  assert.equal(
+    formatRouteLabel({ iata: "ORD" }, regionDest, "cruising"),
+    "ORD \u2192 Landing in Bay Area",
+  );
+});
+
+test("formatRouteLabel cruising with region destination only", () => {
+  assert.equal(formatRouteLabel(null, regionDest, "cruising"), "Landing in Bay Area");
+});
+
+test("formatRouteLabel departing with origin and region destination", () => {
+  assert.equal(
+    formatRouteLabel({ iata: "SAN" }, regionDest, "departing"),
+    "departed SAN for Landing in Bay Area",
+  );
+});
+
+test("formatRouteLabel departing with region destination only", () => {
+  assert.equal(formatRouteLabel(null, regionDest, "departing"), "Landing in Bay Area");
+});
+
+test("formatRouteLabel landed with origin and region destination", () => {
+  assert.equal(
+    formatRouteLabel({ iata: "ORD" }, regionDest, "landed"),
+    "arrived in Bay Area from ORD",
+  );
+});
+
+test("formatRouteLabel landed with region destination only", () => {
+  assert.equal(formatRouteLabel(null, regionDest, "landed"), "arrived in Bay Area");
+});
+
+test("formatRouteLabel default phase with region destination only", () => {
+  assert.equal(formatRouteLabel(null, regionDest, null), "Landing in Bay Area");
+});
+
+test("formatRouteLabel returns empty when destination has no region or iata", () => {
+  assert.equal(formatRouteLabel(null, {}, "cruising"), "");
+});
+
+// --- extractOriginDest: ambiguous and lastTrackPoint ---
+
+test("extractOriginDest sets ambiguous false when destination found unambiguously", () => {
+  const path = [
+    [0, 42.3615, -71.0007, 0, 0, false],
+    [60, 42.37, -71.01, 300, 0, false],
+    ...Array.from({ length: 40 }, (_, i) => [
+      120 + i * 60, 42.0 - i * 0.12, -71.0 - i * 1.2, 10000, 250, false,
+    ]),
+    ...Array.from({ length: 15 }, (_, i) => [
+      2520 + i * 60, 37.2 + i * 0.03, -122.1 - i * 0.02, 2500 - i * 160, 280, false,
+    ]),
+  ];
+  const result = extractOriginDest({ path });
+  assert.notEqual(result.destination, null);
+  assert.equal(result.ambiguous, false);
+});
+
+test("extractOriginDest sets ambiguous false when no convergence candidates", () => {
+  const track = {
+    path: [
+      [0, 37.5, -122.0, 10000, 280, false],
+      [1, 37.6, -122.1, 9500, 280, false],
+    ],
+  };
+  const result = extractOriginDest(track);
+  assert.equal(result.destination, null);
+  assert.equal(result.ambiguous, false);
+});
+
+test("extractOriginDest returns lastTrackPoint as final path element", () => {
+  const path = [
+    [0, 32.7307, -117.1781, 0, 0, false],
+    [1, 32.74, -117.19, 500, 0, false],
+    [2, 32.80, -117.25, 1500, 0, false],
+  ];
+  const result = extractOriginDest({ path });
+  assert.deepEqual(result.lastTrackPoint, path[2]);
+});
+
+test("extractOriginDest returns null lastTrackPoint for null track", () => {
+  const result = extractOriginDest(null);
+  assert.equal(result.lastTrackPoint, null);
+});
+
+test("extractOriginDest returns lastTrackPoint for single-element path", () => {
+  const path = [[0, 32.7307, -117.1781, 0, 0, false]];
+  const result = extractOriginDest({ path });
+  assert.deepEqual(result.lastTrackPoint, path[0]);
+});
+
+// --- mergeRoutes: cross-validation ---
+
+test("mergeRoutes cross-validates origin when convergence dest matches ADSBDB dest", () => {
+  const track = {
+    path: [
+      ...Array.from({ length: 40 }, (_, i) => [
+        1000 + i * 60, 39.0 - i * 0.05, -115.0 - i * 0.15, 10000, 250, false,
+      ]),
+      ...Array.from({ length: 15 }, (_, i) => [
+        3400 + i * 60, 37.2 + i * 0.03, -122.1 - i * 0.02, 2500 - i * 160, 280, false,
+      ]),
+    ],
+  };
+  const convDest = extractOriginDest(track).destination;
+  assert.ok(convDest, "track should produce a convergence destination");
+  const adsbdb = {
+    origin: { iata: "ORD", name: "Chicago" },
+    destination: { iata: convDest.iata, name: convDest.name },
+    airline: "United Airlines",
+  };
+  const result = mergeRoutes(track, adsbdb);
+  assert.equal(result.origin.iata, "ORD");
+  assert.equal(result.originSource, "cross-validated");
+  assert.equal(result.destination.iata, convDest.iata);
+  assert.equal(result.destSource, "convergence");
+  assert.equal(result.confidence, "high");
+});
+
+// --- mergeRoutes: conflict suppression ---
+
+test("mergeRoutes suppresses ADSBDB when both endpoints conflict", () => {
+  const path = [
+    [0, 42.3615, -71.0007, 0, 0, false],
+    [60, 42.37, -71.01, 300, 0, false],
+    ...Array.from({ length: 40 }, (_, i) => [
+      120 + i * 60, 42.0 - i * 0.12, -71.0 - i * 1.2, 10000, 250, false,
+    ]),
+    ...Array.from({ length: 15 }, (_, i) => [
+      2520 + i * 60, 37.2 + i * 0.03, -122.1 - i * 0.02, 2500 - i * 160, 280, false,
+    ]),
+  ];
+  const od = extractOriginDest({ path });
+  assert.equal(od.origin.iata, "BOS");
+  assert.ok(od.destination, "should have convergence dest");
+  const adsbdb = {
+    origin: { iata: "DFW", name: "Dallas" },
+    destination: { iata: "MIA", name: "Miami" },
+  };
+  const result = mergeRoutes({ path }, adsbdb);
+  assert.equal(result.origin.iata, "BOS");
+  assert.equal(result.originSource, "track");
+  assert.equal(result.destination.iata, od.destination.iata);
+  assert.equal(result.destSource, "convergence");
+  assert.equal(result.airline, null);
+});
+
+test("mergeRoutes does not suppress ADSBDB when only origin conflicts", () => {
+  const track = {
+    path: [
+      [0, 32.7307, -117.1781, 0, 0, false],
+      [1, 32.74, -117.19, 500, 0, false],
+    ],
+  };
+  const adsbdb = {
+    origin: { iata: "BWI", name: "Baltimore" },
+    destination: { iata: "BNA", name: "Nashville" },
+  };
+  const result = mergeRoutes(track, adsbdb);
+  assert.equal(result.origin.iata, "SAN");
+  assert.equal(result.originSource, "track");
+  assert.equal(result.destination, null);
+});
+
+test("mergeRoutes conflict suppression: SAN origin, ORD→LAX ADSBDB, SFO convergence", () => {
+  const path = makeSanToSfoTrack();
+  const od = extractOriginDest({ path });
+  assert.equal(od.origin.iata, "SAN");
+  assert.ok(od.destination, "should have convergence destination");
+  const adsbdb = {
+    origin: { iata: "ORD", name: "Chicago" },
+    destination: { iata: "LAX", name: "Los Angeles" },
+    airline: "American Airlines",
+  };
+  const result = mergeRoutes({ path }, adsbdb);
+  assert.equal(result.origin.iata, "SAN");
+  assert.equal(result.originSource, "track");
+  assert.equal(result.destination.iata, od.destination.iata);
+  assert.equal(result.destSource, "convergence");
+  assert.equal(result.airline, "American Airlines");
+  assert.equal(result.confidence, "high");
+});
+
+test("mergeRoutes partial conflict: track origin wins when convergence dest matches ADSBDB dest", () => {
+  const path = makeSanToSfoTrack();
+  const od = extractOriginDest({ path });
+  assert.equal(od.origin.iata, "SAN");
+  assert.ok(od.destination, "should have convergence destination");
+  const adsbdb = {
+    origin: { iata: "ORD", name: "Chicago" },
+    destination: { iata: od.destination.iata, name: od.destination.name },
+  };
+  const result = mergeRoutes({ path }, adsbdb);
+  assert.equal(result.origin.iata, "SAN");
+  assert.equal(result.originSource, "track");
+  assert.equal(result.destination.iata, od.destination.iata);
+  assert.equal(result.destSource, "convergence");
+  assert.equal(result.confidence, "high");
+});
+
+test("mergeRoutes ADSBDB dest not used when track origin conflicts with ADSBDB origin", () => {
+  const track = {
+    path: [
+      [0, 32.7307, -117.1781, 0, 0, false],
+      [1, 32.74, -117.19, 500, 0, false],
+    ],
+  };
+  const adsbdb = {
+    origin: { iata: "LAX", name: "Los Angeles" },
+    destination: { iata: "JFK", name: "New York" },
+  };
+  const result = mergeRoutes(track, adsbdb);
+  assert.equal(result.origin.iata, "SAN");
+  assert.equal(result.destination, null);
+  assert.equal(result.destSource, null);
+});
+
+// --- mergeRoutes: confidence levels ---
+
+test("mergeRoutes confidence high when track origin and convergence dest both present", () => {
+  const path = [
+    [0, 42.3615, -71.0007, 0, 0, false],
+    [60, 42.37, -71.01, 300, 0, false],
+    ...Array.from({ length: 40 }, (_, i) => [
+      120 + i * 60, 42.0 - i * 0.12, -71.0 - i * 1.2, 10000, 250, false,
+    ]),
+    ...Array.from({ length: 15 }, (_, i) => [
+      2520 + i * 60, 37.2 + i * 0.03, -122.1 - i * 0.02, 2500 - i * 160, 280, false,
+    ]),
+  ];
+  const result = mergeRoutes({ path }, null);
+  assert.equal(result.originSource, "track");
+  assert.equal(result.destSource, "convergence");
+  assert.equal(result.confidence, "high");
+});
+
+test("mergeRoutes confidence high with cross-validated destination", () => {
+  const track = {
+    path: [
+      [0, 42.3615, -71.0007, -304, 0, false],
+      [1, 42.37, -71.01, 300, 0, false],
+    ],
+  };
+  const adsbdb = {
+    origin: { iata: "BOS", name: "Boston" },
+    destination: { iata: "LAX", name: "Los Angeles" },
+  };
+  const result = mergeRoutes(track, adsbdb);
+  assert.equal(result.destSource, "cross-validated");
+  assert.equal(result.confidence, "high");
+});
+
+test("mergeRoutes confidence medium with track origin only", () => {
+  const track = {
+    path: [
+      [0, 32.7307, -117.1781, 0, 0, false],
+      [1, 32.74, -117.19, 500, 0, false],
+    ],
+  };
+  const result = mergeRoutes(track, null);
+  assert.equal(result.origin.iata, "SAN");
+  assert.equal(result.destination, null);
+  assert.equal(result.confidence, "medium");
+});
+
+test("mergeRoutes confidence medium with ADSBDB only", () => {
+  const adsbdb = {
+    origin: { iata: "ATL", name: "Atlanta" },
+    destination: { iata: "DEN", name: "Denver" },
+  };
+  const result = mergeRoutes(null, adsbdb);
+  assert.equal(result.originSource, "adsbdb");
+  assert.equal(result.destSource, "adsbdb");
+  assert.equal(result.confidence, "medium");
+});
+
+test("mergeRoutes confidence medium with convergence dest and ADSBDB origin (no cross-validation)", () => {
+  const track = {
+    path: [
+      ...Array.from({ length: 40 }, (_, i) => [
+        1000 + i * 60, 39.0 - i * 0.05, -115.0 - i * 0.15, 10000, 250, false,
+      ]),
+      ...Array.from({ length: 15 }, (_, i) => [
+        3400 + i * 60, 37.2 + i * 0.03, -122.1 - i * 0.02, 2500 - i * 160, 280, false,
+      ]),
+    ],
+  };
+  const adsbdb = {
+    origin: { iata: "ORD", name: "Chicago" },
+    destination: { iata: "TVC", name: "Traverse City" },
+  };
+  const result = mergeRoutes(track, adsbdb);
+  assert.equal(result.originSource, "adsbdb");
+  assert.equal(result.destSource, "convergence");
+  assert.equal(result.confidence, "medium");
+});
+
+// --- mergeRoutes: edge cases ---
+
+test("mergeRoutes aircraftInfo parameter is optional", () => {
+  const adsbdb = {
+    origin: { iata: "ORD", name: "Chicago" },
+    destination: { iata: "LAX", name: "Los Angeles" },
+  };
+  const result1 = mergeRoutes(null, adsbdb);
+  const result2 = mergeRoutes(null, adsbdb, { callsign: "UAL123", altFt: 5000, vRate: -500 });
+  assert.equal(result1.origin.iata, "ORD");
+  assert.equal(result2.origin.iata, "ORD");
+  assert.equal(result1.destination.iata, "LAX");
+  assert.equal(result2.destination.iata, "LAX");
+});
+
+test("mergeRoutes returns null with empty ADSBDB and no track", () => {
+  assert.equal(mergeRoutes(null, {}), null);
+  assert.equal(mergeRoutes(null, { airline: "Delta" }), null);
+});
+
+test("mergeRoutes convergence dest only, no ADSBDB", () => {
+  const track = {
+    path: [
+      ...Array.from({ length: 40 }, (_, i) => [
+        1000 + i * 60, 39.0 - i * 0.05, -115.0 - i * 0.15, 10000, 250, false,
+      ]),
+      ...Array.from({ length: 15 }, (_, i) => [
+        3400 + i * 60, 37.2 + i * 0.03, -122.1 - i * 0.02, 2500 - i * 160, 280, false,
+      ]),
+    ],
+  };
+  const result = mergeRoutes(track, null);
+  assert.equal(result.origin, null);
+  assert.ok(result.destination);
+  assert.equal(result.destSource, "convergence");
+  assert.equal(result.confidence, "medium");
+});
+
+test("mergeRoutes ADSBDB origin only (no dest) with no track", () => {
+  const adsbdb = { origin: { iata: "SFO", name: "San Francisco" } };
+  const result = mergeRoutes(null, adsbdb);
+  assert.equal(result.origin.iata, "SFO");
+  assert.equal(result.originSource, "adsbdb");
+  assert.equal(result.destination, null);
+  assert.equal(result.destSource, null);
+  assert.equal(result.confidence, "medium");
+});
+
+test("mergeRoutes ADSBDB dest only (no origin) with no track", () => {
+  const adsbdb = { destination: { iata: "LAX", name: "Los Angeles" } };
+  const result = mergeRoutes(null, adsbdb);
+  assert.equal(result.origin, null);
+  assert.equal(result.originSource, null);
+  assert.equal(result.destination.iata, "LAX");
+  assert.equal(result.destSource, "adsbdb");
+  assert.equal(result.confidence, "medium");
+});
+
+test("mergeRoutes track origin with matching ADSBDB origin but no ADSBDB dest", () => {
+  const track = {
+    path: [
+      [0, 42.3615, -71.0007, 0, 0, false],
+      [1, 42.37, -71.01, 300, 0, false],
+    ],
+  };
+  const adsbdb = { origin: { iata: "BOS", name: "Boston" } };
+  const result = mergeRoutes(track, adsbdb);
+  assert.equal(result.origin.iata, "BOS");
+  assert.equal(result.originSource, "track");
+  assert.equal(result.destination, null);
+  assert.equal(result.confidence, "medium");
+});
+
+// --- mergeRoutes: regional landing fallback ---
+
+function makePath(points) {
+  return points.map(([lat, lon, alt = 10000, hdg = 280, gnd = false], i) => [
+    1000 + i * 60, lat, lon, alt, hdg, gnd,
+  ]);
+}
+
+function makeSanToSfoTrack() {
+  return makePath([
+    [32.73, -117.18, 0, 330],
+    [32.74, -117.19, 300, 330],
+    ...Array.from({ length: 40 }, (_, i) => {
+      const t = i / 39;
+      return [32.8 + t * 4.4, -117.3 - t * 4.8, 10000, 330];
+    }),
+    ...Array.from({ length: 15 }, (_, i) => [
+      37.2 + i * 0.03, -122.1 - i * 0.02, 2500 - i * 160, 280,
+    ]),
+  ]);
+}
+
+function makeAmbiguousTrack() {
+  const pts = [];
+  for (let i = 0; i < 50; i++) {
+    const t = i / 49;
+    pts.push([1000 + i * 120, 35.0 + t * 2.5, -125.0 + t * 2.8, 10000 - i * 170, 60, false]);
+  }
+  return { path: pts };
+}
+
+function makeOceanAmbiguousTrack() {
+  return {
+    path: makePath([
+      ...Array.from({ length: 45 }, (_, i) => {
+        const t = i / 44;
+        return [18.0 + t * 0.39, -70.0 + t * 5.24, 10000, 90];
+      }),
+      ...Array.from({ length: 10 }, (_, i) => [18.39, -64.76, 2500 - i * 250, 90]),
+    ]),
+  };
+}
+
+test("mergeRoutes regional fallback triggers for commercial descending into metro", () => {
+  const track = makeAmbiguousTrack();
+  const info = { callsign: "UAL123", altFt: 5000, vRate: -500 };
+  const result = mergeRoutes(track, null, info);
+  assert.equal(result.destination.region, "Bay Area");
+  assert.equal(result.destination.display, "Landing in Bay Area");
+  assert.equal(result.destSource, "region");
+  assert.equal(result.confidence, "low");
+  assert.equal(result.origin, null);
+});
+
+test("mergeRoutes regional fallback preserves ADSBDB origin", () => {
+  const track = makeAmbiguousTrack();
+  const adsbdb = { origin: { iata: "ORD", name: "Chicago" }, airline: "United Airlines" };
+  const info = { callsign: "UAL123", altFt: 5000, vRate: -500 };
+  const result = mergeRoutes(track, adsbdb, info);
+  assert.equal(result.origin.iata, "ORD");
+  assert.equal(result.originSource, "adsbdb");
+  assert.equal(result.destination.region, "Bay Area");
+  assert.equal(result.destSource, "region");
+  assert.equal(result.confidence, "low");
+  assert.equal(result.airline, "United Airlines");
+});
+
+test("mergeRoutes regional fallback does not trigger without aircraftInfo", () => {
+  const track = makeAmbiguousTrack();
+  assert.equal(mergeRoutes(track, null), null);
+  assert.equal(mergeRoutes(track, null, undefined), null);
+});
+
+test("mergeRoutes regional fallback does not trigger for private registration", () => {
+  const track = makeAmbiguousTrack();
+  const adsbdb = { origin: { iata: "ORD", name: "Chicago" } };
+  const info = { callsign: "N12345", altFt: 5000, vRate: -500 };
+  const result = mergeRoutes(track, adsbdb, info);
+  assert.equal(result.destination, null);
+  assert.equal(result.confidence, "medium");
+});
+
+test("mergeRoutes regional fallback does not trigger for anonymous hex", () => {
+  const track = makeAmbiguousTrack();
+  const adsbdb = { origin: { iata: "ORD", name: "Chicago" } };
+  const info = { callsign: "~abcdef", altFt: 5000, vRate: -500 };
+  const result = mergeRoutes(track, adsbdb, info);
+  assert.equal(result.destination, null);
+});
+
+test("mergeRoutes regional fallback does not trigger when altFt >= 15000", () => {
+  const track = makeAmbiguousTrack();
+  const adsbdb = { origin: { iata: "ORD", name: "Chicago" } };
+  const info = { callsign: "UAL123", altFt: 15000, vRate: -500 };
+  const result = mergeRoutes(track, adsbdb, info);
+  assert.equal(result.destination, null);
+});
+
+test("mergeRoutes regional fallback does not trigger when vRate >= -300", () => {
+  const track = makeAmbiguousTrack();
+  const adsbdb = { origin: { iata: "ORD", name: "Chicago" } };
+  const info = { callsign: "UAL123", altFt: 5000, vRate: -300 };
+  const result = mergeRoutes(track, adsbdb, info);
+  assert.equal(result.destination, null);
+});
+
+test("mergeRoutes regional fallback does not trigger when altFt is null", () => {
+  const track = makeAmbiguousTrack();
+  const adsbdb = { origin: { iata: "ORD", name: "Chicago" } };
+  const info = { callsign: "UAL123", altFt: null, vRate: -500 };
+  const result = mergeRoutes(track, adsbdb, info);
+  assert.equal(result.destination, null);
+});
+
+test("mergeRoutes regional fallback does not trigger when vRate is null", () => {
+  const track = makeAmbiguousTrack();
+  const adsbdb = { origin: { iata: "ORD", name: "Chicago" } };
+  const info = { callsign: "UAL123", altFt: 5000, vRate: null };
+  const result = mergeRoutes(track, adsbdb, info);
+  assert.equal(result.destination, null);
+});
+
+test("mergeRoutes regional fallback does not trigger for null callsign", () => {
+  const track = makeAmbiguousTrack();
+  const adsbdb = { origin: { iata: "ORD", name: "Chicago" } };
+  const info = { callsign: null, altFt: 5000, vRate: -500 };
+  const result = mergeRoutes(track, adsbdb, info);
+  assert.equal(result.destination, null);
+});
+
+test("mergeRoutes regional fallback does not trigger for empty callsign", () => {
+  const track = makeAmbiguousTrack();
+  const adsbdb = { origin: { iata: "ORD", name: "Chicago" } };
+  const info = { callsign: "", altFt: 5000, vRate: -500 };
+  const result = mergeRoutes(track, adsbdb, info);
+  assert.equal(result.destination, null);
+});
+
+test("mergeRoutes regional fallback skipped when convergence resolves destination", () => {
+  const path = [
+    [0, 42.3615, -71.0007, 0, 0, false],
+    [60, 42.37, -71.01, 300, 0, false],
+    ...Array.from({ length: 40 }, (_, i) => [
+      120 + i * 60, 42.0 - i * 0.12, -71.0 - i * 1.2, 10000, 250, false,
+    ]),
+    ...Array.from({ length: 15 }, (_, i) => [
+      2520 + i * 60, 37.2 + i * 0.03, -122.1 - i * 0.02, 2500 - i * 160, 280, false,
+    ]),
+  ];
+  const info = { callsign: "UAL123", altFt: 5000, vRate: -500 };
+  const result = mergeRoutes({ path }, null, info);
+  assert.equal(result.destSource, "convergence");
+  assert.ok(result.destination.iata);
+  assert.equal(result.destination.region, undefined);
+});
+
+test("mergeRoutes regional fallback at altitude boundary (14999 ft triggers)", () => {
+  const track = makeAmbiguousTrack();
+  const info = { callsign: "UAL123", altFt: 14999, vRate: -500 };
+  const result = mergeRoutes(track, null, info);
+  assert.equal(result.destSource, "region");
+  assert.equal(result.confidence, "low");
+});
+
+test("mergeRoutes regional fallback at vRate boundary (-301 triggers)", () => {
+  const track = makeAmbiguousTrack();
+  const info = { callsign: "UAL123", altFt: 5000, vRate: -301 };
+  const result = mergeRoutes(track, null, info);
+  assert.equal(result.destSource, "region");
+  assert.equal(result.confidence, "low");
+});
+
+test("mergeRoutes regional fallback does not trigger when no metro is nearby", () => {
+  const track = makeOceanAmbiguousTrack();
+  const od = extractOriginDest(track);
+  assert.equal(od.ambiguous, true, "should be ambiguous between STT and EIS");
+  assert.equal(od.destination, null);
+  const adsbdb = { origin: { iata: "SJU", name: "San Juan" } };
+  const info = { callsign: "UAL123", altFt: 5000, vRate: -500 };
+  const result = mergeRoutes(track, adsbdb, info);
+  assert.equal(result.origin.iata, "SJU");
+  assert.equal(result.destination, null);
+  assert.equal(result.destSource, null);
+});
+
+test("mergeRoutes regional fallback does not trigger for various private registrations", () => {
+  const track = makeAmbiguousTrack();
+  const adsbdb = { origin: { iata: "ORD", name: "Chicago" } };
+  const base = { altFt: 5000, vRate: -500 };
+  for (const cs of ["G-ABCD", "D-EFGH", "VH-ABC", "C-FABC", "F-GABC"]) {
+    const result = mergeRoutes(track, adsbdb, { ...base, callsign: cs });
+    assert.equal(result.destination, null, `should not trigger for ${cs}`);
+  }
 });

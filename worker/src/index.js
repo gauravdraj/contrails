@@ -159,7 +159,7 @@ async function handleRouteset(request, env, ctx) {
       ]);
       const track = trackResult.status === "fulfilled" ? trackResult.value : null;
       const adsbdb = adsbdbResult.status === "fulfilled" ? adsbdbResult.value : null;
-      const merged = mergeRoutes(track, adsbdb);
+      const merged = mergeRoutes(track, adsbdb, { callsign: plane.callsign, altFt: plane.altFt, vRate: plane.vRate });
       if (!merged) return null;
       const phase = detectPhase(plane.altFt, plane.vRate, plane.ground);
       return {
