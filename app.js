@@ -1290,7 +1290,8 @@
     for (var i = 0; i < visible.length && needed.length < 20; i++) {
       var a = visible[i];
       var cached = a.callsign ? routeCache[a.callsign] : null;
-      var stale = cached && (!cached.fetchedAt || now - cached.fetchedAt > 10 * 60 * 1000);
+      var hiConfSrc = cached && (cached.destSource === "fr24-search" || cached.destSource === "schedule" || cached.destSource === "cross-validated");
+      var stale = cached && !hiConfSrc && (!cached.fetchedAt || now - cached.fetchedAt > 10 * 60 * 1000);
       if (a.callsign && !a.private && (!cached || stale)) {
         needed.push({
           callsign: a.callsign,
@@ -1463,8 +1464,14 @@
           }
           continue;
         }
+        var adsbdbDestDisagrees = rc.destination && rc.destSource === "adsbdb" && rc.destination.iata !== dest.iata;
         rc.destination = dest;
-        if (rc.originSource === "adsbdb") {
+        if (adsbdbDestDisagrees) {
+          rc.origin = null;
+          rc.originSource = null;
+          rc.destSource = "convergence";
+          rc.confidence = "medium";
+        } else if (rc.originSource === "adsbdb") {
           rc.destSource = "cross-validated";
           rc.confidence = "high";
         } else {
@@ -2395,6 +2402,7 @@
     lastFr24SearchSweep = now;
 
     var targets = [];
+    var deferred = [];
     for (var i = 0; i < aircraft.length; i++) {
       var a = aircraft[i];
       if (!a.callsign || a.private) continue;
@@ -2403,9 +2411,16 @@
       if (isLikelyPrivateCallsign(a.callsign)) continue;
       var rc = routeCache[a.callsign];
       if (rc && rc.destSource === "fr24-search") continue;
-      targets.push(a);
-      if (targets.length >= 5) break;
+      if (rc && (rc.destSource === "adsbdb" || rc.originSource === "adsbdb")) {
+        targets.push(a);
+      } else {
+        deferred.push(a);
+      }
     }
+    for (var d = 0; d < deferred.length && targets.length < 5; d++) {
+      targets.push(deferred[d]);
+    }
+    if (targets.length > 5) targets.length = 5;
 
     for (var t = 0; t < targets.length; t++) {
       (function(plane) {
