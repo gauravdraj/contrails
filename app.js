@@ -31,7 +31,7 @@
     throw new Error("Contrails core helpers failed to load.");
   }
 
-  const APP_VERSION = "v2.0.1";
+  const APP_VERSION = "v2.0.2";
   const isLocal = location.hostname === "localhost" || location.hostname === "127.0.0.1";
   const isIOSDevice = /iP(ad|hone|od)/.test(navigator.userAgent) ||
     (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
@@ -1240,7 +1240,7 @@
     for (var i = 0; i < visible.length && needed.length < 20; i++) {
       var a = visible[i];
       var cached = a.callsign ? routeCache[a.callsign] : null;
-      var stale = cached && cached.fetchedAt && (now - cached.fetchedAt > 10 * 60 * 1000);
+      var stale = cached && (!cached.fetchedAt || now - cached.fetchedAt > 10 * 60 * 1000);
       if (a.callsign && !a.private && (!cached || stale)) {
         needed.push({
           callsign: a.callsign,
