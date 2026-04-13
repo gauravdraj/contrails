@@ -44,17 +44,6 @@
     typeof window.matchMedia === "function" &&
     window.matchMedia("(hover: hover) and (pointer: fine)").matches;
   const WORKER_URL = "https://contrails-api.therealgraj.workers.dev";
-  var workerOk = true;
-  function setProxyBannerVisible(visible) {
-    var banner = document.getElementById("proxy-banner");
-    if (!banner) return;
-    if (visible) {
-      banner.textContent = "Worker unavailable \u2014 using fallback proxy";
-      banner.style.display = "block";
-    } else {
-      banner.style.display = "none";
-    }
-  }
   document.getElementById("version-badge").textContent = APP_VERSION;
   document.getElementById("controls-logo-image").setAttribute("src", "contrails-logo.png?v=" + APP_VERSION);
   document.getElementById("app-touch-icon").setAttribute("href", "apple-touch-icon.png?v=" + APP_VERSION);
@@ -124,16 +113,13 @@
     }
     syncLoadingViewportState();
   })();
-  function corsProxy(url) { return "https://corsproxy.io/?" + encodeURIComponent(url); }
   function adsbUrl(path) {
     if (isLocal) return "/api/adsb" + path;
-    if (workerOk) return WORKER_URL + "/adsb" + path;
-    return corsProxy("https://api.adsb.lol/v2" + path);
+    return WORKER_URL + "/adsb" + path;
   }
   function routeUrl(path) {
     if (isLocal) return "/api/adsb-route" + path;
-    if (workerOk) return WORKER_URL + "/route" + path;
-    return corsProxy("https://api.adsb.lol/api/0" + path);
+    return WORKER_URL + "/route" + path;
   }
   function photoUrl(hex) {
     return WORKER_URL + "/photo/" + hex;
@@ -278,6 +264,8 @@
   var lastFetchTs = 0;
   var fetchInterval = REFRESH_MS;
   var trailBreakPending = {};
+  var trafficFetchOk = null;
+  var trafficFailStreak = 0;
   const filters = { private: true, ground: true, trails: true, labels: true };
 
   // --- URL params for Siri Shortcut ---
@@ -982,10 +970,22 @@
         if (!isFiltered(aircraft[i])) visibleCount++;
       }
     }
-    var summary = visibleCount > 0
-      ? visibleCount + " planes in view"
-      : (aircraft.length ? "No planes in view" : "Scanning for planes");
+    var summary;
+    var outage = false;
+    if (visibleCount > 0) {
+      summary = visibleCount + " planes in view";
+    } else if (aircraft.length) {
+      summary = "No planes in view";
+    } else if (trafficFetchOk === false) {
+      summary = "Live traffic temporarily unavailable";
+      outage = true;
+    } else if (trafficFetchOk === true) {
+      summary = "No planes nearby";
+    } else {
+      summary = "Scanning for planes";
+    }
     el.textContent = summary;
+    el.classList.toggle("outage", outage);
   }
 
   function setControlsExpanded(expanded) {
@@ -1150,6 +1150,10 @@
   function updateViewHint(visibleCount) {
     var hint = document.getElementById("view-hint");
     if (!hint) return;
+    if (trafficFetchOk === false) {
+      hint.textContent = "Retrying automatically \u2014 browse the map while you wait.";
+      return;
+    }
     var policy = currentViewPolicy(visibleCount);
     if (!policy.showLabels) {
       hint.textContent = visibleCount > LABEL_MAX_VISIBLE_PLANES
@@ -1239,17 +1243,20 @@
       if (!resp.ok) throw new Error("HTTP " + resp.status);
       var data = await resp.json();
       if (requestSeq !== fetchRequestSeq) return;
-      if (!workerOk) { workerOk = true; setProxyBannerVisible(false); }
+      trafficFetchOk = true;
+      trafficFailStreak = 0;
       processAircraft(data.ac || []);
     } catch (err) {
       if (err && err.name === "AbortError") return;
-      if (workerOk && !isLocal) {
-        workerOk = false;
-        setProxyBannerVisible(true);
-        return fetchAircraft({ source: options.source, skipAbort: true });
-      }
+      trafficFailStreak++;
+      trafficFetchOk = false;
       updateControlsCompactSummary(0);
-      setControlsFeedback("Live traffic unavailable: " + err.message, "warning", { timeoutMs: 6000 });
+      setControlsFeedback(
+        trafficFailStreak <= 1
+          ? "Could not reach the traffic feed \u2014 retrying\u2026"
+          : "Still trying to reach the traffic feed\u2026",
+        "warning", { timeoutMs: 8000 }
+      );
       updateViewHint(0);
     } finally {
       if (fetchAbortController === controller) fetchAbortController = null;
@@ -1371,7 +1378,6 @@
 
   async function fetchRoutes() {
     if (!aircraft.length) return;
-    if (!workerOk && !isLocal) return;
     var visible = aircraft.filter(function(a) { return !isFiltered(a); });
     var policy = currentViewPolicy(visible.length);
     if (!policy.allowRoutes) return;
@@ -2209,7 +2215,6 @@
   function loadPopupPhoto(container) {
     var hex = container.getAttribute("data-hex");
     if (!hex) return;
-    if (!workerOk && !isLocal) return;
     if (photoCache[hex] === null) return;
     if (photoCache[hex]) return;
     if (photoPending[hex]) return;
@@ -2342,7 +2347,6 @@
         ingestTrackPath(hex, data);
         return;
       }
-      if (!workerOk && !isLocal) return;
       return fetch(trackUrl(hex))
         .then(function(r) { return r.json(); })
         .then(function(fallback) { ingestTrackPath(hex, fallback); });
@@ -2352,7 +2356,6 @@
   function fetchScheduleData(iata) {
     var cached = scheduleDataCache[iata];
     if (cached && Date.now() - cached.ts < SCHEDULE_CACHE_TTL) return Promise.resolve(cached.data);
-    if (!workerOk && !isLocal) return Promise.resolve(null);
     var url = (isLocal ? "/api/fr24/schedule/" : WORKER_URL + "/schedule/") + encodeURIComponent(iata);
     return fetch(url).then(function(r) {
       if (!r.ok) return null;
@@ -2557,7 +2560,6 @@
 
   async function tryFr24Search(a) {
     if (!a || a.private || !a.callsign) return;
-    if (!workerOk && !isLocal) return;
     var variants = callsignVariants(a.callsign);
     if (!variants.length) return;
     var rc = routeCache[a.callsign];
@@ -3034,7 +3036,6 @@
   }
 
   async function fetchApproximateArea() {
-    if (!workerOk && !isLocal) return null;
     try {
       var resp = await fetch(geoUrl());
       if (!resp.ok) throw new Error("HTTP " + resp.status);
@@ -3902,11 +3903,6 @@
       tabs[t].classList.toggle("active", tabs[t].getAttribute("data-dir") === _fidsDir);
     document.getElementById("fids").classList.add("open");
 
-    if (!workerOk && !isLocal) {
-      document.getElementById("fids-body").innerHTML =
-        '<div class="fids-empty">Schedule unavailable \u2014 worker offline</div>';
-      return;
-    }
     var schedUrl = (isLocal ? "/api/fr24/schedule/" : WORKER_URL + "/schedule/") + encodeURIComponent(iata);
     fetch(schedUrl)
       .then(function(r) { return r.json(); })
