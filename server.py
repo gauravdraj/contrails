@@ -11,7 +11,7 @@ PORT = 8766
 ADSB_API = "https://api.adsb.lol/v2"
 ADSB_ROUTE_API = "https://api.adsb.lol/api/0"
 FR24_API = "https://api.flightradar24.com/common/v1"
-FR24_CACHE_TTL = 120
+FR24_CACHE_TTL = 300
 CORS_HEADERS = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",

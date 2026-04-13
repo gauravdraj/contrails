@@ -58,7 +58,7 @@ export default {
     if (url.pathname.startsWith("/fr24search/")) return handleFr24Search(url, ctx);
     if (url.pathname === "/nearby") return handleNearby(url, env, ctx);
 
-    return new Response("Not found", { status: 404 });
+    return json(404, { error: "Not found" });
   },
 };
 
@@ -309,7 +309,9 @@ async function handleSchedule(url, ctx) {
     const raw1 = await r1.json();
     const result = buildSchedulePayload(raw1, iata);
 
-    if (r2.ok) {
+    if (r2.status === 429 || r2.status === 403) {
+      fr24TriggerBackoff();
+    } else if (r2.ok) {
       const raw2 = await r2.json();
       const page2 = buildSchedulePayload(raw2, iata);
       result.arrivals = result.arrivals.concat(page2.arrivals);

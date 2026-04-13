@@ -276,11 +276,39 @@ export function mergeRoutes(trackResult, adsbdbEntry, aircraftInfo) {
 
 export function formatRouteLabel(origin, destination, phase) {
   const oIata = origin?.iata;
-  const dName = destination?.region
+  const dDisplay = destination?.region
     ? (destination.display || destination.region)
     : destination?.iata;
-  if (oIata && dName) return `${oIata} to ${dName}`;
-  if (oIata) return oIata;
-  if (dName) return dName;
+  const dArriving = destination?.region
+    ? (destination.display || destination.region)
+    : destination?.iata ? `landing at ${destination.iata}` : "";
+  const dLanded = destination?.region
+    ? `arrived in ${destination.region}`
+    : destination?.iata ? `arrived at ${destination.iata}` : "";
+
+  if (phase === "departing") {
+    if (oIata && dDisplay) return `departed ${oIata} for ${dDisplay}`;
+    if (oIata) return `departed ${oIata}`;
+    if (dDisplay) return dDisplay;
+    return "";
+  }
+
+  if (phase === "arriving") {
+    if (oIata && dArriving) return `${dArriving} from ${oIata}`;
+    if (dArriving) return dArriving;
+    if (oIata) return `from ${oIata}`;
+    return "";
+  }
+
+  if (phase === "landed") {
+    if (oIata && dLanded) return `${dLanded} from ${oIata}`;
+    if (dLanded) return dLanded;
+    if (oIata) return `from ${oIata}`;
+    return "";
+  }
+
+  if (oIata && dDisplay) return `${oIata} → ${dDisplay}`;
+  if (oIata) return `from ${oIata}`;
+  if (dDisplay) return dDisplay;
   return "";
 }

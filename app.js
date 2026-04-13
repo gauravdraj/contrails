@@ -1348,6 +1348,7 @@
 
   async function fetchRoutes() {
     if (!aircraft.length) return;
+    if (!workerOk && !isLocal) return;
     var visible = aircraft.filter(function(a) { return !isFiltered(a); });
     var policy = currentViewPolicy(visible.length);
     if (!policy.allowRoutes) return;
@@ -2166,6 +2167,7 @@
   function loadPopupPhoto(container) {
     var hex = container.getAttribute("data-hex");
     if (!hex) return;
+    if (!workerOk && !isLocal) return;
     if (photoCache[hex] === null) return;
     if (photoCache[hex]) return;
     if (photoPending[hex]) return;
@@ -2298,6 +2300,7 @@
         ingestTrackPath(hex, data);
         return;
       }
+      if (!workerOk && !isLocal) return;
       return fetch(trackUrl(hex))
         .then(function(r) { return r.json(); })
         .then(function(fallback) { ingestTrackPath(hex, fallback); });
@@ -2307,6 +2310,7 @@
   function fetchScheduleData(iata) {
     var cached = scheduleDataCache[iata];
     if (cached && Date.now() - cached.ts < SCHEDULE_CACHE_TTL) return Promise.resolve(cached.data);
+    if (!workerOk && !isLocal) return Promise.resolve(null);
     var url = (isLocal ? "/api/fr24/schedule/" : WORKER_URL + "/schedule/") + encodeURIComponent(iata);
     return fetch(url).then(function(r) {
       if (!r.ok) return null;
@@ -2509,6 +2513,7 @@
 
   async function tryFr24Search(a) {
     if (!a || a.private || !a.callsign) return;
+    if (!workerOk && !isLocal) return;
     var variants = callsignVariants(a.callsign);
     if (!variants.length) return;
     var rc = routeCache[a.callsign];
@@ -2980,6 +2985,7 @@
   }
 
   async function fetchApproximateArea() {
+    if (!workerOk && !isLocal) return null;
     try {
       var resp = await fetch(geoUrl());
       if (!resp.ok) throw new Error("HTTP " + resp.status);
@@ -3812,19 +3818,19 @@
     var html = "";
     for (var i = 0; i < flights.length; i++) {
       var f = flights[i];
-      var color = f.color || "gray";
-      var sched = fidsTime(isArr ? f.sched_arr : f.sched_dep);
-      var est = fidsTime(isArr ? f.est_arr : f.est_dep);
-      var actual = fidsTime(isArr ? f.actual_arr : f.actual_dep);
+      var color = escapeHtml(f.color || "gray");
+      var sched = escapeHtml(fidsTime(isArr ? f.sched_arr : f.sched_dep));
+      var est = escapeHtml(fidsTime(isArr ? f.est_arr : f.est_dep));
+      var actual = escapeHtml(fidsTime(isArr ? f.actual_arr : f.actual_dep));
       var route = isArr
-        ? (f.from_iata ? "from " + f.from_iata : "")
-        : (f.to_iata ? "to " + f.to_iata : "");
-      if (f.ac_code) route = route ? route + " \u00b7 " + f.ac_code : f.ac_code;
+        ? (f.from_iata ? "from " + escapeHtml(f.from_iata) : "")
+        : (f.to_iata ? "to " + escapeHtml(f.to_iata) : "");
+      if (f.ac_code) route = route ? route + " \u00b7 " + escapeHtml(f.ac_code) : escapeHtml(f.ac_code);
       html += '<div class="fids-row">' +
         '<div class="fids-top">' +
-          '<div><span class="fids-flight-num">' + (f.flight || "\u2014") + '</span>' +
-          '<span class="fids-airline-name">' + (f.airline || "") + '</span></div>' +
-          '<span class="fids-badge ' + color + '">' + (f.status || "\u2014") + '</span>' +
+          '<div><span class="fids-flight-num">' + escapeHtml(f.flight || "\u2014") + '</span>' +
+          '<span class="fids-airline-name">' + escapeHtml(f.airline || "") + '</span></div>' +
+          '<span class="fids-badge ' + color + '">' + escapeHtml(f.status || "\u2014") + '</span>' +
         '</div>' +
         (route ? '<div class="fids-route">' + route + '</div>' : '') +
         '<div class="fids-times">' +
@@ -3847,13 +3853,18 @@
       tabs[t].classList.toggle("active", tabs[t].getAttribute("data-dir") === _fidsDir);
     document.getElementById("fids").classList.add("open");
 
+    if (!workerOk && !isLocal) {
+      document.getElementById("fids-body").innerHTML =
+        '<div class="fids-empty">Schedule unavailable \u2014 worker offline</div>';
+      return;
+    }
     var schedUrl = (isLocal ? "/api/fr24/schedule/" : WORKER_URL + "/schedule/") + encodeURIComponent(iata);
     fetch(schedUrl)
       .then(function(r) { return r.json(); })
       .then(function(data) {
         if (data.error) {
           document.getElementById("fids-body").innerHTML =
-            '<div class="fids-empty">' + data.error + '</div>';
+            '<div class="fids-empty">' + escapeHtml(data.error) + '</div>';
           return;
         }
         _fidsData = data;

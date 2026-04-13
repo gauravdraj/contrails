@@ -57,7 +57,7 @@ The app stays GitHub Pages-friendly. The static frontend lives at the repo root,
 | `GET /adsb/*` | api.adsb.lol/v2 | Live aircraft positions |
 | `GET,POST /route/*` | api.adsb.lol/api/0 | Route lookups |
 | `GET /geo` | Cloudflare request geodata | Approximate initial map area |
-| `GET /schedule/<IATA>` | FlightRadar24 API | Airport schedule boards (cached 2 min) |
+| `GET /schedule/<IATA>` | FlightRadar24 API | Airport schedule boards (cached 5 min) |
 | `GET /nearby?lat=&lng=` | api.adsb.lol/v2 + route API | Siri plane spotter (text, json, or html) |
 | `GET /photo/<hex>` | Planespotters API | Aircraft photo lookup (cached 24 h) |
 | `POST /routeset` | ADSBDB API | Batch route lookup for up to 20 planes |
@@ -76,7 +76,7 @@ If you omit `lat` and `lng`, the page will try browser geolocation first and the
 
 ## Verification
 
-Run the lightweight checks with Node:
+These checks run automatically via GitHub Actions on every push and pull request. To run them locally:
 
 ```bash
 node --test contrails-core.test.js
