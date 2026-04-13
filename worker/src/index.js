@@ -9,9 +9,9 @@ const ADSB_ROUTE_API = "https://api.adsb.lol/api/0";
 const PLANESPOTTERS_API = "https://api.planespotters.net/pub/photos";
 const FR24_API = "https://api.flightradar24.com/common/v1";
 
-const FR24_CACHE_TTL = 120;
+const FR24_CACHE_TTL = 300;
 const PHOTO_CACHE_TTL = 86400;
-const ADSBDB_CACHE_TTL = 3600;
+const ADSBDB_CACHE_TTL = 21600;
 
 const JSON_PROXY_HEADERS = {
   "User-Agent": "contrails/1.0",
@@ -81,9 +81,63 @@ function handleGeo(request) {
   });
 }
 
+export function snapAdsbGrid(lat, lon, dist) {
+  return {
+    lat: Math.round(lat / 0.05) * 0.05,
+    lon: Math.round(lon / 0.05) * 0.05,
+    dist: Math.ceil(dist / 25) * 25,
+  };
+}
+
 async function proxyAdsb(url) {
-  const path = url.pathname.slice("/adsb".length);
-  return proxy(ADSB_API + path + url.search, "GET");
+  const parts = url.pathname.slice("/adsb".length).split("/");
+  const latIdx = parts.indexOf("lat");
+  const lonIdx = parts.indexOf("lon");
+  const distIdx = parts.indexOf("dist");
+
+  if (latIdx === -1 || lonIdx === -1 || distIdx === -1) {
+    return proxy(ADSB_API + url.pathname.slice("/adsb".length) + url.search, "GET");
+  }
+
+  const lat = parseFloat(parts[latIdx + 1]);
+  const lon = parseFloat(parts[lonIdx + 1]);
+  const dist = parseFloat(parts[distIdx + 1]);
+
+  if (!isFinite(lat) || !isFinite(lon) || !isFinite(dist)) {
+    return proxy(ADSB_API + url.pathname.slice("/adsb".length) + url.search, "GET");
+  }
+
+  const snapped = snapAdsbGrid(lat, lon, dist);
+  const gridPath = "/lat/" + snapped.lat.toFixed(2) + "/lon/" + snapped.lon.toFixed(2) + "/dist/" + snapped.dist;
+  const cacheKey = new Request("https://adsb-grid" + gridPath);
+  const cache = caches.default;
+
+  const cached = await cache.match(cacheKey);
+  if (cached) return cached;
+
+  let upstream;
+  try {
+    upstream = await fetch(ADSB_API + gridPath, {
+      method: "GET",
+      headers: JSON_PROXY_HEADERS,
+    });
+    if (!upstream.ok) throw new Error("HTTP " + upstream.status);
+  } catch (error) {
+    return json(502, { error: error.message });
+  }
+
+  const body = await upstream.arrayBuffer();
+  const response = new Response(body, {
+    status: 200,
+    headers: {
+      "Content-Type": "application/json",
+      "Cache-Control": "s-maxage=3",
+      ...CORS_HEADERS,
+    },
+  });
+
+  cache.put(cacheKey, response.clone());
+  return response;
 }
 
 async function proxyRoute(url, request) {

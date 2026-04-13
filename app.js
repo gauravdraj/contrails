@@ -149,7 +149,7 @@
     if (isLocal) return "/api/geo";
     return WORKER_URL + "/geo";
   }
-  const REFRESH_MS = 3000;
+  const REFRESH_MS = 5000;
   const DEFAULT_MAP_ZOOM = 11;
   const MIN_MAP_ZOOM = 5;
   const TILE_LAYER_URL = "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png";
@@ -175,8 +175,8 @@
   const LABEL_MAX_VISIBLE_PLANES = 90;
   const MAP_FETCH_IDLE_MS = 220;
   const MAP_FETCH_IDLE_MS_WIDE = 320;
-  const PLAYBACK_DELAY_MIN_MS = 2200;
-  const PLAYBACK_DELAY_MAX_MS = 4500;
+  const PLAYBACK_DELAY_MIN_MS = 3200;
+  const PLAYBACK_DELAY_MAX_MS = 6500;
   const PLAYBACK_DELAY_SAFETY_MS = 250;
   const PLAYBACK_EXTRAPOLATION_MS = 1200;
   const MARKER_TARGET_INTERVAL_MS = Math.round(1000 / 24);
@@ -198,7 +198,7 @@
   const dormantHistory = {};
   const trackExtended = {};
   const scheduleDataCache = {};
-  const SCHEDULE_CACHE_TTL = 2 * 60 * 1000;
+  const SCHEDULE_CACHE_TTL = 5 * 60 * 1000;
 
   let map, userMarker, aircraftLayer, trailLayer, airportLayer, runwayLayer;
   let airportData = null;
@@ -983,6 +983,12 @@
     return spec && spec.fetchKm >= WIDE_VIEW_FETCH_KM ? MAP_FETCH_IDLE_MS_WIDE : MAP_FETCH_IDLE_MS;
   }
 
+  function adaptiveRefreshMs() {
+    if (lastFetchKm < 80) return REFRESH_MS;
+    if (lastFetchKm <= 220) return 8000;
+    return 12000;
+  }
+
   function currentViewBounds(padRatio) {
     if (!map) return null;
     var bounds = map.getBounds();
@@ -1156,7 +1162,7 @@
     clearRefreshTimer();
     var spec = currentViewportFetchSpec();
     if (!spec) {
-      scheduleRefreshTimer(REFRESH_MS);
+      scheduleRefreshTimer(adaptiveRefreshMs());
       return;
     }
     syncUrlState();
@@ -1185,7 +1191,7 @@
       updateViewHint(0);
     } finally {
       if (fetchAbortController === controller) fetchAbortController = null;
-      if (map) scheduleRefreshTimer(REFRESH_MS);
+      if (map) scheduleRefreshTimer(adaptiveRefreshMs());
     }
   }
 
@@ -3001,7 +3007,7 @@
     fetchRunways();
     scheduleMarkerAnimation();
     if (shouldWatchUserPosition) startGeolocation();
-    scheduleRefreshTimer(REFRESH_MS);
+    scheduleRefreshTimer(adaptiveRefreshMs());
     document.addEventListener("visibilitychange", function() {
       if (!document.hidden) handlePageResume();
     });
@@ -3035,9 +3041,9 @@
   function handlePageResume() {
     if (!map) return;
     lastFetchTs = 0;
-    fetchInterval = REFRESH_MS;
+    fetchInterval = adaptiveRefreshMs();
     fetchJitterMs = 0;
-    playbackDelayMs = computePlaybackDelayMs(REFRESH_MS, 0, {
+    playbackDelayMs = computePlaybackDelayMs(adaptiveRefreshMs(), 0, {
       minMs: PLAYBACK_DELAY_MIN_MS,
       maxMs: PLAYBACK_DELAY_MAX_MS,
       safetyMs: PLAYBACK_DELAY_SAFETY_MS
