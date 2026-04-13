@@ -23,6 +23,7 @@
   const slantKm = core.slantKm;
   const elevationDeg = core.elevationDeg;
   const SQUAWK_ALERT = core.SQUAWK_ALERTS;
+  const AIRLINE_ICAO_TO_IATA = core.AIRLINE_ICAO_TO_IATA;
   if (!airlineName || !bearingDegrees || !buildViewPolicy || !buildViewportFetchSpec || !cardinalDir ||
       !callsignVariants || !computePlaybackDelayMs || !escapeHtml || !formatDistanceMiles || !formatSpeedMph ||
       !haversineKm || !interpolatePlaybackPose || !interpolateTimedPose || !isLikelyPrivateCallsign ||
@@ -31,7 +32,7 @@
     throw new Error("Contrails core helpers failed to load.");
   }
 
-  const APP_VERSION = "v2.10";
+  const APP_VERSION = "v2.11";
   const isLocal = location.hostname === "localhost" || location.hostname === "127.0.0.1";
   const isIOSDevice = /iP(ad|hone|od)/.test(navigator.userAgent) ||
     (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
@@ -428,6 +429,24 @@
     aircraftLayer = L.layerGroup().addTo(map);
     installIOSOneFingerZoom();
     var _popupJustOpened = false;
+    function popupPanelLeavingView(popup) {
+      if (!popup || !popup.getElement) return false;
+      var el = popup.getElement();
+      if (!el || !el.getBoundingClientRect) return false;
+      var mapRect = map.getContainer().getBoundingClientRect();
+      var popupRect = el.getBoundingClientRect();
+      if (popupRect.height < 1 || popupRect.width < 1) return false;
+      var edgeMargin = 6;
+      return popupRect.top < mapRect.top + edgeMargin ||
+        popupRect.left < mapRect.left + edgeMargin ||
+        popupRect.bottom > mapRect.bottom - edgeMargin ||
+        popupRect.right > mapRect.right - edgeMargin;
+    }
+    map.on("move", function() {
+      if (_popupJustOpened || _autoPanning) return;
+      var p = map._popup;
+      if (popupPanelLeavingView(p)) map.closePopup();
+    });
     map.on("popupopen", function(e) {
       _popupJustOpened = true;
       setTimeout(function() { _popupJustOpened = false; }, 600);
@@ -507,8 +526,12 @@
       refreshViewportUi({ fetch: true });
       if (_popupJustOpened || _autoPanning) { _autoPanning = false; return; }
       var p = map._popup;
-      if (p && p._latlng && !map.getBounds().contains(p._latlng)) {
-        map.closePopup();
+      if (p) {
+        if (popupPanelLeavingView(p)) {
+          map.closePopup();
+        } else if (p._latlng && !map.getBounds().contains(p._latlng)) {
+          map.closePopup();
+        }
       }
     });
     if (isIOSDevice) {
@@ -2152,12 +2175,31 @@
     return routeEntry.display || routeEntry.iata || "";
   }
 
+  function airlineLogoUrl(callsign, routeEntry) {
+    var iata = routeEntry && routeEntry.airline_iata;
+    var icao = routeEntry && routeEntry.airline_icao;
+    if (!iata || !icao) {
+      if (callsign && callsign.length >= 3) {
+        icao = callsign.substring(0, 3).toUpperCase();
+        iata = AIRLINE_ICAO_TO_IATA[icao];
+      }
+    }
+    if (!iata || !icao) return null;
+    return "https://cdn.flightradar24.com/assets/airlines/logotypes/" + encodeURIComponent(iata) + "_" + encodeURIComponent(icao) + ".png";
+  }
+
   function buildPopupSubheader(a, routeEntry) {
     var airline = !a.private && a.callsign ? airlineName(a.callsign) : "";
     var routeDisplay = popupRouteDisplay(routeEntry);
     if (!airline && !routeDisplay) return "";
     var html = "";
-    if (airline) html += '<span class="popup-airline"> &middot; ' + escapeHtml(airline) + "</span>";
+    if (airline) {
+      var logoUrl = airlineLogoUrl(a.callsign, routeEntry);
+      if (logoUrl) {
+        html += '<img class="popup-airline-logo" src="' + escapeHtml(logoUrl) + '" onerror="this.style.display=\'none\'" alt="">';
+      }
+      html += '<span class="popup-airline"> &middot; ' + escapeHtml(airline) + "</span>";
+    }
     if (routeDisplay) {
       html += '<div class="popup-route">' + escapeHtml(routeDisplay) + "</div>";
     }
@@ -2407,6 +2449,8 @@
       destSource: destSource || (currentRc ? currentRc.destSource : null),
       confidence: flipped ? "medium" : "high",
       phase: phase,
+      airline_iata: match.row.airline_iata || "",
+      airline_icao: match.row.airline_icao || "",
       fetchedAt: Date.now()
     };
     return true;
@@ -2556,6 +2600,9 @@
         (a.altFt < 15000 && a.vRate != null && a.vRate * 60 < -100) ? "arriving" :
         (a.altFt < 15000 && a.vRate != null && a.vRate * 60 > 100) ? "departing" : "cruising";
 
+      var searchIcao = a.callsign.length >= 3 ? a.callsign.substring(0, 3).toUpperCase() : "";
+      var searchIata = AIRLINE_ICAO_TO_IATA[searchIcao] || "";
+
       routeCache[a.callsign] = {
         display: formatClientRouteLabel(origin, destination, phase),
         iata: from + " to " + to,
@@ -2565,6 +2612,8 @@
         destSource: "fr24-search",
         confidence: "high",
         phase: phase,
+        airline_iata: searchIata,
+        airline_icao: searchIcao,
         fetchedAt: Date.now()
       };
 

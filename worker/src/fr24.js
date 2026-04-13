@@ -8,10 +8,14 @@ export function buildFlightRow(item, direction) {
   const timing = flight.time || {};
   const genericStatus = status.generic?.status || {};
 
+  const code = airline.code || {};
+
   const row = {
     flight: ident.number?.default || "",
     callsign: ident.callsign || "",
     airline: airline.short || airline.name || "",
+    airline_iata: code.iata || "",
+    airline_icao: code.icao || "",
     ac_code: aircraft.model?.code || "",
     ac_name: aircraft.model?.text || "",
     reg: aircraft.registration || "",

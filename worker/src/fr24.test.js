@@ -22,6 +22,7 @@ test("buildFlightRow preserves arrival origin metadata", () => {
       airline: {
         short: "BA",
         name: "British Airways",
+        code: { iata: "BA", icao: "BAW" },
       },
       airport: {
         origin: {
@@ -40,11 +41,27 @@ test("buildFlightRow preserves arrival origin metadata", () => {
   assert.equal(row.flight, "BAW123");
   assert.equal(row.callsign, "BAW123");
   assert.equal(row.airline, "BA");
+  assert.equal(row.airline_iata, "BA");
+  assert.equal(row.airline_icao, "BAW");
   assert.equal(row.ac_code, "A320");
   assert.equal(row.from_iata, "JFK");
   assert.equal(row.from_name, "New York JFK");
   assert.equal(row.est_arr, 210);
   assert.equal(row.actual_arr, 220);
+});
+
+test("buildFlightRow defaults airline codes to empty when code object is missing", () => {
+  const row = buildFlightRow({
+    flight: {
+      identification: { number: { default: "RYR456" }, callsign: "RYR456" },
+      airline: { short: "Ryanair" },
+      status: { text: "En Route" },
+    },
+  }, "departure");
+
+  assert.equal(row.airline, "Ryanair");
+  assert.equal(row.airline_iata, "");
+  assert.equal(row.airline_icao, "");
 });
 
 test("buildSchedulePayload shapes arrivals and departures from FR24 plugin data", () => {

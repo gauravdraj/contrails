@@ -166,10 +166,14 @@ def extract_flights(data, direction):
         timing = flight.get("time", {})
         generic = (status.get("generic") or {}).get("status") or {}
 
+        code = airline.get("code") or {}
+
         row = {
             "flight": (ident.get("number") or {}).get("default", ""),
             "callsign": ident.get("callsign", ""),
             "airline": airline.get("short") or airline.get("name") or "",
+            "airline_iata": code.get("iata") or "",
+            "airline_icao": code.get("icao") or "",
             "ac_code": (aircraft.get("model") or {}).get("code", ""),
             "ac_name": (aircraft.get("model") or {}).get("text", ""),
             "reg": aircraft.get("registration", ""),

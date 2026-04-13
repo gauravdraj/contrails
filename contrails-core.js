@@ -392,6 +392,7 @@
   return {
     AIRLINES: AIRLINES,
     AIRLINE_IATA_ALIASES: AIRLINE_IATA_ALIASES,
+    AIRLINE_ICAO_TO_IATA: AIRLINE_ICAO_TO_IATA_ALIASES,
     SQUAWK_ALERTS: SQUAWK_ALERTS,
     airlineName: airlineName,
     bearingDegrees: bearingDegrees,
