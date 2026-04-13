@@ -31,7 +31,7 @@
     throw new Error("Contrails core helpers failed to load.");
   }
 
-  const APP_VERSION = "v2.9";
+  const APP_VERSION = "v2.10";
   const isLocal = location.hostname === "localhost" || location.hostname === "127.0.0.1";
   const isIOSDevice = /iP(ad|hone|od)/.test(navigator.userAgent) ||
     (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
@@ -450,7 +450,23 @@
             event.preventDefault();
             event.stopPropagation();
             var dir = toggleBtn.getAttribute("data-dir");
-            if (dir) renderSchedulePopup(dir);
+            if (dir) {
+              if (_activeAirportIata) delete _liveScheduleCache[_activeAirportIata];
+              _lastScheduleHtml = "";
+              renderSchedulePopup(dir);
+            }
+            return;
+          }
+          var schedRow = t.closest(".sched-row");
+          if (schedRow) {
+            var cs = schedRow.getAttribute("data-callsign");
+            if (cs) {
+              var plane = findAircraftByQuery({ type: "callsign", value: cs.toUpperCase(), variants: [cs.toUpperCase()] });
+              if (plane) {
+                if (_activeAirportPopup) map.closePopup(_activeAirportPopup);
+                focusAircraftById(plane.icao24, { center: true, openPopup: true, minZoom: 12 });
+              }
+            }
             return;
           }
         });
@@ -3549,6 +3565,9 @@
   var _activeAirportLng = null;
   var _activeScheduleDir = "arrivals";
   var _lastScheduleRefresh = 0;
+  var _lastScheduleHtml = "";
+  var _liveScheduleCache = {};
+  var LIVE_SCHEDULE_CACHE_TTL = 10000;
 
   function relativeMinutes(unixTs) {
     var diffSec = unixTs - Math.floor(Date.now() / 1000);
@@ -3564,6 +3583,8 @@
   var LANDING_SCAN_RADIUS_KM = 350;
 
   function buildLiveScheduleData(airportIata, airportLat, airportLng) {
+    var cached = _liveScheduleCache[airportIata];
+    if (cached && Date.now() - cached.ts < LIVE_SCHEDULE_CACHE_TTL) return cached.data;
     var arrivals = [];
     var departures = [];
     for (var i = 0; i < aircraft.length; i++) {
@@ -3661,7 +3682,9 @@
     });
     if (arrivals.length > 15) arrivals.length = 15;
     if (departures.length > 15) departures.length = 15;
-    return { arrivals: arrivals, departures: departures };
+    var result = { arrivals: arrivals, departures: departures };
+    _liveScheduleCache[airportIata] = { data: result, ts: Date.now() };
+    return result;
   }
 
   function buildScheduleCardContent(iata, name, liveData, dir) {
@@ -3679,12 +3702,14 @@
         '<button class="sched-toggle-btn' + (isArr ? " active" : "") + '" data-dir="arrivals">Landings</button>' +
         '<button class="sched-toggle-btn' + (isArr ? "" : " active") + '" data-dir="departures">Takeoffs</button>' +
       '</div>';
+    html += '<div class="sched-rows">';
     if (!items.length) {
       html += '<div class="sched-empty">No aircraft nearby</div>';
     } else if (isArr) {
       for (var i = 0; i < items.length; i++) {
         var f = items[i];
-        var flightNum = escapeHtml((f.callsign || "\u2014").replace(/^([A-Za-z]+)(\d+)$/, "$1 $2"));
+        var cs = f.callsign || "";
+        var flightNum = escapeHtml((cs || "\u2014").replace(/^([A-Za-z]+)(\d+)$/, "$1 $2"));
         var fromIata = f.originIata ? escapeHtml(f.originIata) : "\u2014";
         var altStr = f.altFt != null ? f.altFt.toLocaleString() + "ft" : "\u2014";
         var distNm = Math.round(f.distKm / 1.852) + "nm";
@@ -3693,7 +3718,7 @@
           etaStr = "~" + f.etaMin + "min";
           if (f.proximity) etaStr += " (est.)";
         }
-        html += '<div class="sched-row">' +
+        html += '<div class="sched-row" data-callsign="' + escapeHtml(cs) + '">' +
           '<span class="sched-dot cyan live"></span>' +
           '<span class="sched-flight">' + flightNum + '</span>' +
           '<span class="sched-route">from ' + fromIata + (f.aircraftType ? ' \u00b7 ' + escapeHtml(f.aircraftType) : '') + '</span>' +
@@ -3705,11 +3730,12 @@
     } else {
       for (var i = 0; i < items.length; i++) {
         var f = items[i];
-        var flightNum = escapeHtml((f.callsign || "\u2014").replace(/^([A-Za-z]+)(\d+)$/, "$1 $2"));
+        var cs = f.callsign || "";
+        var flightNum = escapeHtml((cs || "\u2014").replace(/^([A-Za-z]+)(\d+)$/, "$1 $2"));
         var destIata = f.destIata ? escapeHtml(f.destIata) : "\u2014";
-        var spdStr = f.speedKts > 0 ? f.speedKts + "kt" : "\u2014";
+        var spdStr = f.speedKts > 0 ? formatSpeedMph(f.speedKts) + "mph" : "\u2014";
         var dotColor = f.status === "Taxiing" ? "green" : "gray";
-        html += '<div class="sched-row">' +
+        html += '<div class="sched-row" data-callsign="' + escapeHtml(cs) + '">' +
           '<span class="sched-dot ' + dotColor + '"></span>' +
           '<span class="sched-flight">' + flightNum + '</span>' +
           '<span class="sched-route">to ' + destIata + (f.aircraftType ? ' \u00b7 ' + escapeHtml(f.aircraftType) : '') + '</span>' +
@@ -3718,7 +3744,7 @@
           '</div>';
       }
     }
-    html += '</div>';
+    html += '</div></div>';
     return html;
   }
 
@@ -3726,9 +3752,10 @@
     if (!_activeAirportPopup || _activeAirportLat == null) return;
     _activeScheduleDir = dir;
     var liveData = buildLiveScheduleData(_activeAirportIata, _activeAirportLat, _activeAirportLng);
-    _activeAirportPopup.setContent(
-      buildScheduleCardContent(_activeAirportIata, _activeAirportName, liveData, dir)
-    );
+    var html = buildScheduleCardContent(_activeAirportIata, _activeAirportName, liveData, dir);
+    if (html === _lastScheduleHtml) return;
+    _lastScheduleHtml = html;
+    _activeAirportPopup.setContent(html);
   }
 
   function openAirportSchedulePopup(iata, name, lat, lng) {
@@ -3743,6 +3770,8 @@
     _activeAirportLat = lat;
     _activeAirportLng = lng;
     _activeScheduleDir = "arrivals";
+    _lastScheduleHtml = "";
+    delete _liveScheduleCache[iata];
 
     var liveData = buildLiveScheduleData(iata, lat, lng);
     var popup = L.popup({ maxWidth: 320, minWidth: 280, closeButton: true, className: "" })

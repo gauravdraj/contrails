@@ -851,13 +851,20 @@ body.noscroll { touch-action: none; }
 .sched-card {
   width: 280px;
   max-height: 420px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.sched-rows {
+  flex: 1 1 auto;
   overflow-y: auto;
+  min-height: 0;
   scrollbar-width: thin;
   scrollbar-color: rgba(255,255,255,0.15) transparent;
 }
-.sched-card::-webkit-scrollbar { width: 4px; }
-.sched-card::-webkit-scrollbar-track { background: transparent; }
-.sched-card::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 2px; }
+.sched-rows::-webkit-scrollbar { width: 4px; }
+.sched-rows::-webkit-scrollbar-track { background: transparent; }
+.sched-rows::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 2px; }
 .sched-header { display: flex; align-items: baseline; gap: 6px; margin-bottom: 4px; }
 .sched-toggle {
   display: flex;
@@ -893,6 +900,11 @@ body.noscroll { touch-action: none; }
   border-top: 1px solid var(--border-soft);
   font-size: 13px;
   line-height: 1.3;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.sched-row:active {
+  background: rgba(255,255,255,0.06);
 }
 .sched-flight { font-weight: 700; color: var(--text-strong); flex-shrink: 0; }
 .sched-route { color: var(--text-muted); font-size: 12px; flex-shrink: 0; }
