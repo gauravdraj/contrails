@@ -393,6 +393,7 @@
     });
     map.createPane("airportCirclePane");
     map.getPane("airportCirclePane").style.zIndex = 620;
+    map.getPane("airportCirclePane").style.pointerEvents = "none";
     map.createPane("planeLabelPane");
     map.getPane("planeLabelPane").style.zIndex = 630;
     map.createPane("airportTooltipPane");
@@ -426,7 +427,10 @@
     airportLayer = L.layerGroup().addTo(map);
     aircraftLayer = L.layerGroup().addTo(map);
     installIOSOneFingerZoom();
+    var _popupJustOpened = false;
     map.on("popupopen", function(e) {
+      _popupJustOpened = true;
+      setTimeout(function() { _popupJustOpened = false; }, 600);
       var el = e.popup.getElement();
       if (!el) return;
       if (!el.__contrailsPopupActionsBound) {
@@ -485,6 +489,7 @@
     map.on("moveend", function() {
       if (suppressViewportRefresh) return;
       refreshViewportUi({ fetch: true });
+      if (_popupJustOpened || _autoPanning) { _autoPanning = false; return; }
       var p = map._popup;
       if (p && p._latlng && !map.getBounds().contains(p._latlng)) {
         map.closePopup();
@@ -3616,13 +3621,15 @@
     for (var i = 0; i < aircraft.length; i++) {
       var a = aircraft[i];
       if (!a.callsign || a.ground || seenCallsigns[a.callsign]) continue;
+      var rc = routeCache[a.callsign];
+      if (rc && rc.origin && rc.origin.iata === airportIata) continue;
+      if (rc && rc.destination && rc.destination.iata !== airportIata) continue;
       var vRateFpm = a.vRate != null ? a.vRate * 60 : 0;
       if (a.altFt == null || a.altFt >= 8000 || vRateFpm > -500) continue;
       var distKm = haversineKm(a.lat, a.lng, airportLat, airportLng);
       if (distKm > 20) continue;
       var spdKts = a.speedKts || 0;
       var etaMin = spdKts > 0 ? (distKm / (spdKts * 1.852)) * 60 : null;
-      var rc = routeCache[a.callsign];
       arrivals.push({
         callsign: a.callsign,
         originIata: rc && rc.origin ? rc.origin.iata : null,
