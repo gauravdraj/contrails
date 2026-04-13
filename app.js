@@ -391,6 +391,8 @@
       doubleTapDragZoom: isIOSSafari ? false : "center",
       doubleTapDragZoomOptions: { reverse: true }
     });
+    map.createPane("airportCirclePane");
+    map.getPane("airportCirclePane").style.zIndex = 620;
     map.createPane("planeLabelPane");
     map.getPane("planeLabelPane").style.zIndex = 630;
     map.createPane("airportTooltipPane");
@@ -409,7 +411,6 @@
     map.on("movestart", function() {
       if (_autoPanning) { _autoPanning = false; return; }
       if (pendingPlaneFocus && pendingPlaneFocus.failed) clearPendingPlaneFocus();
-      map.closePopup();
     });
     map.on("click", function(e) {
       if (Date.now() < ignoreMapClickUntil) return;
@@ -424,9 +425,6 @@
     runwayLayer = L.layerGroup().addTo(map);
     airportLayer = L.layerGroup().addTo(map);
     aircraftLayer = L.layerGroup().addTo(map);
-    L.control.attribution({ position: "bottomleft", prefix: false })
-      .addAttribution('&copy; <a href="https://carto.com/">CARTO</a> | <a href="https://adsb.lol">adsb.lol</a>')
-      .addTo(map);
     installIOSOneFingerZoom();
     map.on("popupopen", function(e) {
       var el = e.popup.getElement();
@@ -473,10 +471,30 @@
           }
         }
       }
+      setTimeout(function() {
+        var ctrl = document.getElementById("map-controls");
+        if (!ctrl || !el) return;
+        var ctrlBottom = ctrl.getBoundingClientRect().bottom;
+        var popupRect = el.getBoundingClientRect();
+        if (popupRect.top < ctrlBottom + 10) {
+          _autoPanning = true;
+          map.panBy([0, popupRect.top - ctrlBottom - 10], { animate: true, duration: 0.3 });
+        }
+      }, 50);
     });
     map.on("moveend", function() {
       if (suppressViewportRefresh) return;
       refreshViewportUi({ fetch: true });
+      var p = map._popup;
+      if (p && p._latlng && !map.getBounds().contains(p._latlng)) {
+        map.closePopup();
+      }
+    });
+    if (isIOSDevice) {
+      setTimeout(function() { map.invalidateSize({ animate: false }); }, 300);
+    }
+    window.addEventListener("resize", function() {
+      if (map) map.invalidateSize({ animate: false });
     });
   }
 
@@ -1422,8 +1440,11 @@
       }
       if (a.altFt != null && a.altFt < 15000 && a.vRate != null && a.vRate * 60 > 100) continue;
       var h = posHistory[a.icao24];
-      if (!h || h.length < 15) continue;
-      var tail = h.length > 50 ? h.slice(-50) : h;
+      if (!h) continue;
+      var realH = [];
+      for (var rhi = 0; rhi < h.length; rhi++) { if (!h[rhi][6]) realH.push(h[rhi]); }
+      if (realH.length < 10) continue;
+      var tail = realH.length > 50 ? realH.slice(-50) : realH;
       var minAlt = Infinity;
       for (var t = 0; t < tail.length; t++) {
         if (tail[t][3] != null && tail[t][3] < minAlt) minAlt = tail[t][3];
@@ -1860,7 +1881,8 @@
       (function(code, apName, lat, lng) {
         var m = L.circleMarker([lat, lng], {
           radius: 6, fillColor: "#2a3f55", fillOpacity: 1,
-          color: "#8aa0b8", weight: 2
+          color: "#8aa0b8", weight: 2,
+          pane: "airportCirclePane"
         })
         .bindTooltip(buildAirportLabelHtml(code, lat, lng), {
           permanent: true,
@@ -3552,6 +3574,7 @@
           arrivals.push({
             callsign: a.callsign,
             originIata: rc.origin ? rc.origin.iata : null,
+            aircraftType: a.aircraftType,
             altFt: a.altFt,
             distKm: distKm,
             etaMin: etaMin != null ? Math.round(etaMin) : null,
@@ -3579,6 +3602,7 @@
         departures.push({
           callsign: a.callsign,
           destIata: rc && rc.destination ? rc.destination.iata : null,
+          aircraftType: a.aircraftType,
           speedKts: spdKts,
           status: status,
           distKm: distKm,
@@ -3587,10 +3611,33 @@
         });
       }
     }
+    var seenCallsigns = {};
+    for (var s = 0; s < arrivals.length; s++) seenCallsigns[arrivals[s].callsign] = true;
+    for (var i = 0; i < aircraft.length; i++) {
+      var a = aircraft[i];
+      if (!a.callsign || a.ground || seenCallsigns[a.callsign]) continue;
+      var vRateFpm = a.vRate != null ? a.vRate * 60 : 0;
+      if (a.altFt == null || a.altFt >= 8000 || vRateFpm > -500) continue;
+      var distKm = haversineKm(a.lat, a.lng, airportLat, airportLng);
+      if (distKm > 20) continue;
+      var spdKts = a.speedKts || 0;
+      var etaMin = spdKts > 0 ? (distKm / (spdKts * 1.852)) * 60 : null;
+      var rc = routeCache[a.callsign];
+      arrivals.push({
+        callsign: a.callsign,
+        originIata: rc && rc.origin ? rc.origin.iata : null,
+        aircraftType: a.aircraftType,
+        altFt: a.altFt,
+        distKm: distKm,
+        etaMin: etaMin != null ? Math.round(etaMin) : null,
+        estLandingTime: etaMin != null ? Date.now() + etaMin * 60000 : null,
+        proximity: true
+      });
+    }
     arrivals.sort(function(a, b) {
-      var altA = a.altFt != null ? a.altFt : 99999;
-      var altB = b.altFt != null ? b.altFt : 99999;
-      if (altA !== altB) return altA - altB;
+      var etaA = a.etaMin != null ? a.etaMin : Infinity;
+      var etaB = b.etaMin != null ? b.etaMin : Infinity;
+      if (etaA !== etaB) return etaA - etaB;
       return a.distKm - b.distKm;
     });
     departures.sort(function(a, b) {
@@ -3618,8 +3665,8 @@
       '" data-sched-name="' + safeName +
       '" data-sched-dir="' + dir + '">' +
       '<div class="sched-header">' +
-        '<div class="sched-iata">' + escapeHtml(iata) + '</div>' +
-        '<div class="sched-name">' + escapeHtml(name) + '</div>' +
+        '<span class="sched-iata">' + escapeHtml(iata) + '</span> ' +
+        '<span class="sched-name">' + escapeHtml(name) + '</span>' +
       '</div>' +
       '<div class="sched-toggle">' +
         '<button class="sched-toggle-btn' + (isArr ? " active" : "") + '" data-dir="arrivals">Landings</button>' +
@@ -3635,14 +3682,14 @@
         var altStr = f.altFt != null ? f.altFt.toLocaleString() + "ft" : "\u2014";
         var distNm = Math.round(f.distKm / 1.852) + "nm";
         var etaStr = "";
-        if (f.estLandingTime != null) {
-          var d = new Date(f.estLandingTime);
-          etaStr = "~" + d.getHours().toString().padStart(2, "0") + ":" + d.getMinutes().toString().padStart(2, "0");
+        if (f.etaMin != null) {
+          etaStr = "~" + f.etaMin + "min";
+          if (f.proximity) etaStr += " (est.)";
         }
         html += '<div class="sched-row">' +
           '<span class="sched-dot cyan live"></span>' +
           '<span class="sched-flight">' + flightNum + '</span>' +
-          '<span class="sched-route">from ' + fromIata + '</span>' +
+          '<span class="sched-route">from ' + fromIata + (f.aircraftType ? ' \u00b7 ' + escapeHtml(f.aircraftType) : '') + '</span>' +
           '<span class="sched-alt">' + altStr + '</span>' +
           '<span class="sched-dist">' + distNm + '</span>' +
           (etaStr ? '<span class="sched-eta">' + etaStr + '</span>' : '') +
@@ -3658,7 +3705,7 @@
         html += '<div class="sched-row">' +
           '<span class="sched-dot ' + dotColor + '"></span>' +
           '<span class="sched-flight">' + flightNum + '</span>' +
-          '<span class="sched-route">to ' + destIata + '</span>' +
+          '<span class="sched-route">to ' + destIata + (f.aircraftType ? ' \u00b7 ' + escapeHtml(f.aircraftType) : '') + '</span>' +
           '<span class="sched-speed">' + spdStr + '</span>' +
           '<span class="sched-hint">' + escapeHtml(f.status) + '</span>' +
           '</div>';

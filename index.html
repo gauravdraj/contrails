@@ -59,7 +59,7 @@ body {
 body.noscroll { touch-action: none; }
 
 #app { position: fixed; inset: 0; background-color: #000; }
-#map { height: 100%; }
+#map { height: calc(100% + env(safe-area-inset-bottom, 0px)); }
 .leaflet-container,
 .leaflet-pane,
 .leaflet-map-pane,
@@ -250,7 +250,6 @@ body.noscroll { touch-action: none; }
   flex-shrink: 0;
 }
 #controls-toggle:focus-visible,
-#search-input:focus-visible,
 #fids-close:focus-visible,
 .ftag:focus-visible,
 .mini-action:focus-visible,
@@ -258,6 +257,11 @@ body.noscroll { touch-action: none; }
 .popup-share:focus-visible {
   outline: none;
   box-shadow: 0 0 0 2px rgba(105, 199, 255, 0.55);
+}
+#search-input:focus-visible {
+  outline: 2px solid rgba(105, 199, 255, 0.55);
+  outline-offset: -2px;
+  box-shadow: none;
 }
 #controls-body {
   margin-top: 0;
@@ -854,7 +858,7 @@ body.noscroll { touch-action: none; }
 .sched-card::-webkit-scrollbar { width: 4px; }
 .sched-card::-webkit-scrollbar-track { background: transparent; }
 .sched-card::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 2px; }
-.sched-header { margin-bottom: 4px; }
+.sched-header { display: flex; align-items: baseline; gap: 6px; margin-bottom: 4px; }
 .sched-toggle {
   display: flex;
   gap: 4px;
@@ -878,8 +882,8 @@ body.noscroll { touch-action: none; }
   background: var(--accent);
   border-color: var(--accent);
 }
-.sched-iata { font-size: 15px; font-weight: 700; color: var(--accent); }
-.sched-name { font-size: 12px; color: var(--text-muted); margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sched-iata { font-size: 15px; font-weight: 700; color: var(--accent); flex-shrink: 0; }
+.sched-name { font-size: 12px; color: var(--text-muted); min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sched-row {
   display: flex;
   flex-wrap: wrap;
