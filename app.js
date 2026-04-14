@@ -3771,18 +3771,14 @@
   }
 
   function compareArrivalEntries(a, b) {
-    var altA = a.altFt != null ? a.altFt : Infinity;
-    var altB = b.altFt != null ? b.altFt : Infinity;
-    if (altA !== altB) return altA - altB;
-    var etaA = a.etaMin != null ? a.etaMin : Infinity;
-    var etaB = b.etaMin != null ? b.etaMin : Infinity;
-    if (etaA !== etaB) return etaA - etaB;
-    if (!!a.proximity !== !!b.proximity) return a.proximity ? 1 : -1;
     var scoreA = a.arrivalScore != null ? a.arrivalScore : Infinity;
     var scoreB = b.arrivalScore != null ? b.arrivalScore : Infinity;
     if (scoreA !== scoreB) return scoreA - scoreB;
-    if (a.distKm !== b.distKm) return a.distKm - b.distKm;
-    return (a.callsign || "").localeCompare(b.callsign || "");
+    if (!!a.proximity !== !!b.proximity) return a.proximity ? 1 : -1;
+    var distA = a.distKm != null ? a.distKm : Infinity;
+    var distB = b.distKm != null ? b.distKm : Infinity;
+    if (distA !== distB) return distA - distB;
+    return (a.callsign || '').localeCompare(b.callsign || '');
   }
 
   function formatLandingEta(etaMin) {
@@ -3858,7 +3854,34 @@
       var fallbackEntry = buildArrivalEntry(a, rc, airportIata, distKm, { proximity: true });
       if (fallbackEntry) arrivals.push(fallbackEntry);
     }
+    var landed = [];
+    for (var i = 0; i < list.length; i++) {
+      var a = list[i];
+      if (!a.callsign || !a.ground) continue;
+      var rc = routeCache[a.callsign];
+      if (!rc || !rc.destination || rc.destination.iata !== airportIata) continue;
+      var landedDist = haversineKm(a.lat, a.lng, airportLat, airportLng);
+      if (landedDist > 5) continue;
+      landed.push({
+        hex: a.icao24,
+        callsign: a.callsign,
+        originIata: rc && rc.origin ? rc.origin.iata : null,
+        aircraftType: a.aircraftType,
+        lat: a.lat,
+        lng: a.lng,
+        altFt: 0,
+        distKm: landedDist,
+        etaMin: 0,
+        arrivalScore: 0,
+        proximity: false,
+        landed: true
+      });
+    }
+    landed.sort(function(a, b) { return a.distKm - b.distKm; });
+    if (landed.length > 5) landed.length = 5;
     arrivals.sort(compareArrivalEntries);
+    arrivals = landed.concat(arrivals);
+    if (arrivals.length > 15) arrivals.length = 15;
     departures.sort(function(a, b) {
       var aTaxi = a.speedKts > 0 ? 0 : 1;
       var bTaxi = b.speedKts > 0 ? 0 : 1;
@@ -3871,7 +3894,6 @@
       if (a.hasDest !== b.hasDest) return a.hasDest ? -1 : 1;
       return a.distKm - b.distKm;
     });
-    if (arrivals.length > 15) arrivals.length = 15;
     if (departures.length > 15) departures.length = 15;
     return { arrivals: arrivals, departures: departures };
   }
@@ -3901,18 +3923,25 @@
         var cs = f.callsign || "";
         var flightNum = escapeHtml((cs || "\u2014").replace(/^([A-Za-z]+)(\d+)$/, "$1 $2"));
         var fromIata = f.originIata ? escapeHtml(f.originIata) : "\u2014";
-        var altStr = f.altFt != null ? f.altFt.toLocaleString() + "ft" : "\u2014";
-        var etaStr = formatLandingEta(f.etaMin);
         html += '<div class="sched-row" data-callsign="' + escapeHtml(cs) +
           '" data-hex="' + escapeHtml(f.hex || "") +
           '" data-lat="' + (f.lat != null ? String(f.lat) : "") +
-          '" data-lng="' + (f.lng != null ? String(f.lng) : "") + '">' +
-          '<span class="sched-dot cyan live"></span>' +
-          '<span class="sched-flight">' + flightNum + '</span>' +
-          '<span class="sched-route">from ' + fromIata + (f.aircraftType ? ' \u00b7 ' + escapeHtml(f.aircraftType) : '') + '</span>' +
-          '<span class="sched-alt">' + altStr + '</span>' +
-          (etaStr ? '<span class="sched-eta">' + etaStr + '</span>' : '') +
-          '</div>';
+          '" data-lng="' + (f.lng != null ? String(f.lng) : "") + '">';
+        if (f.landed) {
+          html += '<span class="sched-dot gray"></span>' +
+            '<span class="sched-flight">' + flightNum + '</span>' +
+            '<span class="sched-route">from ' + fromIata + (f.aircraftType ? ' \u00b7 ' + escapeHtml(f.aircraftType) : '') + '</span>' +
+            '<span class="sched-landed">Landed</span>';
+        } else {
+          var altStr = f.altFt != null ? f.altFt.toLocaleString() + "ft" : "\u2014";
+          var etaStr = formatLandingEta(f.etaMin);
+          html += '<span class="sched-dot cyan live"></span>' +
+            '<span class="sched-flight">' + flightNum + '</span>' +
+            '<span class="sched-route">from ' + fromIata + (f.aircraftType ? ' \u00b7 ' + escapeHtml(f.aircraftType) : '') + '</span>' +
+            '<span class="sched-alt">' + altStr + '</span>' +
+            (etaStr ? '<span class="sched-eta">' + etaStr + '</span>' : '');
+        }
+        html += '</div>';
       }
     } else {
       for (var i = 0; i < items.length; i++) {
@@ -3980,7 +4009,9 @@
 
   function airportRouteCandidateComparator(airportLat, airportLng) {
     return function(a, b) {
-      if (!!a.ground !== !!b.ground) return a.ground ? 1 : -1;
+      var aGroundFar = a.ground && haversineKm(a.lat, a.lng, airportLat, airportLng) > 5;
+      var bGroundFar = b.ground && haversineKm(b.lat, b.lng, airportLat, airportLng) > 5;
+      if (aGroundFar !== bGroundFar) return aGroundFar ? 1 : -1;
       var altA = a.altFt != null ? a.altFt : Infinity;
       var altB = b.altFt != null ? b.altFt : Infinity;
       if (altA !== altB) return altA - altB;

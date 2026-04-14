@@ -410,7 +410,16 @@
     var etaMin = null;
     var eligible = true;
 
-    if (descentEtaMin != null) {
+    if (destinationMatch && altFt != null && distKm != null) {
+      var nominalDescDistKm = altFt / 172;
+      if (distKm > nominalDescDistKm) {
+        var cruiseDistKm = distKm - nominalDescDistKm;
+        var cruiseTimeMin = speedKmPerMin > 0 ? cruiseDistKm / speedKmPerMin : cruiseDistKm / 10;
+        etaMin = cruiseTimeMin + altFt / 1500;
+      } else {
+        etaMin = altFt / 1500;
+      }
+    } else if (descentEtaMin != null) {
       etaMin = descentEtaMin;
       if (distanceEtaMin != null) etaMin = descentEtaMin * 0.8 + distanceEtaMin * 0.2;
     } else if (distanceEtaMin != null) {
@@ -422,6 +431,7 @@
     } else {
       etaMin = 999;
     }
+    if (altFt != null) etaMin = Math.max(etaMin, altFt / 1500);
 
     if (phase === "departing" || phase === "landed") eligible = false;
     if (originMatch) eligible = false;

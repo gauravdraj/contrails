@@ -430,3 +430,49 @@ test("scoreArrivalCandidate handles empty input gracefully", () => {
   assert.ok(Number.isFinite(result.etaMin), "etaMin should be finite");
   assert.strictEqual(typeof result.eligible, "boolean", "eligible should be a boolean");
 });
+
+test("scoreArrivalCandidate ETA reflects altitude for high non-descending dest-confirmed aircraft", () => {
+  var result = core.scoreArrivalCandidate({
+    altFt: 10000, vRate: 0, distKm: 2, spdKts: 200,
+    destinationMatch: true, confidence: "high"
+  });
+
+  assert.ok(result.etaMin >= 6, "etaMin should be at least 6 (was " + result.etaMin + ")");
+  assert.ok(result.etaMin <= 8, "etaMin should be at most 8 (was " + result.etaMin + ")");
+  assert.equal(result.eligible, true);
+});
+
+test("scoreArrivalCandidate nominal profile for far cruise with destination match", () => {
+  var result = core.scoreArrivalCandidate({
+    altFt: 35000, vRate: 0, distKm: 300, spdKts: 450, destinationMatch: true
+  });
+
+  assert.ok(result.etaMin >= 25, "etaMin should be at least 25 (was " + result.etaMin + ")");
+  assert.ok(result.etaMin <= 40, "etaMin should be at most 40 (was " + result.etaMin + ")");
+});
+
+test("scoreArrivalCandidate altitude floor clamps fast-descent proximity candidate", () => {
+  var result = core.scoreArrivalCandidate({
+    altFt: 6000, vRate: -40, distKm: 8, spdKts: 200
+  });
+
+  assert.ok(result.etaMin >= 4, "altitude floor should clamp etaMin to at least 4 (was " + result.etaMin + ")");
+  assert.ok(result.etaMin <= 8, "etaMin should be at most 8 (was " + result.etaMin + ")");
+});
+
+test("scoreArrivalCandidate altitude floor clamps overhead cruiser without destination match", () => {
+  var result = core.scoreArrivalCandidate({
+    altFt: 30000, vRate: 0, distKm: 3, spdKts: 400
+  });
+
+  assert.ok(result.etaMin >= 20, "altitude floor should clamp etaMin to at least 20 (was " + result.etaMin + ")");
+});
+
+test("scoreArrivalCandidate destination-confirmed near nominal descent point uses cruise+descent ETA", () => {
+  var result = core.scoreArrivalCandidate({
+    altFt: 6000, vRate: -12, distKm: 36, spdKts: 250, destinationMatch: true
+  });
+
+  assert.ok(result.etaMin > 4, "etaMin should be greater than 4 (was " + result.etaMin + ")");
+  assert.ok(result.etaMin < 6, "etaMin should be less than 6 (was " + result.etaMin + ")");
+});
