@@ -2919,8 +2919,8 @@
 
   function setSelectedAircraft(id) {
     var normalized = id ? normalizeAircraftHex(id) : null;
-    if (selectedAircraftId === normalized) return;
     ignoreMapClickUntil = Date.now() + 250;
+    if (selectedAircraftId === normalized) return;
     selectedAircraftId = normalized;
     if (pendingPlaneFocus) pendingPlaneFocus = null;
     syncUrlState();
@@ -3011,11 +3011,11 @@
         newThisFrame++;
         var icon = planeIcon(a.track, a.aircraftType, a.private, a.category, a.altFt, a.ground);
         var marker = L.marker([displayPose.lat, displayPose.lng], { icon: icon }).bindPopup(popupHtml, {
-          closeButton: false
+          closeButton: false, autoPan: false
         });
-        marker.on("click", (function(id) {
-          return function() { setSelectedAircraft(id); };
-        })(a.icao24));
+        marker.on("click", (function(id, m) {
+          return function() { setSelectedAircraft(id); m.openPopup(); };
+        })(a.icao24, marker));
         marker.setZIndexOffset(isSelected ? 1000 : 0);
         marker.addTo(aircraftLayer);
         if (policy.showLabels) {
@@ -4017,10 +4017,21 @@
         if (!resp.ok) throw new Error("HTTP " + resp.status);
         var payload = await resp.json();
         var snapshot = buildAircraftSnapshot(payload.ac || [], { includeProximity: false });
-        await fetchRoutesForPlanes(snapshot.aircraft, { sortFn: airportRouteCandidateComparator(lat, lng) });
+
         entry.data = buildLiveScheduleData(iata, lat, lng, snapshot.aircraft);
         entry.ts = Date.now();
         entry.error = null;
+        if (_activeAirportIata === iata && _activeAirportPopup) {
+          _lastScheduleHtml = "";
+          renderSchedulePopup(_activeScheduleDir);
+        }
+
+        await fetchRoutesForPlanes(snapshot.aircraft, { sortFn: airportRouteCandidateComparator(lat, lng) });
+        entry.data = buildLiveScheduleData(iata, lat, lng, snapshot.aircraft);
+        if (_activeAirportIata === iata && _activeAirportPopup) {
+          _lastScheduleHtml = "";
+          renderSchedulePopup(_activeScheduleDir);
+        }
       } catch (err) {
         console.warn("Airport popup traffic fetch failed:", err);
         if (!entry.data) entry.error = "Could not load airport traffic.";
@@ -4068,6 +4079,13 @@
     _activeScheduleDir = "arrivals";
     _lastScheduleHtml = "";
     var entry = getAirportPopupCacheEntry(iata);
+
+    if (!entry.data) {
+      var preview = buildLiveScheduleData(iata, lat, lng, aircraft);
+      if (preview.arrivals.length || preview.departures.length) {
+        entry.data = preview;
+      }
+    }
 
     var liveData = entry.data || buildAirportPopupPlaceholder("Loading airport traffic…");
     var popup = L.popup({ maxWidth: 320, minWidth: 280, closeButton: true, className: "" })
