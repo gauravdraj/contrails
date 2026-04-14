@@ -497,16 +497,13 @@
         matchScheduleRoute(hex);
         var clickedPlane = findAircraftById(hex);
         if (clickedPlane && clickedPlane.callsign && !clickedPlane.private) {
-          var clickRc = routeCache[clickedPlane.callsign];
-          if (!clickRc || (clickRc.destSource !== "fr24-search" && clickRc.destSource !== "schedule")) {
-            tryFr24Search(clickedPlane).then(function() {
-              var m = markerMap[hex];
-              if (m && m.getPopup() && m.getPopup().isOpen()) {
-                var updA = findAircraftById(hex);
-                if (updA) m.getPopup().setContent(buildPopup(updA));
-              }
-            });
-          }
+          tryFr24Search(clickedPlane, { force: true }).then(function() {
+            var m = markerMap[hex];
+            if (m && m.getPopup() && m.getPopup().isOpen()) {
+              var updA = findAircraftById(hex);
+              if (updA) m.getPopup().setContent(buildPopup(updA));
+            }
+          });
         }
       }
       setTimeout(function() {
@@ -2632,12 +2629,13 @@
     }
   }
 
-  async function tryFr24Search(a) {
+  async function tryFr24Search(a, options) {
     if (!a || a.private || !a.callsign) return;
     var variants = callsignVariants(a.callsign);
     if (!variants.length) return;
+    var force = options && options.force;
     var rc = routeCache[a.callsign];
-    if (rc && (rc.destSource === "schedule" || rc.destSource === "fr24-search" || rc.destSource === "cross-validated")) return;
+    if (!force && rc && (rc.destSource === "schedule" || rc.destSource === "fr24-search" || rc.destSource === "cross-validated")) return;
 
     var iataCs = variants.length > 1 ? variants[1] : variants[0];
     var url = (isLocal ? "/api/fr24/search/" : WORKER_URL + "/fr24search/") + encodeURIComponent(iataCs);

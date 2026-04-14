@@ -12,7 +12,7 @@ const FR24_API = "https://api.flightradar24.com/common/v1";
 
 const FR24_CACHE_TTL = 300;
 const PHOTO_CACHE_TTL = 86400;
-const ADSBDB_CACHE_TTL = 21600;
+const ADSBDB_CACHE_TTL = 3600;
 
 const JSON_PROXY_HEADERS = {
   "User-Agent": "contrails/1.0",
