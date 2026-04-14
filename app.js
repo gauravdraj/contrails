@@ -3684,14 +3684,22 @@
 
   var LANDING_SCAN_RADIUS_KM = 350;
 
-  function buildArrivalEntry(a, routeEntry, distKm, options) {
+  function buildArrivalEntry(a, routeEntry, airportIata, distKm, options) {
     options = options || {};
+    var destinationMatch = !!(routeEntry && routeEntry.destination && routeEntry.destination.iata === airportIata);
+    var originMatch = !!(routeEntry && routeEntry.origin && routeEntry.origin.iata === airportIata);
     var scored = scoreArrivalCandidate({
       altFt: a.altFt,
       vRate: a.vRate,
       distKm: distKm,
-      spdKts: a.speedKts
+      spdKts: a.speedKts,
+      private: a.private,
+      confidence: routeEntry && routeEntry.confidence ? routeEntry.confidence : "",
+      phase: routeEntry && routeEntry.phase ? routeEntry.phase : "",
+      destinationMatch: destinationMatch,
+      originMatch: originMatch
     });
+    if (!scored.eligible) return null;
     return {
       callsign: a.callsign,
       originIata: routeEntry && routeEntry.origin ? routeEntry.origin.iata : null,
@@ -3711,9 +3719,7 @@
     var etaA = a.etaMin != null ? a.etaMin : Infinity;
     var etaB = b.etaMin != null ? b.etaMin : Infinity;
     if (etaA !== etaB) return etaA - etaB;
-    var altA = a.altFt != null ? a.altFt : Infinity;
-    var altB = b.altFt != null ? b.altFt : Infinity;
-    if (altA !== altB) return altA - altB;
+    if (!!a.proximity !== !!b.proximity) return a.proximity ? 1 : -1;
     if (a.distKm !== b.distKm) return a.distKm - b.distKm;
     return (a.callsign || "").localeCompare(b.callsign || "");
   }
@@ -3741,7 +3747,8 @@
         if (rc && rc.destination && rc.destination.iata === airportIata) {
           var distKm = haversineKm(a.lat, a.lng, airportLat, airportLng);
           if (distKm > LANDING_SCAN_RADIUS_KM) continue;
-          arrivals.push(buildArrivalEntry(a, rc, distKm));
+          var inboundEntry = buildArrivalEntry(a, rc, airportIata, distKm);
+          if (inboundEntry) arrivals.push(inboundEntry);
         }
       } else {
         if (rc && rc.destination && rc.destination.iata === airportIata) continue;
@@ -3782,10 +3789,11 @@
       if (rc && rc.origin && rc.origin.iata === airportIata) continue;
       if (rc && rc.destination && rc.destination.iata !== airportIata) continue;
       var vRateFpm = a.vRate != null ? a.vRate * 60 : 0;
-      if (a.altFt == null || a.altFt >= 8000 || vRateFpm > -500) continue;
+      if (a.altFt == null || a.altFt > 6000 || vRateFpm > -500) continue;
       var distKm = haversineKm(a.lat, a.lng, airportLat, airportLng);
       if (distKm > 20) continue;
-      arrivals.push(buildArrivalEntry(a, rc, distKm, { proximity: true }));
+      var fallbackEntry = buildArrivalEntry(a, rc, airportIata, distKm, { proximity: true });
+      if (fallbackEntry) arrivals.push(fallbackEntry);
     }
     arrivals.sort(compareArrivalEntries);
     departures.sort(function(a, b) {
@@ -3832,15 +3840,12 @@
         var flightNum = escapeHtml((cs || "\u2014").replace(/^([A-Za-z]+)(\d+)$/, "$1 $2"));
         var fromIata = f.originIata ? escapeHtml(f.originIata) : "\u2014";
         var altStr = f.altFt != null ? f.altFt.toLocaleString() + "ft" : "\u2014";
-        var distNm = Math.round(f.distKm / 1.852) + "nm";
         var etaStr = formatLandingEta(f.etaMin);
-        if (etaStr && f.proximity) etaStr += " (est.)";
         html += '<div class="sched-row" data-callsign="' + escapeHtml(cs) + '">' +
           '<span class="sched-dot cyan live"></span>' +
           '<span class="sched-flight">' + flightNum + '</span>' +
           '<span class="sched-route">from ' + fromIata + (f.aircraftType ? ' \u00b7 ' + escapeHtml(f.aircraftType) : '') + '</span>' +
           '<span class="sched-alt">' + altStr + '</span>' +
-          '<span class="sched-dist">' + distNm + '</span>' +
           (etaStr ? '<span class="sched-eta">' + etaStr + '</span>' : '') +
           '</div>';
       }

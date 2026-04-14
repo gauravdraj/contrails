@@ -326,3 +326,58 @@ test("scoreArrivalCandidate penalizes climbing aircraft", () => {
 
   assert.ok(descending.score < climbing.score);
 });
+
+test("scoreArrivalCandidate rejects climbing aircraft even with destination match", () => {
+  const candidate = core.scoreArrivalCandidate({
+    altFt: 2500,
+    vRate: 12,
+    distKm: 5,
+    spdKts: 160,
+    destinationMatch: true,
+    confidence: "high",
+    phase: "departing"
+  });
+
+  assert.equal(candidate.eligible, false);
+});
+
+test("scoreArrivalCandidate rejects aircraft that originated at the selected airport", () => {
+  const candidate = core.scoreArrivalCandidate({
+    altFt: 1800,
+    vRate: -10,
+    distKm: 4,
+    spdKts: 130,
+    destinationMatch: true,
+    originMatch: true,
+    confidence: "high",
+    phase: "arriving"
+  });
+
+  assert.equal(candidate.eligible, false);
+});
+
+test("scoreArrivalCandidate rejects fallback private traffic without strong destination evidence", () => {
+  const candidate = core.scoreArrivalCandidate({
+    altFt: 1500,
+    vRate: -12,
+    distKm: 6,
+    spdKts: 120,
+    private: true
+  });
+
+  assert.equal(candidate.eligible, false);
+});
+
+test("scoreArrivalCandidate keeps high-confidence destination-matched arrivals eligible", () => {
+  const candidate = core.scoreArrivalCandidate({
+    altFt: 2200,
+    vRate: -12,
+    distKm: 7,
+    spdKts: 150,
+    destinationMatch: true,
+    confidence: "high",
+    phase: "arriving"
+  });
+
+  assert.equal(candidate.eligible, true);
+});

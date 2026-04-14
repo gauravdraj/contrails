@@ -394,14 +394,21 @@
     var altFt = isFinite(input.altFt) ? Math.max(0, input.altFt) : null;
     var distKm = isFinite(input.distKm) ? Math.max(0, input.distKm) : null;
     var spdKts = isFinite(input.spdKts) ? Math.max(0, input.spdKts) : 0;
+    var confidence = input.confidence || "";
+    var phase = input.phase || "";
+    var privateAircraft = !!input.private;
+    var destinationMatch = !!input.destinationMatch;
+    var originMatch = !!input.originMatch;
     var vRateFpm = isFinite(input.vRate) ? input.vRate * 60 : null;
     var descending = vRateFpm != null && vRateFpm <= -200;
+    var climbing = vRateFpm != null && vRateFpm >= 150;
     var speedKmPerMin = spdKts > 0 ? spdKts * 1.852 / 60 : 0;
     var distanceEtaMin = distKm != null && speedKmPerMin > 0 ? distKm / speedKmPerMin : null;
     var descentEtaMin = descending && altFt != null
       ? altFt / Math.max(Math.abs(vRateFpm), 300)
       : null;
     var etaMin = null;
+    var eligible = true;
 
     if (descentEtaMin != null) {
       etaMin = descentEtaMin;
@@ -416,25 +423,45 @@
       etaMin = 999;
     }
 
-    var score = etaMin;
+    if (phase === "departing" || phase === "landed") eligible = false;
+    if (originMatch) eligible = false;
+    if (climbing) eligible = false;
+    if (destinationMatch) {
+      if (privateAircraft && confidence !== "high") eligible = false;
+    } else {
+      if (privateAircraft) eligible = false;
+      if (altFt == null || altFt > 6000) eligible = false;
+      if (distKm == null || distKm > 12) eligible = false;
+      if (!descending) eligible = false;
+    }
+
+    var score = etaMin * 1.5;
     if (altFt == null) {
-      score += 80;
+      score += 120;
     } else {
-      score += altFt / 1000;
-      if (altFt > 12000) score += (altFt - 12000) / 500;
-      if (altFt > 25000) score += 20;
+      score += altFt / 400;
+      if (altFt > 8000) score += (altFt - 8000) / 200;
+      if (altFt > 15000) score += 50;
     }
-    if (distKm == null) score += 30;
-    else score += distKm * 0.25;
-    if (!descending) {
+    if (distKm == null) score += 20;
+    else score += distKm * 0.1;
+    if (climbing) {
+      score += 60 + Math.min(40, vRateFpm / 150);
+    } else if (!descending) {
       score += 35;
-      if (vRateFpm != null && vRateFpm > 200) score += Math.min(25, vRateFpm / 200);
     } else {
-      score -= Math.min(12, Math.abs(vRateFpm) / 250);
+      score -= Math.min(25, Math.abs(vRateFpm) / 120);
     }
-    if (!spdKts) score += descending ? 6 : 20;
+    if (!spdKts) score += descending ? 8 : 20;
+    if (destinationMatch) score -= 10;
+    else score += 12;
+    if (confidence === "low") score += 12;
+    else if (confidence && confidence !== "high") score += 5;
+    if (privateAircraft) score += destinationMatch && confidence === "high" ? 2 : 25;
+    if (!eligible) score += 1000;
 
     return {
+      eligible: eligible,
       score: roundTo(Math.max(0, score), 2),
       etaMin: roundTo(Math.max(0, etaMin), 2)
     };
