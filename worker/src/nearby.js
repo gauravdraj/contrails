@@ -1,8 +1,8 @@
 import { MAJOR_AIRPORTS } from "./airports.js";
-import { fetchRouteAirports } from "./adsbdb.js";
+import { enrichRoutes } from "./enrich.js";
 import { bearingDeg, cardinalFromBearing, haversineKm } from "./geo.js";
 import { json, plainText } from "./http.js";
-import { fetchCachedTrack, extractOriginDest, mergeRoutes, detectPhase, formatRouteLabel } from "./opensky.js";
+import { formatRouteLabel } from "./opensky.js";
 
 const ADSB_API = "https://api.adsb.lol/v2";
 const MAP_URL = "https://gauravdraj.github.io/contrails";
@@ -159,41 +159,6 @@ function selectVisiblePlanes(planes) {
   return visible;
 }
 
-async function fetchRouteMap(visible, env, ctx) {
-  const routeMap = Object.create(null);
-  const routable = visible.filter((plane) => plane.callsign && !plane.priv);
-  if (!routable.length) return routeMap;
-
-  const cache = caches.default;
-  const results = await Promise.allSettled(
-    routable.map(async (plane) => {
-      const [trackResult, airportsResult] = await Promise.allSettled([
-        plane.icao24 ? fetchCachedTrack(plane.icao24, cache, ctx, env) : Promise.resolve(null),
-        fetchRouteAirports(plane.callsign),
-      ]);
-      const track = trackResult.status === "fulfilled" ? trackResult.value : null;
-      const airports = airportsResult.status === "fulfilled" ? airportsResult.value : null;
-
-      const trackOD = track ? extractOriginDest(track) : null;
-      const cs = plane.callsign.trim().toUpperCase();
-      const phase = detectPhase(plane.altFt, plane.vRate, plane.altFt == null);
-
-      if (trackOD?.origin || trackOD?.destination) {
-        routeMap[cs] = {
-          origin: trackOD.origin,
-          destination: trackOD.destination,
-          phase,
-          airports,
-        };
-      } else if (airports) {
-        routeMap[cs] = { airports, phase };
-      }
-    }),
-  );
-
-  return routeMap;
-}
-
 function angleDiff(a, b) {
   const delta = ((b - a) % 360 + 360) % 360;
   return delta > 180 ? 360 - delta : delta;
@@ -214,51 +179,14 @@ function nearestMajorAirport(plane) {
   return best;
 }
 
-function nearestAirport(plane, airports) {
-  let best = null;
-  let bestDist = Infinity;
-  let bestIdx = -1;
-  for (let index = 0; index < airports.length; index++) {
-    const airport = airports[index];
-    const airportLat = airport.lat ?? airport.latitude;
-    const airportLon = airport.lon ?? airport.longitude;
-    if (airportLat == null || airportLon == null) continue;
-    const distance = haversineKm(plane.lat, plane.lng, airportLat, airportLon);
-    if (distance >= bestDist) continue;
-    best = airport;
-    bestDist = distance;
-    bestIdx = index;
-  }
-  return { airport: best, dist: bestDist, idx: bestIdx };
-}
-
-function airportLabel(airport) {
-  return airport.iata || airport.location || "?";
-}
-
 function formatRouteContext(plane, routeData) {
   if (!routeData) return null;
+
+  if (routeData.display) return routeData.display;
 
   if (routeData.origin || routeData.destination) {
     const label = formatRouteLabel(routeData.origin, routeData.destination, routeData.phase);
     if (label) return label;
-  }
-
-  const airports = routeData.airports || routeData;
-  if (Array.isArray(airports) && airports.length >= 2) {
-    if (plane.altFt <= LANDING_MAX_FT && (plane.vertical === "descending" || plane.vertical === "climbing")) {
-      const { airport, dist, idx } = nearestAirport(plane, airports);
-      if (airport && dist <= LANDING_AIRPORT_KM) {
-        const name = airportLabel(airport);
-        if (plane.vertical === "descending") {
-          const fromAirport = idx > 0 ? airports[idx - 1] : airports[0];
-          return `Landing at ${name} — from ${airportLabel(fromAirport)}`;
-        }
-        const toAirport = idx < airports.length - 1 ? airports[idx + 1] : airports[airports.length - 1];
-        return `Departing ${name} — to ${airportLabel(toAirport)}`;
-      }
-    }
-    return airports.map((airport) => airportLabel(airport)).join(" → ");
   }
 
   if (plane.altFt <= LANDING_MAX_FT && plane.vertical === "descending") {
@@ -328,7 +256,7 @@ export async function handleNearby(url, env, ctx) {
 
   let routeMap = Object.create(null);
   try {
-    routeMap = await fetchRouteMap(visible, env, ctx);
+    routeMap = await enrichRoutes(visible, env, ctx);
   } catch (_) {
     routeMap = Object.create(null);
   }

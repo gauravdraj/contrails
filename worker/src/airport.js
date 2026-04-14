@@ -1,13 +1,11 @@
 import { MAJOR_AIRPORTS } from "./airports.js";
-import { fetchCachedRouteEntry } from "./adsbdb.js";
+import { enrichRoutes } from "./enrich.js";
 import { haversineKm } from "./geo.js";
 import { json, plainText } from "./http.js";
-import { fetchCachedTrack, mergeRoutes, detectPhase, formatRouteLabel } from "./opensky.js";
 
 const ADSB_API = "https://api.adsb.lol/v2";
 const MAP_URL = "https://gauravdraj.github.io/contrails";
 const AIRPORT_RADIUS_NM = 65;
-const ADSBDB_CACHE_TTL = 3600;
 const MAX_RESULTS = 15;
 
 const ARRIVAL_PROXIMITY_KM = 20;
@@ -182,35 +180,6 @@ export function buildAirportPlane(airportLat, airportLng, snapshot) {
   };
 }
 
-export async function fetchAirportRouteMap(planes, env, ctx) {
-  const routeMap = Object.create(null);
-  const routable = planes.filter((p) => p.callsign && !p.priv);
-  if (!routable.length) return routeMap;
-
-  const cache = caches.default;
-  await Promise.allSettled(
-    routable.map(async (plane) => {
-      const [trackResult, routeResult] = await Promise.allSettled([
-        plane.icao24 ? fetchCachedTrack(plane.icao24, cache, ctx, env) : Promise.resolve(null),
-        fetchCachedRouteEntry(plane.callsign, cache, ctx, ADSBDB_CACHE_TTL),
-      ]);
-      const track = trackResult.status === "fulfilled" ? trackResult.value : null;
-      const adsbdb = routeResult.status === "fulfilled" ? routeResult.value : null;
-      const merged = mergeRoutes(track, adsbdb, {
-        callsign: plane.callsign,
-        altFt: plane.altFt,
-        vRate: plane.vRate,
-      });
-      if (!merged) return;
-      const phase = detectPhase(plane.altFt, plane.vRate, plane.ground);
-      const cs = plane.callsign.trim().toUpperCase();
-      routeMap[cs] = { ...merged, phase, display: formatRouteLabel(merged.origin, merged.destination, phase) };
-    }),
-  );
-
-  return routeMap;
-}
-
 function verticalState(rate) {
   if (rate == null || Math.abs(rate) < VERT_RATE_THRESHOLD) return "level";
   return rate > 0 ? "climbing" : "descending";
@@ -354,7 +323,7 @@ export async function handleAirport(url, env, ctx) {
 
   let routeMap = Object.create(null);
   try {
-    routeMap = await fetchAirportRouteMap(planes, env, ctx);
+    routeMap = await enrichRoutes(planes, env, ctx);
   } catch (_) {
     routeMap = Object.create(null);
   }

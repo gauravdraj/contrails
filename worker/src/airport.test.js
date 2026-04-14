@@ -4,7 +4,6 @@ import assert from "node:assert/strict";
 import {
   resolveAirport,
   buildAirportPlane,
-  fetchAirportRouteMap,
   handleAirport,
   estimateEtaMin,
   shortMiles,
@@ -138,43 +137,6 @@ test("buildAirportPlane handles missing optional fields", () => {
   assert.equal(plane.speedKts, null);
   assert.equal(plane.vRate, null);
   assert.equal(plane.airline, null);
-});
-
-test("fetchAirportRouteMap skips private aircraft", async (t) => {
-  const originalCaches = globalThis.caches;
-  const originalFetch = globalThis.fetch;
-
-  const mockCache = { match: async () => null, put: async () => {} };
-  globalThis.caches = { default: mockCache };
-
-  let fetchedCallsigns = [];
-  globalThis.fetch = async (url) => {
-    const urlStr = typeof url === "string" ? url : url.toString();
-    if (urlStr.includes("adsbdb")) {
-      const cs = urlStr.split("/").pop();
-      fetchedCallsigns.push(cs);
-    }
-    return new Response(JSON.stringify({ response: {} }), { status: 200 });
-  };
-
-  t.after(() => {
-    globalThis.caches = originalCaches;
-    globalThis.fetch = originalFetch;
-  });
-
-  const planes = [
-    { callsign: "UAL123", icao24: "a12345", altFt: 5000, vRate: -500, ground: false, priv: false },
-    { callsign: "N12345", icao24: "b12345", altFt: 8000, vRate: 0, ground: false, priv: true },
-  ];
-
-  const routeMap = await fetchAirportRouteMap(planes, {}, { waitUntil: () => {} });
-  assert.ok(!fetchedCallsigns.includes("N12345"));
-  assert.equal(typeof routeMap, "object");
-});
-
-test("fetchAirportRouteMap returns empty for no routable planes", async () => {
-  const routeMap = await fetchAirportRouteMap([], {}, { waitUntil: () => {} });
-  assert.deepEqual(Object.keys(routeMap), []);
 });
 
 test("handleAirport returns 400 for invalid IATA format", async () => {
