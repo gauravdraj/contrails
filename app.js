@@ -3812,14 +3812,14 @@
         var hasOriginHere = rc && rc.origin && rc.origin.iata === airportIata;
         if (distKm > (hasOriginHere ? 8 : 5)) continue;
         var spdKts = a.speedKts || 0;
-        var status = spdKts > 0 ? "Taxiing" : "Parked";
+        var status = spdKts >= 50 ? "Departing" : spdKts >= 5 ? "Taxiing" : "Parked";
         var runwayDistKm = null;
         var rwys = runwayData && runwayData[airportIata];
         if (rwys) {
           var minD = Infinity;
           for (var r = 0; r < rwys.length; r++) {
             var rw = rwys[r];
-            var d = haversineKm(a.lat, a.lng, (rw[0] + rw[3]) / 2, (rw[1] + rw[4]) / 2);
+            var d = Math.min(haversineKm(a.lat, a.lng, rw[0], rw[1]), haversineKm(a.lat, a.lng, rw[3], rw[4]));
             if (d < minD) minD = d;
           }
           if (minD < Infinity) runwayDistKm = minD;
@@ -3883,12 +3883,15 @@
     arrivals = landed.concat(arrivals);
     if (arrivals.length > 15) arrivals.length = 15;
     departures.sort(function(a, b) {
-      var aTaxi = a.speedKts > 0 ? 0 : 1;
-      var bTaxi = b.speedKts > 0 ? 0 : 1;
-      if (aTaxi !== bTaxi) return aTaxi - bTaxi;
-      if (aTaxi === 0) {
-        if (a.runwayDistKm != null && b.runwayDistKm != null)
-          return a.runwayDistKm - b.runwayDistKm;
+      var statusOrd = { Departing: 0, Taxiing: 1, Parked: 2 };
+      var aOrd = statusOrd[a.status] != null ? statusOrd[a.status] : 2;
+      var bOrd = statusOrd[b.status] != null ? statusOrd[b.status] : 2;
+      if (aOrd !== bOrd) return aOrd - bOrd;
+      if (aOrd <= 1) {
+        if (a.runwayDistKm != null && b.runwayDistKm != null) {
+          var rDiff = a.runwayDistKm - b.runwayDistKm;
+          if (rDiff !== 0) return rDiff;
+        }
         return b.speedKts - a.speedKts;
       }
       if (a.hasDest !== b.hasDest) return a.hasDest ? -1 : 1;
@@ -3949,8 +3952,8 @@
         var cs = f.callsign || "";
         var flightNum = escapeHtml((cs || "\u2014").replace(/^([A-Za-z]+)(\d+)$/, "$1 $2"));
         var destIata = f.destIata ? escapeHtml(f.destIata) : "\u2014";
-        var spdStr = f.speedKts > 0 ? formatSpeedMph(f.speedKts) + "mph" : "\u2014";
-        var dotColor = f.status === "Taxiing" ? "green" : "gray";
+        var spdStr = f.speedKts >= 5 ? formatSpeedMph(f.speedKts) + "mph" : "\u2014";
+        var dotColor = f.status === "Departing" ? "cyan live" : f.status === "Taxiing" ? "green" : "gray";
         html += '<div class="sched-row" data-callsign="' + escapeHtml(cs) +
           '" data-hex="' + escapeHtml(f.hex || "") +
           '" data-lat="' + (f.lat != null ? String(f.lat) : "") +

@@ -99,17 +99,23 @@ export function filterArrivals(planes, routeMap, airport) {
   return arrivals.slice(0, MAX_RESULTS);
 }
 
+const DEPARTURE_STATUS_PRIORITY = { Departing: 0, Taxiing: 1, Parked: 2 };
+
 export function filterDepartures(planes, routeMap, airport) {
   const departures = [];
   for (const plane of planes) {
     if (!plane.ground || !plane.callsign) continue;
     const cs = plane.callsign.trim().toUpperCase();
     const route = cs ? routeMap[cs] : null;
+
+    if (route?.destination?.iata === airport.iata) continue;
+
     const originConfirmed = route?.origin?.iata === airport.iata;
     const maxDist = originConfirmed ? DEPARTURE_ROUTE_RADIUS_KM : DEPARTURE_FALLBACK_RADIUS_KM;
     if (plane.distKm > maxDist) continue;
 
-    const status = (plane.speedKts != null && plane.speedKts >= 5) ? "Taxiing" : "Parked";
+    const spd = plane.speedKts ?? 0;
+    const status = spd >= 50 ? "Departing" : spd >= 5 ? "Taxiing" : "Parked";
     departures.push({
       ...plane,
       destination: route?.destination || null,
@@ -118,9 +124,14 @@ export function filterDepartures(planes, routeMap, airport) {
   }
 
   departures.sort((a, b) => {
-    if (a.status === "Taxiing" && b.status !== "Taxiing") return -1;
-    if (a.status !== "Taxiing" && b.status === "Taxiing") return 1;
-    if (a.status === "Taxiing") return (b.speedKts ?? 0) - (a.speedKts ?? 0);
+    const pri = DEPARTURE_STATUS_PRIORITY[a.status] - DEPARTURE_STATUS_PRIORITY[b.status];
+    if (pri !== 0) return pri;
+    if (a.status === "Departing" || a.status === "Taxiing") {
+      return (b.speedKts ?? 0) - (a.speedKts ?? 0);
+    }
+    const aHas = a.destination ? 0 : 1;
+    const bHas = b.destination ? 0 : 1;
+    if (aHas !== bHas) return aHas - bHas;
     return (a.distKm ?? Infinity) - (b.distKm ?? Infinity);
   });
 
@@ -221,7 +232,7 @@ export function formatDepartureEntry(num, plane) {
   if (plane.destination?.iata) line1 += ` \u2192 ${plane.destination.iata}`;
 
   let line2 = "   " + plane.status;
-  if (plane.status === "Taxiing" && plane.speedKts != null) {
+  if ((plane.status === "Taxiing" || plane.status === "Departing") && plane.speedKts != null) {
     line2 += `, ${Math.round(plane.speedKts * 1.15078)} mph`;
   }
 

@@ -444,20 +444,97 @@ test("filterDepartures excludes planes without callsign", () => {
   assert.equal(result.length, 0);
 });
 
-test("filterDepartures sorts taxiing first by speed desc, then parked by distance", () => {
+test("filterDepartures sorts departing first, then taxiing, then parked", () => {
   const airport = { iata: "SFO", lat: 37.62, lng: -122.38 };
   const planes = [
     { callsign: "AAL1", ground: true, altFt: 0, distKm: 1, speedKts: 0 },
     { callsign: "AAL2", ground: true, altFt: 0, distKm: 3, speedKts: 15 },
     { callsign: "AAL3", ground: true, altFt: 0, distKm: 2, speedKts: 8 },
     { callsign: "AAL4", ground: true, altFt: 0, distKm: 0.5, speedKts: 0 },
+    { callsign: "AAL5", ground: true, altFt: 0, distKm: 1, speedKts: 60 },
+    { callsign: "AAL6", ground: true, altFt: 0, distKm: 2, speedKts: 55 },
   ];
   const routeMap = {};
   const result = filterDepartures(planes, routeMap, airport);
-  assert.equal(result[0].callsign, "AAL2");
-  assert.equal(result[1].callsign, "AAL3");
-  assert.equal(result[2].callsign, "AAL4");
-  assert.equal(result[3].callsign, "AAL1");
+  assert.equal(result[0].callsign, "AAL5");
+  assert.equal(result[0].status, "Departing");
+  assert.equal(result[1].callsign, "AAL6");
+  assert.equal(result[1].status, "Departing");
+  assert.equal(result[2].callsign, "AAL2");
+  assert.equal(result[2].status, "Taxiing");
+  assert.equal(result[3].callsign, "AAL3");
+  assert.equal(result[3].status, "Taxiing");
+  assert.equal(result[4].callsign, "AAL4");
+  assert.equal(result[4].status, "Parked");
+  assert.equal(result[5].callsign, "AAL1");
+  assert.equal(result[5].status, "Parked");
+});
+
+test("filterDepartures assigns Departing status for speedKts >= 50", () => {
+  const airport = { iata: "SFO", lat: 37.62, lng: -122.38 };
+  const planes = [
+    { callsign: "UAL900", ground: true, altFt: 0, distKm: 2, speedKts: 55 },
+  ];
+  const routeMap = {};
+  const result = filterDepartures(planes, routeMap, airport);
+  assert.equal(result.length, 1);
+  assert.equal(result[0].status, "Departing");
+});
+
+test("filterDepartures assigns Taxiing for speedKts 5-49", () => {
+  const airport = { iata: "SFO", lat: 37.62, lng: -122.38 };
+  const planes = [
+    { callsign: "UAL901", ground: true, altFt: 0, distKm: 2, speedKts: 5 },
+    { callsign: "UAL902", ground: true, altFt: 0, distKm: 2, speedKts: 49 },
+  ];
+  const routeMap = {};
+  const result = filterDepartures(planes, routeMap, airport);
+  assert.equal(result[0].status, "Taxiing");
+  assert.equal(result[1].status, "Taxiing");
+});
+
+test("filterDepartures assigns Parked for speedKts < 5", () => {
+  const airport = { iata: "SFO", lat: 37.62, lng: -122.38 };
+  const planes = [
+    { callsign: "UAL903", ground: true, altFt: 0, distKm: 2, speedKts: 4 },
+    { callsign: "UAL904", ground: true, altFt: 0, distKm: 2, speedKts: 0 },
+    { callsign: "UAL905", ground: true, altFt: 0, distKm: 2, speedKts: null },
+  ];
+  const routeMap = {};
+  const result = filterDepartures(planes, routeMap, airport);
+  for (const dep of result) assert.equal(dep.status, "Parked");
+});
+
+test("filterDepartures excludes landed arrivals whose destination matches airport", () => {
+  const airport = { iata: "SFO", lat: 37.62, lng: -122.38 };
+  const planes = [
+    { callsign: "UAL100", ground: true, altFt: 0, distKm: 2, speedKts: 8 },
+    { callsign: "DAL200", ground: true, altFt: 0, distKm: 3, speedKts: 5 },
+  ];
+  const routeMap = {
+    UAL100: { origin: { iata: "LAX" }, destination: { iata: "SFO" } },
+    DAL200: { origin: { iata: "SFO" }, destination: { iata: "LAX" } },
+  };
+  const result = filterDepartures(planes, routeMap, airport);
+  assert.equal(result.length, 1);
+  assert.equal(result[0].callsign, "DAL200");
+});
+
+test("filterDepartures parked sort: hasDest first then distKm ascending", () => {
+  const airport = { iata: "SFO", lat: 37.62, lng: -122.38 };
+  const planes = [
+    { callsign: "AAL10", ground: true, altFt: 0, distKm: 1, speedKts: 0 },
+    { callsign: "AAL11", ground: true, altFt: 0, distKm: 3, speedKts: 0 },
+    { callsign: "AAL12", ground: true, altFt: 0, distKm: 2, speedKts: 0 },
+  ];
+  const routeMap = {
+    AAL11: { origin: { iata: "SFO" }, destination: { iata: "LAX" } },
+  };
+  const result = filterDepartures(planes, routeMap, airport);
+  assert.equal(result[0].callsign, "AAL11");
+  assert.ok(result[0].destination);
+  assert.equal(result[1].callsign, "AAL10");
+  assert.equal(result[2].callsign, "AAL12");
 });
 
 test("formatArrivalEntry shows airline name, type, route, altitude, distance, ETA", () => {
@@ -520,6 +597,18 @@ test("formatDepartureEntry shows taxiing with mph", () => {
   assert.ok(text.includes("\u2192 LAX"));
   assert.ok(text.includes("Taxiing"));
   assert.ok(text.includes(`${Math.round(15 * 1.15078)} mph`));
+});
+
+test("formatDepartureEntry shows departing with mph", () => {
+  const plane = {
+    callsign: "UAL456", icao24: "e55555", type: "B772", airline: "United",
+    speedKts: 60, priv: false, status: "Departing",
+    destination: { iata: "ORD" },
+  };
+  const text = formatDepartureEntry(1, plane);
+  assert.ok(text.includes("Departing"));
+  assert.ok(text.includes(`${Math.round(60 * 1.15078)} mph`));
+  assert.ok(text.includes("\u2192 ORD"));
 });
 
 test("formatDepartureEntry shows parked without speed", () => {
@@ -710,7 +799,7 @@ test("handleAirport format=json departure entries have expected fields", async (
     assert.ok("type" in dep);
     assert.ok("status" in dep);
     assert.ok("speedKts" in dep);
-    assert.ok(dep.status === "Taxiing" || dep.status === "Parked");
+    assert.ok(dep.status === "Departing" || dep.status === "Taxiing" || dep.status === "Parked");
   }
 });
 
@@ -845,7 +934,7 @@ test("handleAirport arrivals sorted lowest altitude first in JSON", async (t) =>
   }
 });
 
-test("handleAirport departures sorted taxiing first in JSON", async (t) => {
+test("handleAirport departures sorted by status priority in JSON", async (t) => {
   const originalCaches = globalThis.caches;
   const originalFetch = globalThis.fetch;
   globalThis.caches = { default: { match: async () => null, put: async () => {} } };
@@ -867,13 +956,11 @@ test("handleAirport departures sorted taxiing first in JSON", async (t) => {
   const url = new URL("https://worker.test/airport/SFO?dir=departures&format=json");
   const resp = await handleAirport(url, {}, { waitUntil: () => {} });
   const body = await resp.json();
+  const priority = { Departing: 0, Taxiing: 1, Parked: 2 };
   if (body.departures.length >= 2) {
-    let seenParked = false;
-    for (const dep of body.departures) {
-      if (dep.status === "Parked") seenParked = true;
-      if (dep.status === "Taxiing" && seenParked) {
-        assert.fail("Taxiing entry found after Parked entry — should be sorted taxiing-first");
-      }
+    for (let i = 1; i < body.departures.length; i++) {
+      assert.ok(priority[body.departures[i].status] >= priority[body.departures[i - 1].status],
+        `departure ${i} status ${body.departures[i].status} should not precede ${body.departures[i - 1].status}`);
     }
   }
 });
