@@ -1,6 +1,7 @@
 import { fetchCachedRouteEntry } from "./adsbdb.js";
 import { buildSchedulePayload } from "./fr24.js";
 import { CORS_HEADERS, json } from "./http.js";
+import { handleAirport } from "./airport.js";
 import { handleNearby } from "./nearby.js";
 import { fetchCachedTrack, mergeRoutes, detectPhase, formatRouteLabel } from "./opensky.js";
 import { fetchTraffic } from "./providers.js";
@@ -58,6 +59,7 @@ export default {
     if (url.pathname.startsWith("/schedule/")) return handleSchedule(url, ctx);
     if (url.pathname.startsWith("/fr24search/")) return handleFr24Search(url, ctx);
     if (url.pathname === "/nearby") return handleNearby(url, env, ctx);
+    if (url.pathname.startsWith("/airport/")) return handleAirport(url, env, ctx);
 
     return json(404, { error: "Not found" });
   },
