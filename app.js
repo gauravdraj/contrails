@@ -1702,17 +1702,16 @@
   }
 
   function formatClientRouteLabel(origin, destination, phase) {
-    var oIata = origin ? origin.iata : null;
-    var oName = oIata ? airportDisplayName(oIata) : null;
-    var dName = null;
+    var oLabel = origin && origin.iata ? airportDisplayName(origin.iata) : null;
+    var dLabel = null;
     if (destination && destination.region) {
-      dName = destination.display || destination.region;
+      dLabel = destination.display || destination.region;
     } else if (destination && destination.iata) {
-      dName = airportDisplayName(destination.iata);
+      dLabel = airportDisplayName(destination.iata);
     }
-    if (oName && dName) return oName + " to " + dName;
-    if (oName) return oName;
-    if (dName) return dName;
+    if (oLabel && dLabel) return oLabel + " to " + dLabel;
+    if (oLabel) return oLabel;
+    if (dLabel) return dLabel;
     return "";
   }
 
@@ -1991,8 +1990,16 @@
     }
   }
 
+  function decodeUnicodeEscapes(text) {
+    if (typeof text !== "string" || text.indexOf("\\u") === -1) return text;
+    return text.replace(/\\u([0-9a-fA-F]{4})/g, function(_, hex) {
+      return String.fromCharCode(parseInt(hex, 16));
+    });
+  }
+
   function airportCityName(iata) {
-    return airportCityIndex[iata] || null;
+    var city = airportCityIndex[iata] || null;
+    return city ? decodeUnicodeEscapes(city) : null;
   }
 
   function airportDisplayName(iata) {
@@ -2271,7 +2278,7 @@
     if (!airline && !routeDisplay) return "";
     var html = "";
     if (airline) {
-      html += '<div class="popup-airline">' + escapeHtml(airline) + "</div>";
+      html += '<span class="popup-airline" style="display:inline;margin-top:0;white-space:nowrap">&nbsp;&middot;&nbsp;' + escapeHtml(airline) + "</span>";
     }
     if (routeDisplay) {
       html += '<div class="popup-route">' + escapeHtml(routeDisplay) + "</div>";
