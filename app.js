@@ -457,7 +457,6 @@
             event.stopPropagation();
             var dir = toggleBtn.getAttribute("data-dir");
             if (dir) {
-              if (_activeAirportIata) delete _liveScheduleCache[_activeAirportIata];
               _lastScheduleHtml = "";
               renderSchedulePopup(dir);
             }
@@ -465,13 +464,26 @@
           }
           var schedRow = t.closest(".sched-row");
           if (schedRow) {
+            var hex = schedRow.getAttribute("data-hex");
             var cs = schedRow.getAttribute("data-callsign");
+            var lat = parseFloat(schedRow.getAttribute("data-lat") || "");
+            var lng = parseFloat(schedRow.getAttribute("data-lng") || "");
+            if (_activeAirportPopup) map.closePopup(_activeAirportPopup);
+            if (hex && focusAircraftById(hex, { center: true, openPopup: true, minZoom: 12 })) return;
+            if (hex && isFinite(lat) && isFinite(lng)) {
+              var label = (cs || hex).toUpperCase();
+              queuePendingPlaneFocus(hex, {
+                keepUrl: true,
+                label: label,
+                reason: "airport-popup"
+              });
+              setControlsFeedback("Centering on " + label + "…", "info", { timeoutMs: 4500 });
+              centerMapOnPlane(lat, lng, SEARCH_MIN_ZOOM);
+              return;
+            }
             if (cs) {
               var plane = findAircraftByQuery({ type: "callsign", value: cs.toUpperCase(), variants: [cs.toUpperCase()] });
-              if (plane) {
-                if (_activeAirportPopup) map.closePopup(_activeAirportPopup);
-                focusAircraftById(plane.icao24, { center: true, openPopup: true, minZoom: 12 });
-              }
+              if (plane) focusAircraftById(plane.icao24, { center: true, openPopup: true, minZoom: 12 });
             }
             return;
           }
@@ -1298,12 +1310,11 @@
     }
   }
 
-  function processAircraft(ac) {
-    var now = Date.now();
-    if (lastFetchTs) updatePlaybackDelay(now - lastFetchTs);
-    else updatePlaybackDelay(null);
-    lastFetchTs = now;
-    aircraft = [];
+  function buildAircraftSnapshot(ac, options) {
+    options = options || {};
+    var now = options.now != null ? options.now : Date.now();
+    var includeProximity = options.includeProximity !== false;
+    var snapshot = [];
     var activeIds = {};
     for (var i = 0; i < ac.length; i++) {
       var s = ac[i];
@@ -1322,14 +1333,15 @@
       var priv = isPrivate(callsign, s.t || null, s.category || null);
       var squawk = s.squawk || null;
       var emerg = s.emergency && s.emergency !== "none" ? s.emergency : null;
-      var metrics = proximityMetrics(s.lat, s.lon, s.dir != null ? s.dir : 0);
-      var viewDistKm = viewportDistanceKm(s.lat, s.lon);
+      var baseBearing = s.dir != null ? s.dir : (heading != null ? heading : 0);
+      var metrics = includeProximity ? proximityMetrics(s.lat, s.lon, baseBearing) : null;
+      var viewDistKm = includeProximity ? viewportDistanceKm(s.lat, s.lon) : null;
       var altFt = isGround ? null : (typeof s.alt_baro === "number" ? Math.round(s.alt_baro) : null);
-      var slantDistanceKm = metrics.distKm != null ? slantKm(metrics.distKm, altFt) : null;
+      var slantDistanceKm = includeProximity && metrics && metrics.distKm != null ? slantKm(metrics.distKm, altFt) : null;
       var reportTs = now - Math.max(0, (s.seen_pos || 0) * 1000);
       activeIds[hex] = true;
 
-      aircraft.push({
+      snapshot.push({
         icao24: hex,
         callsign: callsign,
         aircraftType: s.t || null,
@@ -1341,11 +1353,11 @@
         speedKts: s.gs != null ? Math.round(s.gs) : null,
         track: heading,
         vRate: s.baro_rate != null ? s.baro_rate / 60 : null,
-        distKm: metrics.distKm,
+        distKm: metrics ? metrics.distKm : null,
         slantKm: slantDistanceKm != null ? roundTenths(slantDistanceKm) : null,
         viewDistKm: viewDistKm != null ? roundTenths(viewDistKm) : null,
-        bearingDeg: metrics.bearingDeg,
-        cardinal: metrics.cardinal,
+        bearingDeg: metrics ? metrics.bearingDeg : baseBearing,
+        cardinal: metrics ? metrics.cardinal : cardinalDir(baseBearing),
         private: priv,
         mach: s.mach || null,
         ias: s.ias != null ? Math.round(s.ias) : null,
@@ -1361,6 +1373,21 @@
         roll: s.roll != null ? Math.round(s.roll * 10) / 10 : null
       });
     }
+    return {
+      aircraft: snapshot,
+      activeIds: activeIds,
+      now: now
+    };
+  }
+
+  function processAircraft(ac) {
+    var snapshot = buildAircraftSnapshot(ac);
+    var now = snapshot.now;
+    if (lastFetchTs) updatePlaybackDelay(now - lastFetchTs);
+    else updatePlaybackDelay(null);
+    lastFetchTs = now;
+    aircraft = snapshot.aircraft;
+    var activeIds = snapshot.activeIds;
 
     sortAircraftList();
 
@@ -1401,27 +1428,18 @@
     updateViewHint(visibleAircraftCount());
     fetchRoutes();
     clientConvergenceRefine();
-    if (_activeAirportPopup && _activeAirportLat != null) {
-      var now = Date.now();
-      if (now - _lastScheduleRefresh >= 3000) {
-        _lastScheduleRefresh = now;
-        renderSchedulePopup(_activeScheduleDir);
-      }
-    }
     proactiveFetchTracks();
     proactiveScheduleSweep();
     proactiveFr24SearchSweep();
   }
 
-  async function fetchRoutes() {
-    if (!aircraft.length) return;
-    var visible = aircraft.filter(function(a) { return !isFiltered(a); });
-    var policy = currentViewPolicy(visible.length);
-    if (!policy.allowRoutes) return;
+  function buildRouteFetchPayload(sourcePlanes, options) {
+    options = options || {};
+    var maxPlanes = options.maxPlanes != null ? options.maxPlanes : 20;
     var needed = [];
     var now = Date.now();
-    for (var i = 0; i < visible.length && needed.length < 20; i++) {
-      var a = visible[i];
+    for (var i = 0; i < sourcePlanes.length && needed.length < maxPlanes; i++) {
+      var a = sourcePlanes[i];
       var cached = a.callsign ? routeCache[a.callsign] : null;
       var hiConfSrc = cached && (cached.destSource === "fr24-search" || cached.destSource === "schedule" || cached.destSource === "cross-validated");
       var stale = cached && !hiConfSrc && (!cached.fetchedAt || now - cached.fetchedAt > 10 * 60 * 1000);
@@ -1437,50 +1455,81 @@
         });
       }
     }
-    if (!needed.length) return;
+    return needed;
+  }
+
+  function mergeRoutesetEntries(routes, sourcePlanes) {
+    sourcePlanes = sourcePlanes || [];
+    var fetchedAt = Date.now();
+    var adsbdbCallsigns = [];
+    for (var j = 0; j < routes.length; j++) {
+      var r = routes[j];
+      if (!r.callsign || (!r.origin && !r.destination)) continue;
+      var dest = r.destination;
+      var destIata = dest ? (dest.region ? dest.display : dest.iata) : null;
+      var iataParts = [r.origin ? r.origin.iata : null, destIata].filter(Boolean);
+      routeCache[r.callsign] = {
+        display: r.display || iataParts.join(" to "),
+        iata: iataParts.join(" to "),
+        origin: r.origin || null,
+        destination: dest || null,
+        originSource: r.originSource || null,
+        destSource: r.destSource || null,
+        confidence: r.confidence || null,
+        phase: r.phase || null,
+        fetchedAt: fetchedAt
+      };
+      if (r.destSource === "adsbdb" || r.originSource === "adsbdb") adsbdbCallsigns.push(r.callsign);
+    }
+    for (var ac = 0; ac < adsbdbCallsigns.length; ac++) {
+      var cs = adsbdbCallsigns[ac];
+      if (fr24SearchPending[cs] || isLikelyPrivateCallsign(cs)) continue;
+      var plane = null;
+      for (var p = 0; p < sourcePlanes.length; p++) {
+        if (sourcePlanes[p].callsign === cs) {
+          plane = sourcePlanes[p];
+          break;
+        }
+      }
+      if (!plane) plane = aircraft.find(function(candidate) { return candidate.callsign === cs; });
+      if (plane) {
+        fr24SearchPending[cs] = true;
+        tryFr24Search(plane).then((function(callsign) {
+          return function() { delete fr24SearchPending[callsign]; };
+        })(cs));
+      }
+    }
+  }
+
+  async function fetchRoutesForPlanes(sourcePlanes, options) {
+    if (!sourcePlanes || !sourcePlanes.length) return false;
+    options = options || {};
+    var candidates = options.sortFn ? sourcePlanes.slice().sort(options.sortFn) : sourcePlanes;
+    var needed = buildRouteFetchPayload(candidates, options);
+    if (!needed.length) return false;
     try {
       var resp = await fetch(routesetUrl(), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ planes: needed })
       });
-      if (!resp.ok) return;
+      if (!resp.ok) return false;
       var routes = await resp.json();
-      var adsbdbCallsigns = [];
-      for (var j = 0; j < routes.length; j++) {
-        var r = routes[j];
-        if (!r.callsign || (!r.origin && !r.destination)) continue;
-        var dest = r.destination;
-        var destIata = dest ? (dest.region ? dest.display : dest.iata) : null;
-        var iataParts = [r.origin ? r.origin.iata : null, destIata].filter(Boolean);
-        routeCache[r.callsign] = {
-          display: r.display || iataParts.join(" to "),
-          iata: iataParts.join(" to "),
-          origin: r.origin || null,
-          destination: dest || null,
-          originSource: r.originSource || null,
-          destSource: r.destSource || null,
-          confidence: r.confidence || null,
-          phase: r.phase || null,
-          fetchedAt: Date.now()
-        };
-        if (r.destSource === "adsbdb" || r.originSource === "adsbdb") {
-          adsbdbCallsigns.push(r.callsign);
-        }
-      }
-      for (var ac = 0; ac < adsbdbCallsigns.length; ac++) {
-        var cs = adsbdbCallsigns[ac];
-        if (fr24SearchPending[cs] || isLikelyPrivateCallsign(cs)) continue;
-        var plane = aircraft.find(function(p) { return p.callsign === cs; });
-        if (plane) {
-          fr24SearchPending[cs] = true;
-          tryFr24Search(plane).then((function(c) { return function() { delete fr24SearchPending[c]; }; })(cs));
-        }
-      }
+      mergeRoutesetEntries(routes, candidates);
       refreshAirportLabels();
+      return true;
     } catch (e) {
       console.warn("Route fetch failed:", e);
+      return false;
     }
+  }
+
+  async function fetchRoutes() {
+    if (!aircraft.length) return;
+    var visible = aircraft.filter(function(a) { return !isFiltered(a); });
+    var policy = currentViewPolicy(visible.length);
+    if (!policy.allowRoutes) return;
+    await fetchRoutesForPlanes(visible);
   }
 
   function clientConvergenceRefine() {
@@ -3666,10 +3715,12 @@
   var _activeAirportLat = null;
   var _activeAirportLng = null;
   var _activeScheduleDir = "arrivals";
-  var _lastScheduleRefresh = 0;
   var _lastScheduleHtml = "";
-  var _liveScheduleCache = {};
-  var LIVE_SCHEDULE_CACHE_TTL = 10000;
+  var _airportPopupCache = {};
+  var _activeAirportRefreshTimer = null;
+  var AIRPORT_POPUP_FETCH_KM = 120;
+  var AIRPORT_POPUP_REFRESH_MS = 30000;
+  var AIRPORT_POPUP_CACHE_TTL = 2 * 60 * 1000;
 
   function relativeMinutes(unixTs) {
     var diffSec = unixTs - Math.floor(Date.now() / 1000);
@@ -3701,9 +3752,12 @@
     });
     if (!scored.eligible) return null;
     return {
+      hex: a.icao24,
       callsign: a.callsign,
       originIata: routeEntry && routeEntry.origin ? routeEntry.origin.iata : null,
       aircraftType: a.aircraftType,
+      lat: a.lat,
+      lng: a.lng,
       altFt: a.altFt,
       distKm: distKm,
       etaMin: scored.etaMin,
@@ -3713,13 +3767,16 @@
   }
 
   function compareArrivalEntries(a, b) {
-    var scoreA = a.arrivalScore != null ? a.arrivalScore : Infinity;
-    var scoreB = b.arrivalScore != null ? b.arrivalScore : Infinity;
-    if (scoreA !== scoreB) return scoreA - scoreB;
+    var altA = a.altFt != null ? a.altFt : Infinity;
+    var altB = b.altFt != null ? b.altFt : Infinity;
+    if (altA !== altB) return altA - altB;
     var etaA = a.etaMin != null ? a.etaMin : Infinity;
     var etaB = b.etaMin != null ? b.etaMin : Infinity;
     if (etaA !== etaB) return etaA - etaB;
     if (!!a.proximity !== !!b.proximity) return a.proximity ? 1 : -1;
+    var scoreA = a.arrivalScore != null ? a.arrivalScore : Infinity;
+    var scoreB = b.arrivalScore != null ? b.arrivalScore : Infinity;
+    if (scoreA !== scoreB) return scoreA - scoreB;
     if (a.distKm !== b.distKm) return a.distKm - b.distKm;
     return (a.callsign || "").localeCompare(b.callsign || "");
   }
@@ -3734,13 +3791,12 @@
     return "~" + Math.round(etaMin) + "min";
   }
 
-  function buildLiveScheduleData(airportIata, airportLat, airportLng) {
-    var cached = _liveScheduleCache[airportIata];
-    if (cached && Date.now() - cached.ts < LIVE_SCHEDULE_CACHE_TTL) return cached.data;
+  function buildLiveScheduleData(airportIata, airportLat, airportLng, sourceAircraft) {
+    var list = Array.isArray(sourceAircraft) ? sourceAircraft : aircraft;
     var arrivals = [];
     var departures = [];
-    for (var i = 0; i < aircraft.length; i++) {
-      var a = aircraft[i];
+    for (var i = 0; i < list.length; i++) {
+      var a = list[i];
       if (!a.callsign) continue;
       var rc = routeCache[a.callsign];
       if (!a.ground) {
@@ -3769,9 +3825,12 @@
           if (minD < Infinity) runwayDistKm = minD;
         }
         departures.push({
+          hex: a.icao24,
           callsign: a.callsign,
           destIata: rc && rc.destination ? rc.destination.iata : null,
           aircraftType: a.aircraftType,
+          lat: a.lat,
+          lng: a.lng,
           speedKts: spdKts,
           status: status,
           distKm: distKm,
@@ -3782,8 +3841,8 @@
     }
     var seenCallsigns = {};
     for (var s = 0; s < arrivals.length; s++) seenCallsigns[arrivals[s].callsign] = true;
-    for (var i = 0; i < aircraft.length; i++) {
-      var a = aircraft[i];
+    for (var i = 0; i < list.length; i++) {
+      var a = list[i];
       if (!a.callsign || a.ground || seenCallsigns[a.callsign]) continue;
       var rc = routeCache[a.callsign];
       if (rc && rc.origin && rc.origin.iata === airportIata) continue;
@@ -3810,14 +3869,13 @@
     });
     if (arrivals.length > 15) arrivals.length = 15;
     if (departures.length > 15) departures.length = 15;
-    var result = { arrivals: arrivals, departures: departures };
-    _liveScheduleCache[airportIata] = { data: result, ts: Date.now() };
-    return result;
+    return { arrivals: arrivals, departures: departures };
   }
 
   function buildScheduleCardContent(iata, name, liveData, dir) {
     var isArr = dir === "arrivals";
     var items = isArr ? (liveData.arrivals || []) : (liveData.departures || []);
+    var message = liveData && liveData.message ? liveData.message : "";
     var safeName = escapeHtml(name || "").replace(/"/g, "&quot;");
     var html = '<div class="sched-card" data-sched-iata="' + escapeHtml(iata) +
       '" data-sched-name="' + safeName +
@@ -3832,7 +3890,7 @@
       '</div>';
     html += '<div class="sched-rows">';
     if (!items.length) {
-      html += '<div class="sched-empty">No aircraft nearby</div>';
+      html += '<div class="sched-empty">' + escapeHtml(message || "No aircraft nearby") + '</div>';
     } else if (isArr) {
       for (var i = 0; i < items.length; i++) {
         var f = items[i];
@@ -3841,7 +3899,10 @@
         var fromIata = f.originIata ? escapeHtml(f.originIata) : "\u2014";
         var altStr = f.altFt != null ? f.altFt.toLocaleString() + "ft" : "\u2014";
         var etaStr = formatLandingEta(f.etaMin);
-        html += '<div class="sched-row" data-callsign="' + escapeHtml(cs) + '">' +
+        html += '<div class="sched-row" data-callsign="' + escapeHtml(cs) +
+          '" data-hex="' + escapeHtml(f.hex || "") +
+          '" data-lat="' + (f.lat != null ? String(f.lat) : "") +
+          '" data-lng="' + (f.lng != null ? String(f.lng) : "") + '">' +
           '<span class="sched-dot cyan live"></span>' +
           '<span class="sched-flight">' + flightNum + '</span>' +
           '<span class="sched-route">from ' + fromIata + (f.aircraftType ? ' \u00b7 ' + escapeHtml(f.aircraftType) : '') + '</span>' +
@@ -3857,7 +3918,10 @@
         var destIata = f.destIata ? escapeHtml(f.destIata) : "\u2014";
         var spdStr = f.speedKts > 0 ? formatSpeedMph(f.speedKts) + "mph" : "\u2014";
         var dotColor = f.status === "Taxiing" ? "green" : "gray";
-        html += '<div class="sched-row" data-callsign="' + escapeHtml(cs) + '">' +
+        html += '<div class="sched-row" data-callsign="' + escapeHtml(cs) +
+          '" data-hex="' + escapeHtml(f.hex || "") +
+          '" data-lat="' + (f.lat != null ? String(f.lat) : "") +
+          '" data-lng="' + (f.lng != null ? String(f.lng) : "") + '">' +
           '<span class="sched-dot ' + dotColor + '"></span>' +
           '<span class="sched-flight">' + flightNum + '</span>' +
           '<span class="sched-route">to ' + destIata + (f.aircraftType ? ' \u00b7 ' + escapeHtml(f.aircraftType) : '') + '</span>' +
@@ -3870,10 +3934,112 @@
     return html;
   }
 
+  function buildAirportPopupPlaceholder(message) {
+    return {
+      arrivals: [],
+      departures: [],
+      message: message
+    };
+  }
+
+  function getAirportPopupCacheEntry(iata) {
+    if (!_airportPopupCache[iata]) {
+      _airportPopupCache[iata] = {
+        data: null,
+        error: null,
+        loading: false,
+        pending: null,
+        ts: 0
+      };
+    }
+    return _airportPopupCache[iata];
+  }
+
+  function isAirportPopupCacheFresh(entry) {
+    return !!(entry && entry.data && entry.ts && Date.now() - entry.ts < AIRPORT_POPUP_CACHE_TTL);
+  }
+
+  function clearActiveAirportRefreshTimer() {
+    if (_activeAirportRefreshTimer) {
+      clearTimeout(_activeAirportRefreshTimer);
+      _activeAirportRefreshTimer = null;
+    }
+  }
+
+  function scheduleActiveAirportRefresh(delayMs) {
+    clearActiveAirportRefreshTimer();
+    if (!_activeAirportIata || !_activeAirportPopup) return;
+    _activeAirportRefreshTimer = setTimeout(function() {
+      refreshActiveAirportPopup({ reason: "timer" });
+    }, Math.max(0, delayMs != null ? delayMs : AIRPORT_POPUP_REFRESH_MS));
+  }
+
+  function airportRouteCandidateComparator(airportLat, airportLng) {
+    return function(a, b) {
+      if (!!a.ground !== !!b.ground) return a.ground ? 1 : -1;
+      var altA = a.altFt != null ? a.altFt : Infinity;
+      var altB = b.altFt != null ? b.altFt : Infinity;
+      if (altA !== altB) return altA - altB;
+      var distA = haversineKm(a.lat, a.lng, airportLat, airportLng);
+      var distB = haversineKm(b.lat, b.lng, airportLat, airportLng);
+      if (distA !== distB) return distA - distB;
+      return (a.callsign || "").localeCompare(b.callsign || "");
+    };
+  }
+
+  async function refreshActiveAirportPopup(options) {
+    options = options || {};
+    if (!_activeAirportIata || _activeAirportLat == null || _activeAirportLng == null) return null;
+    clearActiveAirportRefreshTimer();
+
+    var iata = _activeAirportIata;
+    var lat = _activeAirportLat;
+    var lng = _activeAirportLng;
+    var entry = getAirportPopupCacheEntry(iata);
+    if (entry.pending) return entry.pending;
+
+    entry.loading = true;
+    if (_activeAirportPopup && !entry.data) {
+      _lastScheduleHtml = "";
+      renderSchedulePopup(_activeScheduleDir);
+    }
+
+    var promise = (async function() {
+      try {
+        var resp = await fetch(adsbUrl("/lat/" + lat.toFixed(4) + "/lon/" + lng.toFixed(4) + "/dist/" + AIRPORT_POPUP_FETCH_KM));
+        if (!resp.ok) throw new Error("HTTP " + resp.status);
+        var payload = await resp.json();
+        var snapshot = buildAircraftSnapshot(payload.ac || [], { includeProximity: false });
+        await fetchRoutesForPlanes(snapshot.aircraft, { sortFn: airportRouteCandidateComparator(lat, lng) });
+        entry.data = buildLiveScheduleData(iata, lat, lng, snapshot.aircraft);
+        entry.ts = Date.now();
+        entry.error = null;
+      } catch (err) {
+        console.warn("Airport popup traffic fetch failed:", err);
+        if (!entry.data) entry.error = "Could not load airport traffic.";
+      } finally {
+        entry.loading = false;
+        if (entry.pending === promise) entry.pending = null;
+        if (_activeAirportIata === iata && _activeAirportPopup) {
+          _lastScheduleHtml = "";
+          renderSchedulePopup(_activeScheduleDir);
+          scheduleActiveAirportRefresh(AIRPORT_POPUP_REFRESH_MS);
+        }
+      }
+      return entry.data;
+    })();
+
+    entry.pending = promise;
+    return promise;
+  }
+
   function renderSchedulePopup(dir) {
     if (!_activeAirportPopup || _activeAirportLat == null) return;
     _activeScheduleDir = dir;
-    var liveData = buildLiveScheduleData(_activeAirportIata, _activeAirportLat, _activeAirportLng);
+    var entry = _activeAirportIata ? getAirportPopupCacheEntry(_activeAirportIata) : null;
+    var liveData = entry && entry.data
+      ? entry.data
+      : buildAirportPopupPlaceholder(entry && entry.error ? entry.error : "Loading airport traffic…");
     var html = buildScheduleCardContent(_activeAirportIata, _activeAirportName, liveData, dir);
     if (html === _lastScheduleHtml) return;
     _lastScheduleHtml = html;
@@ -3886,6 +4052,7 @@
       _activeAirportPopup = null;
       _activeAirportIata = null;
     }
+    clearActiveAirportRefreshTimer();
 
     _activeAirportIata = iata;
     _activeAirportName = name;
@@ -3893,9 +4060,9 @@
     _activeAirportLng = lng;
     _activeScheduleDir = "arrivals";
     _lastScheduleHtml = "";
-    delete _liveScheduleCache[iata];
+    var entry = getAirportPopupCacheEntry(iata);
 
-    var liveData = buildLiveScheduleData(iata, lat, lng);
+    var liveData = entry.data || buildAirportPopupPlaceholder("Loading airport traffic…");
     var popup = L.popup({ maxWidth: 320, minWidth: 280, closeButton: true, className: "" })
       .setLatLng([lat, lng])
       .setContent(buildScheduleCardContent(iata, name, liveData, "arrivals"))
@@ -3905,13 +4072,18 @@
 
     popup.on("remove", function() {
       if (_activeAirportIata === iata) {
+        clearActiveAirportRefreshTimer();
         _activeAirportPopup = null;
         _activeAirportIata = null;
         _activeAirportName = null;
         _activeAirportLat = null;
         _activeAirportLng = null;
+        _lastScheduleHtml = "";
       }
     });
+
+    if (!isAirportPopupCacheFresh(entry)) refreshActiveAirportPopup({ reason: entry.data ? "stale-open" : "open" });
+    else scheduleActiveAirportRefresh(AIRPORT_POPUP_REFRESH_MS);
   }
 
   // --- FIDS (airport schedule board) ---
