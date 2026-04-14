@@ -3,6 +3,7 @@ import { buildSchedulePayload } from "./fr24.js";
 import { CORS_HEADERS, json } from "./http.js";
 import { handleNearby } from "./nearby.js";
 import { fetchCachedTrack, mergeRoutes, detectPhase, formatRouteLabel } from "./opensky.js";
+import { fetchTraffic } from "./providers.js";
 
 const ADSB_API = "https://api.adsb.lol/v2";
 const ADSB_ROUTE_API = "https://api.adsb.lol/api/0";
@@ -48,7 +49,7 @@ export default {
       return new Response(null, { headers: CORS_HEADERS });
     }
 
-    if (url.pathname.startsWith("/adsb/")) return proxyAdsb(url);
+    if (url.pathname.startsWith("/adsb/")) return proxyAdsb(url, env);
     if (url.pathname.startsWith("/route/")) return proxyRoute(url, request);
     if (url.pathname.startsWith("/photo/")) return handlePhoto(url, ctx);
     if (url.pathname === "/routeset") return handleRouteset(request, env, ctx);
@@ -89,7 +90,7 @@ export function snapAdsbGrid(lat, lon, dist) {
   };
 }
 
-async function proxyAdsb(url) {
+async function proxyAdsb(url, env) {
   const parts = url.pathname.slice("/adsb".length).split("/");
   const latIdx = parts.indexOf("lat");
   const lonIdx = parts.indexOf("lon");
@@ -115,18 +116,10 @@ async function proxyAdsb(url) {
   const cached = await cache.match(cacheKey);
   if (cached) return cached;
 
-  let upstream;
-  try {
-    upstream = await fetch(ADSB_API + gridPath, {
-      method: "GET",
-      headers: JSON_PROXY_HEADERS,
-    });
-    if (!upstream.ok) throw new Error("HTTP " + upstream.status);
-  } catch (error) {
-    return json(502, { error: error.message });
-  }
+  const result = await fetchTraffic(gridPath, snapped, env);
+  if (!result) return json(502, { error: "Traffic data unavailable" });
 
-  const body = await upstream.arrayBuffer();
+  const body = JSON.stringify(result);
   const response = new Response(body, {
     status: 200,
     headers: {

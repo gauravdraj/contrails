@@ -37,7 +37,7 @@ LOCAL_GEO = {
 class Handler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         if self.path.startswith("/api/adsb/"):
-            self._proxy(f"{ADSB_API}{self.path[len('/api/adsb'):]}")
+            self._proxy_adsb(self.path[len("/api/adsb"):])
         elif self.path == "/api/geo":
             self._send_json(LOCAL_GEO)
         elif self.path.startswith("/api/fr24/schedule/"):
@@ -62,6 +62,32 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         for key, value in CORS_HEADERS.items():
             self.send_header(key, value)
         self.end_headers()
+
+    def _proxy_adsb(self, path):
+        """Proxy ADS-B requests, normalizing grid responses to match
+        the Worker's output shape (adds source field)."""
+        url = ADSB_API + path
+        try:
+            req = urllib.request.Request(
+                url, method="GET", headers=PROXY_HEADERS,
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                raw = resp.read()
+        except Exception as e:
+            self._send_json({"error": str(e)}, status=502)
+            return
+
+        is_grid = "/lat/" in path and "/lon/" in path and "/dist/" in path
+        if is_grid:
+            try:
+                data = json.loads(raw)
+                data.setdefault("source", "primary")
+                data.setdefault("ctime", data.get("now", time.time()))
+                self._send_json(data)
+            except (json.JSONDecodeError, ValueError):
+                self._send_bytes(raw)
+        else:
+            self._send_bytes(raw)
 
     def _proxy(self, url, method="GET", body=None):
         try:

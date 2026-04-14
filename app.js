@@ -266,6 +266,7 @@
   var trailBreakPending = {};
   var trafficFetchOk = null;
   var trafficFailStreak = 0;
+  var trafficSource = null;
   const filters = { private: true, ground: true, trails: true, labels: true };
 
   // --- URL params for Siri Shortcut ---
@@ -972,6 +973,7 @@
     }
     var summary;
     var outage = false;
+    var degraded = trafficSource === "backup" && trafficFetchOk === true;
     if (visibleCount > 0) {
       summary = visibleCount + " planes in view";
     } else if (aircraft.length) {
@@ -986,6 +988,7 @@
     }
     el.textContent = summary;
     el.classList.toggle("outage", outage);
+    el.classList.toggle("degraded", degraded);
   }
 
   function setControlsExpanded(expanded) {
@@ -1167,6 +1170,10 @@
         : "Routes load when you zoom in a little more.";
       return;
     }
+    if (trafficSource === "backup") {
+      hint.textContent = "Using backup traffic feed \u2014 coverage may vary.";
+      return;
+    }
     hint.textContent = "Altitude colors run from warm low altitudes to cool high altitudes.";
   }
 
@@ -1243,13 +1250,23 @@
       if (!resp.ok) throw new Error("HTTP " + resp.status);
       var data = await resp.json();
       if (requestSeq !== fetchRequestSeq) return;
+      var prevSource = trafficSource;
       trafficFetchOk = true;
       trafficFailStreak = 0;
+      trafficSource = data.source || null;
+      if (prevSource && trafficSource && prevSource !== trafficSource) {
+        if (trafficSource === "backup") {
+          setControlsFeedback("Using backup traffic feed.", "info", { timeoutMs: 6000 });
+        } else if (prevSource === "backup") {
+          setControlsFeedback("Primary traffic feed restored.", "success", { timeoutMs: 4000 });
+        }
+      }
       processAircraft(data.ac || []);
     } catch (err) {
       if (err && err.name === "AbortError") return;
       trafficFailStreak++;
       trafficFetchOk = false;
+      trafficSource = null;
       updateControlsCompactSummary(0);
       setControlsFeedback(
         trafficFailStreak <= 1
