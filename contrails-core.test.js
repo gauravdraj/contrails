@@ -381,3 +381,52 @@ test("scoreArrivalCandidate keeps high-confidence destination-matched arrivals e
 
   assert.equal(candidate.eligible, true);
 });
+
+test("scoreArrivalCandidate multi-candidate ordering: short-final < approach < descending-inbound < overhead-level", () => {
+  var shortFinal = core.scoreArrivalCandidate({
+    altFt: 3500, vRate: -10, distKm: 10, spdKts: 160, destinationMatch: true
+  });
+  var approach = core.scoreArrivalCandidate({
+    altFt: 5000, vRate: -10, distKm: 18, spdKts: 200, destinationMatch: true
+  });
+  var descendingInbound = core.scoreArrivalCandidate({
+    altFt: 8000, vRate: -10, distKm: 30, spdKts: 280, destinationMatch: true
+  });
+  var overheadLevel = core.scoreArrivalCandidate({
+    altFt: 15000, vRate: 0, distKm: 10, spdKts: 350, destinationMatch: true
+  });
+
+  assert.ok(shortFinal.score < approach.score, "short-final should beat approach");
+  assert.ok(approach.score < descendingInbound.score, "approach should beat descending-inbound");
+  assert.ok(descendingInbound.score < overheadLevel.score, "descending-inbound should beat overhead-level");
+});
+
+test("scoreArrivalCandidate steeper descent scores better at same altitude and distance", () => {
+  var steep = core.scoreArrivalCandidate({
+    altFt: 5000, vRate: -25, distKm: 10, spdKts: 200, destinationMatch: true
+  });
+  var shallow = core.scoreArrivalCandidate({
+    altFt: 5000, vRate: -8, distKm: 10, spdKts: 200, destinationMatch: true
+  });
+
+  assert.ok(steep.score < shallow.score, "steeper descent should score better");
+});
+
+test("scoreArrivalCandidate lower altitude scores better at same descent rate and distance", () => {
+  var low = core.scoreArrivalCandidate({
+    altFt: 1500, vRate: -15, distKm: 10, spdKts: 180, destinationMatch: true
+  });
+  var high = core.scoreArrivalCandidate({
+    altFt: 5500, vRate: -15, distKm: 10, spdKts: 180, destinationMatch: true
+  });
+
+  assert.ok(low.score < high.score, "lower altitude should score better");
+});
+
+test("scoreArrivalCandidate handles empty input gracefully", () => {
+  var result = core.scoreArrivalCandidate({});
+
+  assert.ok(Number.isFinite(result.score), "score should be finite");
+  assert.ok(Number.isFinite(result.etaMin), "etaMin should be finite");
+  assert.strictEqual(typeof result.eligible, "boolean", "eligible should be a boolean");
+});
