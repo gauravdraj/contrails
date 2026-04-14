@@ -20,6 +20,7 @@
   const parseCoordinate = core.parseCoordinate;
   const projectLatLng = core.projectLatLng;
   const roundTenths = core.roundTenths;
+  const scoreArrivalCandidate = core.scoreArrivalCandidate;
   const slantKm = core.slantKm;
   const elevationDeg = core.elevationDeg;
   const SQUAWK_ALERT = core.SQUAWK_ALERTS;
@@ -28,11 +29,12 @@
       !callsignVariants || !computePlaybackDelayMs || !escapeHtml || !formatDistanceMiles || !formatSpeedMph ||
       !haversineKm || !interpolatePlaybackPose || !interpolateTimedPose || !isLikelyPrivateCallsign ||
       !normalizeAircraftHex || !normalizeFlightQuery || !normalizeSearchText || !parseCoordinate || !projectLatLng ||
+      !scoreArrivalCandidate ||
       !roundTenths || !slantKm || !elevationDeg || !SQUAWK_ALERT) {
     throw new Error("Contrails core helpers failed to load.");
   }
 
-  const APP_VERSION = "v2.11";
+  const APP_VERSION = "v2.12";
   const isLocal = location.hostname === "localhost" || location.hostname === "127.0.0.1";
   const isIOSDevice = /iP(ad|hone|od)/.test(navigator.userAgent) ||
     (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
@@ -237,6 +239,7 @@
     return best;
   }
   let userLat = null, userLng = null;
+  let deviceLat = null, deviceLng = null;
   let aircraft = [];
   let refreshTimer = null;
   let selectedAircraftId = null;
@@ -251,6 +254,8 @@
   let fetchJitterMs = 0;
   let shouldWatchUserPosition = true;
   let geolocationWatchId = null;
+  let geolocationUpdatesAffectReference = true;
+  let backgroundGeoRequestPending = false;
   let referenceMode = "device";
   let referenceMeta = null;
   let controlsFeedbackTimer = 0;
@@ -389,13 +394,6 @@
     map.createPane("airportTooltipPane");
     map.getPane("airportTooltipPane").style.zIndex = 640;
     L.tileLayer(TILE_LAYER_URL, TILE_LAYER_OPTIONS).addTo(map);
-
-    if (shouldWatchUserPosition) {
-      userMarker = L.circleMarker([lat, lng], {
-        radius: 7, fillColor: "#5bbcf5", fillOpacity: 1,
-        color: "#fff", weight: 2
-      }).addTo(map);
-    }
 
     var _autoPanning = false;
     map.on("autopanstart", function() { _autoPanning = true; });
@@ -780,22 +778,21 @@
         function(pos) {
           var lat = pos.coords.latitude;
           var lng = pos.coords.longitude;
-          updateUserPosition(lat, lng);
-          map.setView([lat, lng], map.getZoom());
           referenceMode = "device";
           referenceMeta = null;
-          updateReferenceNote();
           shouldWatchUserPosition = true;
+          geolocationUpdatesAffectReference = true;
+          updateDevicePosition(lat, lng, { useAsReference: true });
+          map.setView([lat, lng], map.getZoom());
           startGeolocation();
         },
         function() {
           fetchApproximateArea().then(function(approx) {
             if (!approx) return;
-            updateUserPosition(approx.lat, approx.lng);
-            map.setView([approx.lat, approx.lng], map.getZoom());
             referenceMode = approx.approximate ? "approximate" : "default";
             referenceMeta = approx;
-            updateReferenceNote();
+            setReferencePosition(approx.lat, approx.lng);
+            map.setView([approx.lat, approx.lng], map.getZoom());
           });
         },
         { timeout: 5000 }
@@ -803,11 +800,10 @@
     } else {
       fetchApproximateArea().then(function(approx) {
         if (!approx) return;
-        updateUserPosition(approx.lat, approx.lng);
-        map.setView([approx.lat, approx.lng], map.getZoom());
         referenceMode = approx.approximate ? "approximate" : "default";
         referenceMeta = approx;
-        updateReferenceNote();
+        setReferencePosition(approx.lat, approx.lng);
+        map.setView([approx.lat, approx.lng], map.getZoom());
       });
     }
   }
@@ -1129,22 +1125,28 @@
     return parts.join(", ");
   }
 
+  function shouldShowReferenceDistances() {
+    return referenceMode === "device" || referenceMode === "manual";
+  }
+
   function updateReferenceNote() {
     var note = document.getElementById("reference-note");
     if (!note) return;
     var label = formatReferenceLabel(referenceMeta);
+    var hasDeviceDot = deviceLat != null && deviceLng != null && referenceMode !== "device";
     if (referenceMode === "approximate") {
       note.textContent = label
-        ? "Using an approximate network area near " + label + ". Enter coordinates for more precise distances."
-        : "Using an approximate network area. Enter coordinates for more precise distances.";
+        ? "Using an approximate network area near " + label + ". Distance readouts stay hidden until live location is available."
+        : "Using an approximate network area. Distance readouts stay hidden until live location is available.";
       return;
     }
     if (referenceMode === "default") {
-      note.textContent = "Using " + (label || "the default browse area") + " as the reference area.";
+      note.textContent = "Using " + (label || "the default browse area") + " as the reference area. Distance readouts stay hidden until live location is available.";
       return;
     }
     if (referenceMode === "manual") {
-      note.textContent = "Using " + (label || "your selected area") + " as the reference area.";
+      note.textContent = "Using " + (label || "your selected area") + " as the reference area." +
+        (hasDeviceDot ? " Your live location is still shown with the blue dot." : "");
       return;
     }
     note.textContent = "Using your live location for distance and bearing.";
@@ -1194,20 +1196,35 @@
     scheduleMapFetch(options.fetchDelay != null ? options.fetchDelay : viewportFetchDelayMs());
   }
 
-  function updateUserPosition(lat, lng) {
+  function setReferencePosition(lat, lng, options) {
+    options = options || {};
     userLat = lat;
     userLng = lng;
-    if (shouldWatchUserPosition && map && !userMarker) {
+    if (options.refresh === false) return;
+    refreshAircraftProximity();
+    renderMap();
+    updateStatus();
+    updateAlerts();
+    updateReferenceNote();
+    if (refreshSearchUi) refreshSearchUi();
+  }
+
+  function updateDevicePosition(lat, lng, options) {
+    options = options || {};
+    deviceLat = lat;
+    deviceLng = lng;
+    if (map && !userMarker) {
       userMarker = L.circleMarker([lat, lng], {
         radius: 7, fillColor: "#5bbcf5", fillOpacity: 1,
         color: "#fff", weight: 2
       }).addTo(map);
     }
     if (userMarker) userMarker.setLatLng([lat, lng]);
-    refreshAircraftProximity();
-    renderMap();
-    updateStatus();
-    updateAlerts();
+    if (options.useAsReference) {
+      setReferencePosition(lat, lng, { refresh: options.refresh });
+      return;
+    }
+    if (options.refresh === false) return;
     updateReferenceNote();
   }
 
@@ -1307,6 +1324,8 @@
       var emerg = s.emergency && s.emergency !== "none" ? s.emergency : null;
       var metrics = proximityMetrics(s.lat, s.lon, s.dir != null ? s.dir : 0);
       var viewDistKm = viewportDistanceKm(s.lat, s.lon);
+      var altFt = isGround ? null : (typeof s.alt_baro === "number" ? Math.round(s.alt_baro) : null);
+      var slantDistanceKm = metrics.distKm != null ? slantKm(metrics.distKm, altFt) : null;
       var reportTs = now - Math.max(0, (s.seen_pos || 0) * 1000);
       activeIds[hex] = true;
 
@@ -1317,12 +1336,13 @@
         category: s.category || null,
         registration: s.r || null,
         lat: s.lat, lng: s.lon,
-        altFt: isGround ? null : (typeof s.alt_baro === "number" ? Math.round(s.alt_baro) : null),
+        altFt: altFt,
         ground: isGround,
         speedKts: s.gs != null ? Math.round(s.gs) : null,
         track: heading,
         vRate: s.baro_rate != null ? s.baro_rate / 60 : null,
         distKm: metrics.distKm,
+        slantKm: slantDistanceKm != null ? roundTenths(slantDistanceKm) : null,
         viewDistKm: viewDistKm != null ? roundTenths(viewDistKm) : null,
         bearingDeg: metrics.bearingDeg,
         cardinal: metrics.cardinal,
@@ -2163,10 +2183,8 @@
     var subheaderHtml = buildPopupSubheader(a, rc);
 
     var distanceLine = "";
-    if (a.slantKm != null) {
+    if (shouldShowReferenceDistances() && a.slantKm != null) {
       distanceLine = formatDistanceMiles(a.slantKm) + " mi " + escapeHtml(a.cardinal);
-    } else if (a.viewDistKm != null) {
-      distanceLine = formatDistanceMiles(a.viewDistKm) + " mi from view";
     }
     var distanceHtml = distanceLine ? distanceLine + "<br>" : "";
 
@@ -2198,30 +2216,13 @@
     return routeEntry.display || routeEntry.iata || "";
   }
 
-  function airlineLogoUrl(callsign, routeEntry) {
-    var iata = routeEntry && routeEntry.airline_iata;
-    var icao = routeEntry && routeEntry.airline_icao;
-    if (!iata || !icao) {
-      if (callsign && callsign.length >= 3) {
-        icao = callsign.substring(0, 3).toUpperCase();
-        iata = AIRLINE_ICAO_TO_IATA[icao];
-      }
-    }
-    if (!iata || !icao) return null;
-    return "https://cdn.flightradar24.com/assets/airlines/logotypes/" + encodeURIComponent(iata) + "_" + encodeURIComponent(icao) + ".png";
-  }
-
   function buildPopupSubheader(a, routeEntry) {
     var airline = !a.private && a.callsign ? airlineName(a.callsign) : "";
     var routeDisplay = popupRouteDisplay(routeEntry);
     if (!airline && !routeDisplay) return "";
     var html = "";
     if (airline) {
-      var logoUrl = airlineLogoUrl(a.callsign, routeEntry);
-      if (logoUrl) {
-        html += '<img class="popup-airline-logo" src="' + escapeHtml(logoUrl) + '" onerror="this.style.display=\'none\'" alt="">';
-      }
-      html += '<span class="popup-airline"> &middot; ' + escapeHtml(airline) + "</span>";
+      html += '<div class="popup-airline">' + escapeHtml(airline) + "</div>";
     }
     if (routeDisplay) {
       html += '<div class="popup-route">' + escapeHtml(routeDisplay) + "</div>";
@@ -3095,11 +3096,34 @@
   function startGeolocation() {
     if (!navigator.geolocation || !shouldWatchUserPosition || geolocationWatchId != null) return;
     geolocationWatchId = navigator.geolocation.watchPosition(
-      function(pos) { updateUserPosition(pos.coords.latitude, pos.coords.longitude); },
+      function(pos) {
+        updateDevicePosition(pos.coords.latitude, pos.coords.longitude, {
+          useAsReference: geolocationUpdatesAffectReference
+        });
+      },
       function(err) {
         console.warn("Location updates unavailable:", err && err.message ? err.message : err);
       },
       { enableHighAccuracy: true, maximumAge: 10000 }
+    );
+  }
+
+  function requestBackgroundDeviceLocation() {
+    if (!navigator.geolocation || backgroundGeoRequestPending || deviceLat != null || appBooted === false) return;
+    backgroundGeoRequestPending = true;
+    navigator.geolocation.getCurrentPosition(
+      function(pos) {
+        backgroundGeoRequestPending = false;
+        shouldWatchUserPosition = true;
+        geolocationUpdatesAffectReference = false;
+        updateDevicePosition(pos.coords.latitude, pos.coords.longitude, { useAsReference: false });
+        startGeolocation();
+      },
+      function(err) {
+        backgroundGeoRequestPending = false;
+        console.warn("Background location unavailable:", err && err.message ? err.message : err);
+      },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 }
     );
   }
 
@@ -3110,13 +3134,17 @@
     shouldWatchUserPosition = options.watchPosition !== false;
     referenceMode = options.referenceMode || (shouldWatchUserPosition ? "device" : "manual");
     referenceMeta = options.referenceMeta || null;
+    geolocationUpdatesAffectReference = referenceMode === "device";
     document.getElementById("loading").style.display = "none";
     updateFilterButtons();
     updateSummaryUi();
     initMap(lat, lng);
     scheduleSafariToolbarCollapse();
     syncUrlState();
-    updateUserPosition(lat, lng);
+    setReferencePosition(lat, lng, { refresh: false });
+    if (referenceMode === "device") {
+      updateDevicePosition(lat, lng, { useAsReference: false, refresh: false });
+    }
     updateReferenceNote();
     fetchAircraft({ source: "boot" });
     fetchAirports();
@@ -3626,6 +3654,7 @@
       referenceMode: "manual",
       referenceMeta: { label: "the shared map area" }
     });
+    requestBackgroundDeviceLocation();
   } else {
     requestInitialLocation();
   }
@@ -3655,6 +3684,50 @@
 
   var LANDING_SCAN_RADIUS_KM = 350;
 
+  function buildArrivalEntry(a, routeEntry, distKm, options) {
+    options = options || {};
+    var scored = scoreArrivalCandidate({
+      altFt: a.altFt,
+      vRate: a.vRate,
+      distKm: distKm,
+      spdKts: a.speedKts
+    });
+    return {
+      callsign: a.callsign,
+      originIata: routeEntry && routeEntry.origin ? routeEntry.origin.iata : null,
+      aircraftType: a.aircraftType,
+      altFt: a.altFt,
+      distKm: distKm,
+      etaMin: scored.etaMin,
+      arrivalScore: scored.score,
+      proximity: !!options.proximity
+    };
+  }
+
+  function compareArrivalEntries(a, b) {
+    var scoreA = a.arrivalScore != null ? a.arrivalScore : Infinity;
+    var scoreB = b.arrivalScore != null ? b.arrivalScore : Infinity;
+    if (scoreA !== scoreB) return scoreA - scoreB;
+    var etaA = a.etaMin != null ? a.etaMin : Infinity;
+    var etaB = b.etaMin != null ? b.etaMin : Infinity;
+    if (etaA !== etaB) return etaA - etaB;
+    var altA = a.altFt != null ? a.altFt : Infinity;
+    var altB = b.altFt != null ? b.altFt : Infinity;
+    if (altA !== altB) return altA - altB;
+    if (a.distKm !== b.distKm) return a.distKm - b.distKm;
+    return (a.callsign || "").localeCompare(b.callsign || "");
+  }
+
+  function formatLandingEta(etaMin) {
+    if (etaMin == null || !isFinite(etaMin)) return "";
+    if (etaMin < 1) return "<1m";
+    if (etaMin < 3) {
+      var roundedHalf = Math.round(etaMin * 2) / 2;
+      return "~" + (roundedHalf % 1 ? roundedHalf.toFixed(1) : String(Math.round(roundedHalf))) + "min";
+    }
+    return "~" + Math.round(etaMin) + "min";
+  }
+
   function buildLiveScheduleData(airportIata, airportLat, airportLng) {
     var cached = _liveScheduleCache[airportIata];
     if (cached && Date.now() - cached.ts < LIVE_SCHEDULE_CACHE_TTL) return cached.data;
@@ -3668,17 +3741,7 @@
         if (rc && rc.destination && rc.destination.iata === airportIata) {
           var distKm = haversineKm(a.lat, a.lng, airportLat, airportLng);
           if (distKm > LANDING_SCAN_RADIUS_KM) continue;
-          var spdKts = a.speedKts || 0;
-          var etaMin = spdKts > 0 ? (distKm / (spdKts * 1.852)) * 60 : null;
-          arrivals.push({
-            callsign: a.callsign,
-            originIata: rc.origin ? rc.origin.iata : null,
-            aircraftType: a.aircraftType,
-            altFt: a.altFt,
-            distKm: distKm,
-            etaMin: etaMin != null ? Math.round(etaMin) : null,
-            estLandingTime: etaMin != null ? Date.now() + etaMin * 60000 : null
-          });
+          arrivals.push(buildArrivalEntry(a, rc, distKm));
         }
       } else {
         if (rc && rc.destination && rc.destination.iata === airportIata) continue;
@@ -3722,25 +3785,9 @@
       if (a.altFt == null || a.altFt >= 8000 || vRateFpm > -500) continue;
       var distKm = haversineKm(a.lat, a.lng, airportLat, airportLng);
       if (distKm > 20) continue;
-      var spdKts = a.speedKts || 0;
-      var etaMin = spdKts > 0 ? (distKm / (spdKts * 1.852)) * 60 : null;
-      arrivals.push({
-        callsign: a.callsign,
-        originIata: rc && rc.origin ? rc.origin.iata : null,
-        aircraftType: a.aircraftType,
-        altFt: a.altFt,
-        distKm: distKm,
-        etaMin: etaMin != null ? Math.round(etaMin) : null,
-        estLandingTime: etaMin != null ? Date.now() + etaMin * 60000 : null,
-        proximity: true
-      });
+      arrivals.push(buildArrivalEntry(a, rc, distKm, { proximity: true }));
     }
-    arrivals.sort(function(a, b) {
-      var etaA = a.etaMin != null ? a.etaMin : Infinity;
-      var etaB = b.etaMin != null ? b.etaMin : Infinity;
-      if (etaA !== etaB) return etaA - etaB;
-      return a.distKm - b.distKm;
-    });
+    arrivals.sort(compareArrivalEntries);
     departures.sort(function(a, b) {
       var aTaxi = a.speedKts > 0 ? 0 : 1;
       var bTaxi = b.speedKts > 0 ? 0 : 1;
@@ -3786,11 +3833,8 @@
         var fromIata = f.originIata ? escapeHtml(f.originIata) : "\u2014";
         var altStr = f.altFt != null ? f.altFt.toLocaleString() + "ft" : "\u2014";
         var distNm = Math.round(f.distKm / 1.852) + "nm";
-        var etaStr = "";
-        if (f.etaMin != null) {
-          etaStr = "~" + f.etaMin + "min";
-          if (f.proximity) etaStr += " (est.)";
-        }
+        var etaStr = formatLandingEta(f.etaMin);
+        if (etaStr && f.proximity) etaStr += " (est.)";
         html += '<div class="sched-row" data-callsign="' + escapeHtml(cs) + '">' +
           '<span class="sched-dot cyan live"></span>' +
           '<span class="sched-flight">' + flightNum + '</span>' +

@@ -233,3 +233,96 @@ test("elevationDeg returns null when inputs are missing", () => {
   assert.equal(core.elevationDeg(null, 1000), null);
   assert.equal(core.elevationDeg(5, null), null);
 });
+
+test("scoreArrivalCandidate favors low descending arrivals over nearby cruisers", () => {
+  const lowArrival = core.scoreArrivalCandidate({
+    altFt: 3000,
+    vRate: -20,
+    distKm: 10,
+    spdKts: 160
+  });
+  const overheadCruiser = core.scoreArrivalCandidate({
+    altFt: 35000,
+    vRate: 0,
+    distKm: 5,
+    spdKts: 450
+  });
+
+  assert.ok(lowArrival.score < overheadCruiser.score);
+});
+
+test("scoreArrivalCandidate rewards lower aircraft at the same distance", () => {
+  const low = core.scoreArrivalCandidate({
+    altFt: 4000,
+    vRate: -18,
+    distKm: 12,
+    spdKts: 170
+  });
+  const high = core.scoreArrivalCandidate({
+    altFt: 12000,
+    vRate: -18,
+    distKm: 12,
+    spdKts: 170
+  });
+
+  assert.ok(low.score < high.score);
+});
+
+test("scoreArrivalCandidate rewards descent over level flight", () => {
+  const descending = core.scoreArrivalCandidate({
+    altFt: 5000,
+    vRate: -18,
+    distKm: 8,
+    spdKts: 170
+  });
+  const level = core.scoreArrivalCandidate({
+    altFt: 5000,
+    vRate: 0,
+    distKm: 8,
+    spdKts: 170
+  });
+
+  assert.ok(descending.score < level.score);
+});
+
+test("scoreArrivalCandidate keeps ETA descent-led for descending traffic", () => {
+  const candidate = core.scoreArrivalCandidate({
+    altFt: 6000,
+    vRate: -20,
+    distKm: 2,
+    spdKts: 300
+  });
+
+  assert.ok(candidate.etaMin > 3);
+});
+
+test("scoreArrivalCandidate handles missing vertical rate and zero speed", () => {
+  const candidate = core.scoreArrivalCandidate({
+    altFt: 4500,
+    vRate: null,
+    distKm: 9,
+    spdKts: 0
+  });
+
+  assert.ok(Number.isFinite(candidate.score));
+  assert.ok(Number.isFinite(candidate.etaMin));
+  assert.ok(candidate.score > 0);
+  assert.ok(candidate.etaMin > 0);
+});
+
+test("scoreArrivalCandidate penalizes climbing aircraft", () => {
+  const descending = core.scoreArrivalCandidate({
+    altFt: 4500,
+    vRate: -15,
+    distKm: 6,
+    spdKts: 160
+  });
+  const climbing = core.scoreArrivalCandidate({
+    altFt: 4500,
+    vRate: 15,
+    distKm: 6,
+    spdKts: 160
+  });
+
+  assert.ok(descending.score < climbing.score);
+});

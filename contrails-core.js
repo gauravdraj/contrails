@@ -389,6 +389,57 @@
     return Math.atan2(altKm, Math.max(groundKm, 0.001)) * 180 / Math.PI;
   }
 
+  function scoreArrivalCandidate(input) {
+    input = input || {};
+    var altFt = isFinite(input.altFt) ? Math.max(0, input.altFt) : null;
+    var distKm = isFinite(input.distKm) ? Math.max(0, input.distKm) : null;
+    var spdKts = isFinite(input.spdKts) ? Math.max(0, input.spdKts) : 0;
+    var vRateFpm = isFinite(input.vRate) ? input.vRate * 60 : null;
+    var descending = vRateFpm != null && vRateFpm <= -200;
+    var speedKmPerMin = spdKts > 0 ? spdKts * 1.852 / 60 : 0;
+    var distanceEtaMin = distKm != null && speedKmPerMin > 0 ? distKm / speedKmPerMin : null;
+    var descentEtaMin = descending && altFt != null
+      ? altFt / Math.max(Math.abs(vRateFpm), 300)
+      : null;
+    var etaMin = null;
+
+    if (descentEtaMin != null) {
+      etaMin = descentEtaMin;
+      if (distanceEtaMin != null) etaMin = descentEtaMin * 0.8 + distanceEtaMin * 0.2;
+    } else if (distanceEtaMin != null) {
+      etaMin = distanceEtaMin;
+    } else if (altFt != null) {
+      etaMin = Math.max(altFt / 1200, 1);
+    } else if (distKm != null) {
+      etaMin = Math.max(distKm / 10, 1);
+    } else {
+      etaMin = 999;
+    }
+
+    var score = etaMin;
+    if (altFt == null) {
+      score += 80;
+    } else {
+      score += altFt / 1000;
+      if (altFt > 12000) score += (altFt - 12000) / 500;
+      if (altFt > 25000) score += 20;
+    }
+    if (distKm == null) score += 30;
+    else score += distKm * 0.25;
+    if (!descending) {
+      score += 35;
+      if (vRateFpm != null && vRateFpm > 200) score += Math.min(25, vRateFpm / 200);
+    } else {
+      score -= Math.min(12, Math.abs(vRateFpm) / 250);
+    }
+    if (!spdKts) score += descending ? 6 : 20;
+
+    return {
+      score: roundTo(Math.max(0, score), 2),
+      etaMin: roundTo(Math.max(0, etaMin), 2)
+    };
+  }
+
   return {
     AIRLINES: AIRLINES,
     AIRLINE_IATA_ALIASES: AIRLINE_IATA_ALIASES,
@@ -417,6 +468,7 @@
     parseCoordinate: parseCoordinate,
     projectLatLng: projectLatLng,
     roundTenths: roundTenths,
+    scoreArrivalCandidate: scoreArrivalCandidate,
     slantKm: slantKm
   };
 });
