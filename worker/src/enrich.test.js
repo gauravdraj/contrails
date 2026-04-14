@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { enrichRoutes, resetEnrichBackoff, ICAO_TO_IATA } from "./enrich.js";
+import { enrichRoutes, ICAO_TO_IATA } from "./enrich.js";
+import { fr24ResetBackoff } from "./fr24-backoff.js";
 
 function makeFR24Response(callsign, from, to) {
   return new Response(JSON.stringify({
@@ -37,10 +38,12 @@ test("FR24 cache hit returns route without calling fetch", async (t) => {
     default: {
       match: async (req) => {
         const url = typeof req === "string" ? req : req.url;
-        if (url.includes("fr24-enrich-cache/UAL123")) {
+        if (url.includes("fr24-search-cache/UA123")) {
           return new Response(JSON.stringify({
-            origin: { iata: "SFO", name: "SFO" },
-            destination: { iata: "LAX", name: "LAX" },
+            results: [{
+              type: "live",
+              detail: { callsign: "UAL123", flight: "UA123", schd_from: "SFO", schd_to: "LAX" },
+            }],
           }));
         }
         return null;
@@ -52,7 +55,7 @@ test("FR24 cache hit returns route without calling fetch", async (t) => {
   t.after(() => {
     globalThis.caches = originalCaches;
     globalThis.fetch = originalFetch;
-    resetEnrichBackoff();
+    fr24ResetBackoff();
   });
 
   const planes = [{ callsign: "UAL123", altFt: 35000, vRate: 0, ground: false }];
@@ -83,7 +86,7 @@ test("FR24 search success populates route and caches result", async (t) => {
   t.after(() => {
     globalThis.caches = originalCaches;
     globalThis.fetch = originalFetch;
-    resetEnrichBackoff();
+    fr24ResetBackoff();
   });
 
   const planes = [{ callsign: "DAL456", altFt: 30000, vRate: 0, ground: false }];
@@ -94,7 +97,7 @@ test("FR24 search success populates route and caches result", async (t) => {
   assert.equal(entry.destination.iata, "JFK");
   assert.equal(typeof entry.phase, "string");
   assert.ok(entry.display.length > 0);
-  assert.ok(cachePutKey && cachePutKey.includes("fr24-enrich-cache/DAL456"));
+  assert.ok(cachePutKey && cachePutKey.includes("fr24-search-cache/DL456"));
 });
 
 test("IATA variant used in FR24 query for SWA callsign", async (t) => {
@@ -115,7 +118,7 @@ test("IATA variant used in FR24 query for SWA callsign", async (t) => {
   t.after(() => {
     globalThis.caches = originalCaches;
     globalThis.fetch = originalFetch;
-    resetEnrichBackoff();
+    fr24ResetBackoff();
   });
 
   const planes = [{ callsign: "SWA1087", altFt: 25000, vRate: 0, ground: false }];
@@ -142,7 +145,7 @@ test("FR24 miss falls back to ADSBDB", async (t) => {
   t.after(() => {
     globalThis.caches = originalCaches;
     globalThis.fetch = originalFetch;
-    resetEnrichBackoff();
+    fr24ResetBackoff();
   });
 
   const planes = [{ callsign: "UAL789", altFt: 35000, vRate: 0, ground: false }];
@@ -172,7 +175,7 @@ test("FR24 rate limit triggers backoff — second call skips FR24", async (t) =>
   t.after(() => {
     globalThis.caches = originalCaches;
     globalThis.fetch = originalFetch;
-    resetEnrichBackoff();
+    fr24ResetBackoff();
   });
 
   await enrichRoutes(
@@ -204,7 +207,7 @@ test("FR24 network error falls back to ADSBDB", async (t) => {
   t.after(() => {
     globalThis.caches = originalCaches;
     globalThis.fetch = originalFetch;
-    resetEnrichBackoff();
+    fr24ResetBackoff();
   });
 
   const planes = [{ callsign: "ASA300", altFt: 15000, vRate: -500, ground: false }];
@@ -234,7 +237,7 @@ test("both FR24 and ADSBDB miss — callsign absent from routeMap", async (t) =>
   t.after(() => {
     globalThis.caches = originalCaches;
     globalThis.fetch = originalFetch;
-    resetEnrichBackoff();
+    fr24ResetBackoff();
   });
 
   const planes = [{ callsign: "XYZ999", altFt: 35000, vRate: 0, ground: false }];
@@ -253,7 +256,7 @@ test("private planes are skipped — no fetches made", async (t) => {
   t.after(() => {
     globalThis.caches = originalCaches;
     globalThis.fetch = originalFetch;
-    resetEnrichBackoff();
+    fr24ResetBackoff();
   });
 
   const planes = [
@@ -276,7 +279,7 @@ test("planes with null callsign are skipped", async (t) => {
   t.after(() => {
     globalThis.caches = originalCaches;
     globalThis.fetch = originalFetch;
-    resetEnrichBackoff();
+    fr24ResetBackoff();
   });
 
   const planes = [
@@ -289,7 +292,7 @@ test("planes with null callsign are skipped", async (t) => {
 });
 
 test("empty planes array returns empty routeMap", async (t) => {
-  t.after(() => resetEnrichBackoff());
+  t.after(() => fr24ResetBackoff());
   const routeMap = await enrichRoutes([], {}, mockCtx());
   assert.deepEqual(Object.keys(routeMap), []);
 });
@@ -318,7 +321,7 @@ test("detectPhase and formatRouteLabel produce phase and display fields", async 
   t.after(() => {
     globalThis.caches = originalCaches;
     globalThis.fetch = originalFetch;
-    resetEnrichBackoff();
+    fr24ResetBackoff();
   });
 
   const planes = [{ callsign: "UAL500", altFt: 3000, vRate: -800, ground: false }];
@@ -350,7 +353,7 @@ test("FR24 403 triggers backoff same as 429", async (t) => {
   t.after(() => {
     globalThis.caches = originalCaches;
     globalThis.fetch = originalFetch;
-    resetEnrichBackoff();
+    fr24ResetBackoff();
   });
 
   await enrichRoutes(
@@ -381,7 +384,7 @@ test("callsign is trimmed and uppercased for routeMap key", async (t) => {
   t.after(() => {
     globalThis.caches = originalCaches;
     globalThis.fetch = originalFetch;
-    resetEnrichBackoff();
+    fr24ResetBackoff();
   });
 
   const planes = [{ callsign: "  ual999  ", altFt: 35000, vRate: 0, ground: false }];

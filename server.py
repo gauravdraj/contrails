@@ -10,6 +10,8 @@ import urllib.request
 PORT = 8766
 ADSB_API = "https://api.adsb.lol/v2"
 ADSB_ROUTE_API = "https://api.adsb.lol/api/0"
+PLANESPOTTERS_API = "https://api.planespotters.net/pub/photos"
+OPENSKY_API = "https://opensky-network.org/api"
 FR24_API = "https://api.flightradar24.com/common/v1"
 FR24_CACHE_TTL = 300
 CORS_HEADERS = {
@@ -44,6 +46,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._handle_schedule()
         elif self.path.startswith("/api/fr24/search/"):
             self._handle_fr24_search()
+        elif self.path.startswith("/api/photo/"):
+            hex_id = self.path[len("/api/photo/"):]
+            self._proxy(f"{PLANESPOTTERS_API}/hex/{hex_id}")
+        elif self.path.startswith("/api/track/"):
+            hex_id = self.path[len("/api/track/"):]
+            self._proxy(f"{OPENSKY_API}/tracks/all?icao24={hex_id}&time=0")
         else:
             super().do_GET()
 
@@ -53,6 +61,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(length) if length else b""
             self._proxy(f"{ADSB_ROUTE_API}{rest}", method="POST", body=body)
+        elif self.path == "/api/routeset":
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length) if length else b""
+            self._proxy(f"{ADSB_ROUTE_API}/routeset", method="POST", body=body)
         else:
             self.send_response(404)
             self.end_headers()

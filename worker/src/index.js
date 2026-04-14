@@ -5,6 +5,7 @@ import { handleAirport } from "./airport.js";
 import { handleNearby } from "./nearby.js";
 import { fetchCachedTrack, mergeRoutes, detectPhase, formatRouteLabel } from "./opensky.js";
 import { fetchTraffic } from "./providers.js";
+import { fr24CheckBackoff, fr24TriggerBackoff, fr24ResetBackoff, fr24CachedSearch, FR24_HEADERS } from "./fr24-backoff.js";
 
 const ADSB_API = "https://api.adsb.lol/v2";
 const ADSB_ROUTE_API = "https://api.adsb.lol/api/0";
@@ -20,27 +21,6 @@ const JSON_PROXY_HEADERS = {
   "Content-Type": "application/json",
 };
 
-const FR24_HEADERS = {
-  "User-Agent": "Mozilla/5.0 (compatible; contrails/1.0)",
-};
-
-let fr24BackoffUntil = 0;
-let fr24BackoffDelay = 10000;
-
-function fr24CheckBackoff() {
-  if (Date.now() < fr24BackoffUntil) return true;
-  return false;
-}
-
-function fr24TriggerBackoff() {
-  fr24BackoffDelay = Math.min(fr24BackoffDelay * 2, 300000);
-  fr24BackoffUntil = Date.now() + fr24BackoffDelay;
-}
-
-function fr24ResetBackoff() {
-  fr24BackoffDelay = 10000;
-  fr24BackoffUntil = 0;
-}
 
 export default {
   async fetch(request, env, ctx) {
@@ -249,31 +229,10 @@ async function handleFr24Search(url, ctx) {
   const query = url.pathname.split("/").pop();
   if (!/^[A-Za-z0-9]{2,10}$/.test(query)) return json(400, { error: "Invalid query" });
 
-  const cache = caches.default;
-  const cacheKey = new Request(url.toString());
-  const cached = await cache.match(cacheKey);
-  if (cached) return cached;
-
-  if (fr24CheckBackoff()) return json(503, { error: "FR24 temporarily unavailable" });
-
-  try {
-    const searchUrl = `https://www.flightradar24.com/v1/search/web/find?query=${encodeURIComponent(query)}&limit=8`;
-    const resp = await fetch(searchUrl, { headers: FR24_HEADERS });
-    if (resp.status === 429 || resp.status === 403) {
-      fr24TriggerBackoff();
-      return json(503, { error: "FR24 rate limited" });
-    }
-    if (!resp.ok) throw new Error("FR24 HTTP " + resp.status);
-    fr24ResetBackoff();
-
-    const data = await resp.json();
-    const response = json(200, data);
-    response.headers.set("Cache-Control", `s-maxage=${FR24_CACHE_TTL}`);
-    ctx.waitUntil(cache.put(cacheKey, response.clone()));
-    return response;
-  } catch (error) {
-    return json(502, { error: error.message });
-  }
+  const data = await fr24CachedSearch(query, ctx);
+  if (data) return json(200, data);
+  if (await fr24CheckBackoff()) return json(503, { error: "FR24 temporarily unavailable" });
+  return json(502, { error: "FR24 search failed" });
 }
 
 async function handleSchedule(url, ctx) {
@@ -285,7 +244,7 @@ async function handleSchedule(url, ctx) {
   const cached = await cache.match(cacheKey);
   if (cached) return cached;
 
-  if (fr24CheckBackoff()) return json(503, { error: "FR24 temporarily unavailable" });
+  if (await fr24CheckBackoff()) return json(503, { error: "FR24 temporarily unavailable" });
 
   try {
     const lookback = Math.floor(Date.now() / 1000) - 2 * 3600;
@@ -295,17 +254,17 @@ async function handleSchedule(url, ctx) {
       fetch(base + "&page=2", { headers: FR24_HEADERS }),
     ]);
     if (r1.status === 429 || r1.status === 403) {
-      fr24TriggerBackoff();
+      fr24TriggerBackoff(ctx);
       return json(503, { error: "FR24 rate limited" });
     }
     if (!r1.ok) throw new Error("FR24 HTTP " + r1.status);
-    fr24ResetBackoff();
+    fr24ResetBackoff(ctx);
 
     const raw1 = await r1.json();
     const result = buildSchedulePayload(raw1, iata);
 
     if (r2.status === 429 || r2.status === 403) {
-      fr24TriggerBackoff();
+      fr24TriggerBackoff(ctx);
     } else if (r2.ok) {
       const raw2 = await r2.json();
       const page2 = buildSchedulePayload(raw2, iata);

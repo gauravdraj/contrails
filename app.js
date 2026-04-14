@@ -119,19 +119,18 @@
     if (isLocal) return "/api/adsb" + path;
     return WORKER_URL + "/adsb" + path;
   }
-  function routeUrl(path) {
-    if (isLocal) return "/api/adsb-route" + path;
-    return WORKER_URL + "/route" + path;
-  }
   function photoUrl(hex) {
+    if (isLocal) return "/api/photo/" + hex;
     return WORKER_URL + "/photo/" + hex;
   }
   function routesetUrl() {
+    if (isLocal) return "/api/routeset";
     return WORKER_URL + "/routeset";
   }
   const OPENSKY_PROXY = "https://raspberrypi.tail7af116.ts.net";
   var openskyProxyOk = null;
   function trackUrl(hex) {
+    if (isLocal) return "/api/track/" + hex;
     return WORKER_URL + "/track/" + hex;
   }
   function geoUrl() {
@@ -4164,23 +4163,21 @@
       tabs[t].classList.toggle("active", tabs[t].getAttribute("data-dir") === _fidsDir);
     document.getElementById("fids").classList.add("open");
 
-    var schedUrl = (isLocal ? "/api/fr24/schedule/" : WORKER_URL + "/schedule/") + encodeURIComponent(iata);
-    fetch(schedUrl)
-      .then(function(r) { return r.json(); })
-      .then(function(data) {
-        if (data.error) {
-          document.getElementById("fids-body").innerHTML =
-            '<div class="fids-empty">' + escapeHtml(data.error) + '</div>';
-          return;
-        }
-        _fidsData = data;
-        if (data.name) document.getElementById("fids-subtitle").textContent = data.name;
-        renderFidsTab();
-      })
-      .catch(function() {
+    fetchScheduleData(iata).then(function(data) {
+      if (!data) {
         document.getElementById("fids-body").innerHTML =
           '<div class="fids-empty">Failed to load schedule</div>';
-      });
+        return;
+      }
+      if (data.error) {
+        document.getElementById("fids-body").innerHTML =
+          '<div class="fids-empty">' + escapeHtml(data.error) + '</div>';
+        return;
+      }
+      _fidsData = data;
+      if (data.name) document.getElementById("fids-subtitle").textContent = data.name;
+      renderFidsTab();
+    });
   };
 
   window.closeFids = function() {
