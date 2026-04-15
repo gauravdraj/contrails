@@ -1449,6 +1449,7 @@
     proactiveFetchTracks();
     proactiveScheduleSweep();
     proactiveFr24SearchSweep();
+    if (_activeAirportPopup && _activeAirportIata) patchAirportCacheFromViewport();
   }
 
   function buildRouteFetchPayload(sourcePlanes, options) {
@@ -4018,6 +4019,7 @@
         error: null,
         loading: false,
         pending: null,
+        snapshot: null,
         ts: 0
       };
     }
@@ -4081,6 +4083,7 @@
         if (!resp.ok) throw new Error("HTTP " + resp.status);
         var payload = await resp.json();
         var snapshot = buildAircraftSnapshot(payload.ac || [], { includeProximity: false });
+        entry.snapshot = snapshot.aircraft;
 
         entry.data = buildLiveScheduleData(iata, lat, lng, snapshot.aircraft);
         entry.ts = Date.now();
@@ -4113,6 +4116,35 @@
 
     entry.pending = promise;
     return promise;
+  }
+
+  function patchAirportCacheFromViewport() {
+    if (!_activeAirportPopup || !_activeAirportIata) return;
+    var entry = _airportPopupCache[_activeAirportIata];
+    if (!entry || !entry.snapshot || !entry.snapshot.length) return;
+    if (entry.loading) return;
+
+    var lookup = {};
+    for (var i = 0; i < aircraft.length; i++) {
+      lookup[aircraft[i].icao24] = aircraft[i];
+    }
+
+    var snap = entry.snapshot;
+    for (var j = 0; j < snap.length; j++) {
+      var fresh = lookup[snap[j].icao24];
+      if (!fresh) continue;
+      snap[j].lat = fresh.lat;
+      snap[j].lng = fresh.lng;
+      snap[j].altFt = fresh.altFt;
+      snap[j].speedKts = fresh.speedKts;
+      snap[j].vRate = fresh.vRate;
+      snap[j].ground = fresh.ground;
+      snap[j].track = fresh.track;
+      snap[j].reportTs = fresh.reportTs;
+    }
+
+    entry.data = buildLiveScheduleData(_activeAirportIata, _activeAirportLat, _activeAirportLng, snap);
+    renderSchedulePopup(_activeScheduleDir);
   }
 
   function renderSchedulePopup(dir) {
