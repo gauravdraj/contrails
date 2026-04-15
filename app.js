@@ -144,9 +144,9 @@
   const TILE_LAYER_OPTIONS = {
     maxZoom: 18,
     keepBuffer: 6,
-    updateWhenIdle: false,
+    updateWhenIdle: true,
     updateInterval: 100,
-    updateWhenZooming: true
+    updateWhenZooming: false
   };
   const DEFAULT_BROWSE_LAT = 51.5074;
   const DEFAULT_BROWSE_LNG = -0.1278;
@@ -245,6 +245,7 @@
   let ignoreMapClickUntil = 0;
   let lastFetchKm = MIN_VIEW_FETCH_KM;
   let mapFetchTimer = null;
+  var moveEndDebounceTimer = null;
   let suppressViewportRefresh = false;
   let fetchAbortController = null;
   let fetchRequestSeq = 0;
@@ -261,10 +262,12 @@
   const markerMap = {};
   const extraState = {};
   const airportMarkers = {};
+  var runwayLines = {};
   var refreshSearchUi = null;
   let markerAnimationFrame = 0;
   let markerAnimationTimer = 0;
   let _isZooming = false;
+  var _isPanning = false;
   var lastFetchTs = 0;
   var fetchInterval = REFRESH_MS;
   var trailBreakPending = {};
@@ -370,17 +373,17 @@
       zoomControl: false,
       attributionControl: false,
       preferCanvas: true,
-      zoomSnap: 0,
+      zoomSnap: desktopWheelTuning ? 0.25 : 0,
       scrollWheelZoom: !desktopWheelTuning,
       smoothWheelZoom: desktopWheelTuning,
       smoothSensitivity: 1,
       zoomDelta: desktopWheelTuning ? 0.5 : 0.25,
-      wheelPxPerZoomLevel: desktopWheelTuning ? 90 : 180,
-      wheelDebounceTime: desktopWheelTuning ? 28 : 40,
+      wheelPxPerZoomLevel: desktopWheelTuning ? 120 : 180,
+      wheelDebounceTime: desktopWheelTuning ? 50 : 40,
       zoomAnimation: true,
       zoomAnimationThreshold: 8,
       fadeAnimation: false,
-      markerZoomAnimation: true,
+      markerZoomAnimation: false,
       doubleClickZoom: !isIOSSafari,
       doubleTapDragZoom: isIOSSafari ? false : "center",
       doubleTapDragZoomOptions: { reverse: true }
@@ -397,6 +400,7 @@
     var _autoPanning = false;
     map.on("autopanstart", function() { _autoPanning = true; });
     map.on("movestart", function() {
+      _isPanning = true;
       if (_autoPanning) { _autoPanning = false; return; }
       if (pendingPlaneFocus && pendingPlaneFocus.failed) clearPendingPlaneFocus();
     });
@@ -406,7 +410,7 @@
       setSelectedAircraft(null);
     });
 
-    map.on("zoomstart", function() { _isZooming = true; });
+    map.on("zoomstart", function() { _isZooming = true; clearTimeout(moveEndDebounceTimer); moveEndDebounceTimer = null; });
     map.on("zoomend", function() { _isZooming = false; });
 
     trailLayer = L.layerGroup().addTo(map);
@@ -415,6 +419,7 @@
     aircraftLayer = L.layerGroup().addTo(map);
     installIOSOneFingerZoom();
     var _popupJustOpened = false;
+    var popupCheckRafPending = false;
     function popupPanelLeavingView(popup) {
       if (!popup || !popup.getElement) return false;
       var el = popup.getElement();
@@ -430,8 +435,13 @@
     }
     map.on("move", function() {
       if (_popupJustOpened || _autoPanning) return;
-      var p = map._popup;
-      if (popupPanelLeavingView(p)) map.closePopup();
+      if (popupCheckRafPending) return;
+      popupCheckRafPending = true;
+      requestAnimationFrame(function() {
+        popupCheckRafPending = false;
+        var p = map._popup;
+        if (p && popupPanelLeavingView(p)) map.closePopup();
+      });
     });
     map.on("popupopen", function(e) {
       _popupJustOpened = true;
@@ -488,6 +498,14 @@
           }
         });
       }
+      var popupSourceHex = null;
+      for (var id in markerMap) {
+        if (markerMap[id].getPopup() === e.popup) { popupSourceHex = id; break; }
+      }
+      if (popupSourceHex) {
+        var popupAircraft = findAircraftById(popupSourceHex);
+        if (popupAircraft) e.popup.setContent(buildPopup(popupAircraft));
+      }
       var photoEl = el.querySelector(".popup-photo");
       if (photoEl) {
         var hex = photoEl.getAttribute("data-hex");
@@ -517,8 +535,14 @@
       }, 50);
     });
     map.on("moveend", function() {
-      if (suppressViewportRefresh) return;
-      refreshViewportUi({ fetch: true });
+      _isPanning = false;
+      if (!suppressViewportRefresh) {
+        clearTimeout(moveEndDebounceTimer);
+        moveEndDebounceTimer = setTimeout(function() {
+          moveEndDebounceTimer = null;
+          refreshViewportUi({ fetch: true });
+        }, 120);
+      }
       if (_popupJustOpened || _autoPanning) { _autoPanning = false; return; }
       var p = map._popup;
       if (p) {
@@ -2010,13 +2034,29 @@
   function refreshAirportLabels() {}
 
   function renderAirports() {
-    airportLayer.clearLayers();
-    for (var k in airportMarkers) delete airportMarkers[k];
     var bounds = currentViewBounds(AIRPORT_VIEW_PAD);
-    if (!airportData || !bounds) return;
+    if (!airportData || !bounds) {
+      for (var k in airportMarkers) {
+        airportLayer.removeLayer(airportMarkers[k].marker);
+        delete airportMarkers[k];
+      }
+      return;
+    }
+    var inBounds = {};
     for (var i = 0; i < airportData.length; i++) {
       var ap = airportData[i];
       if (!bounds.contains([ap[1], ap[2]])) continue;
+      inBounds[ap[0]] = ap;
+    }
+    for (var old in airportMarkers) {
+      if (!inBounds[old]) {
+        airportLayer.removeLayer(airportMarkers[old].marker);
+        delete airportMarkers[old];
+      }
+    }
+    for (var code in inBounds) {
+      if (airportMarkers[code]) continue;
+      var ap = inBounds[code];
       var iata = ap[0], name = ap[3] || iata;
       (function(code, apName, lat, lng) {
         var m = L.circleMarker([lat, lng], {
@@ -2054,20 +2094,37 @@
   }
 
   function renderRunways() {
-    runwayLayer.clearLayers();
     var bounds = currentViewBounds(AIRPORT_VIEW_PAD);
-    if (!runwayData || !bounds) return;
+    if (!runwayData || !bounds) {
+      for (var k in runwayLines) {
+        runwayLayer.removeLayer(runwayLines[k]);
+        delete runwayLines[k];
+      }
+      return;
+    }
+    var inBounds = {};
     for (var iata in runwayData) {
       var rwys = runwayData[iata];
       for (var j = 0; j < rwys.length; j++) {
         var r = rwys[j];
         if (!bounds.contains([(r[0] + r[3]) / 2, (r[1] + r[4]) / 2])) continue;
-        L.polyline([[r[0],r[1]], [r[3],r[4]]], {
-          color: "#7a8a9f", weight: 2.5, opacity: 0.7, dashArray: "8,5"
-        }).bindTooltip(r[6], {
-          permanent: false, direction: "center", className: "runway-label"
-        }).addTo(runwayLayer);
+        inBounds[iata + "-" + j] = r;
       }
+    }
+    for (var old in runwayLines) {
+      if (!inBounds[old]) {
+        runwayLayer.removeLayer(runwayLines[old]);
+        delete runwayLines[old];
+      }
+    }
+    for (var key in inBounds) {
+      if (runwayLines[key]) continue;
+      var r = inBounds[key];
+      runwayLines[key] = L.polyline([[r[0],r[1]], [r[3],r[4]]], {
+        color: "#7a8a9f", weight: 2.5, opacity: 0.7, dashArray: "8,5"
+      }).bindTooltip(r[6], {
+        permanent: false, direction: "center", className: "runway-label"
+      }).addTo(runwayLayer);
     }
   }
 
@@ -2151,6 +2208,7 @@
 
   function renderTrails(now, displayPoses) {
     if (_isZooming) return;
+    if (_isPanning) return;
     now = now || Date.now();
     var zoom = map ? map.getZoom() : 11;
     var markerCount = Object.keys(markerMap).length;
@@ -2862,7 +2920,7 @@
       marker.setIcon(planeIcon(a.track, a.aircraftType, a.private, a.category, a.altFt, a.ground));
       markerState.iconKey = iconKey;
     }
-    if (markerState.popupHtml !== popupHtml) {
+    if (popupHtml !== null && markerState.popupHtml !== popupHtml) {
       marker.setPopupContent(popupHtml);
       markerState.popupHtml = popupHtml;
     }
@@ -2944,6 +3002,13 @@
     now = now || Date.now();
     var displayTime = currentDisplayTime(now);
     var seen = {};
+    var openPopupHex = null;
+    var _p = map._popup;
+    if (_p) {
+      for (var hx in markerMap) {
+        if (markerMap[hx].getPopup() === _p) { openPopupHex = hx; break; }
+      }
+    }
     var visibleCount = 0;
     for (var vc = 0; vc < aircraft.length; vc++) {
       if (!isFiltered(aircraft[vc])) visibleCount++;
@@ -2997,7 +3062,7 @@
       state.samples = samples;
       state.displayPose = displayPose;
       extraState[a.icao24] = state;
-      var popupHtml = buildPopup(a, policy);
+      var popupHtml = (a.icao24 === openPopupHex) ? buildPopup(a, policy) : null;
 
       var labelDir = policy.showLabels ? chooseLabelDirection([displayPose.lat, displayPose.lng], occupiedPts) : "top";
 
@@ -3007,7 +3072,7 @@
       } else {
         newThisFrame++;
         var icon = planeIcon(a.track, a.aircraftType, a.private, a.category, a.altFt, a.ground);
-        var marker = L.marker([displayPose.lat, displayPose.lng], { icon: icon }).bindPopup(popupHtml, {
+        var marker = L.marker([displayPose.lat, displayPose.lng], { icon: icon }).bindPopup("", {
           closeButton: false, autoPan: false
         });
         marker.on("click", (function(id, m) {
@@ -3020,7 +3085,7 @@
         }
         markerMap[a.icao24] = marker;
         state.iconKey = markerIconKey(a);
-        state.popupHtml = popupHtml;
+        state.popupHtml = "";
         state.selected = isSelected;
         state.showLabels = !!policy.showLabels;
         state.labelText = policy.showLabels ? label : "";
@@ -3059,21 +3124,23 @@
       return;
     }
     _lastAnimateTs = now;
-    var displayTime = currentDisplayTime(now);
-    var displayPoses = {};
-    for (var id in extraState) {
-      var marker = markerMap[id];
-      if (!marker) continue;
-      var st = extraState[id];
-      var samples = st.samples;
-      if (!samples || !samples.length) continue;
-      var pose = getDisplayPoseForSamples(samples, displayTime);
-      if (!pose) continue;
-      st.displayPose = pose;
-      displayPoses[id] = pose;
-      syncMarkerPose(marker, pose);
+    if (!_isPanning) {
+      var displayTime = currentDisplayTime(now);
+      var displayPoses = {};
+      for (var id in extraState) {
+        var marker = markerMap[id];
+        if (!marker) continue;
+        var st = extraState[id];
+        var samples = st.samples;
+        if (!samples || !samples.length) continue;
+        var pose = getDisplayPoseForSamples(samples, displayTime);
+        if (!pose) continue;
+        st.displayPose = pose;
+        displayPoses[id] = pose;
+        syncMarkerPose(marker, pose);
+      }
+      renderTrails(now, displayPoses);
     }
-    renderTrails(now, displayPoses);
     scheduleMarkerAnimation(minInterval);
   }
 
