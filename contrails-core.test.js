@@ -234,6 +234,35 @@ test("elevationDeg returns null when inputs are missing", () => {
   assert.equal(core.elevationDeg(5, null), null);
 });
 
+test("angleDiffDeg returns 0 for identical angles", () => {
+  assert.equal(core.angleDiffDeg(90, 90), 0);
+  assert.equal(core.angleDiffDeg(0, 0), 0);
+  assert.equal(core.angleDiffDeg(359, 359), 0);
+});
+
+test("angleDiffDeg returns 180 for opposite headings", () => {
+  assert.equal(core.angleDiffDeg(0, 180), 180);
+  assert.equal(core.angleDiffDeg(180, 0), 180);
+  assert.equal(core.angleDiffDeg(90, 270), 180);
+});
+
+test("angleDiffDeg handles wraparound correctly", () => {
+  assert.equal(core.angleDiffDeg(350, 10), 20);
+  assert.equal(core.angleDiffDeg(10, 350), 20);
+  assert.equal(core.angleDiffDeg(1, 359), 2);
+});
+
+test("angleDiffDeg normalizes negative inputs", () => {
+  assert.equal(core.angleDiffDeg(-10, 10), 20);
+  assert.equal(core.angleDiffDeg(10, -10), 20);
+  assert.equal(core.angleDiffDeg(-90, -270), 180);
+});
+
+test("angleDiffDeg handles large values beyond 360", () => {
+  assert.equal(core.angleDiffDeg(370, 10), 0);
+  assert.equal(core.angleDiffDeg(720, 0), 0);
+});
+
 test("scoreArrivalCandidate favors low descending arrivals over nearby cruisers", () => {
   const lowArrival = core.scoreArrivalCandidate({
     altFt: 3000,
@@ -475,4 +504,111 @@ test("scoreArrivalCandidate destination-confirmed near nominal descent point use
 
   assert.ok(result.etaMin > 4, "etaMin should be greater than 4 (was " + result.etaMin + ")");
   assert.ok(result.etaMin < 6, "etaMin should be less than 6 (was " + result.etaMin + ")");
+});
+
+test("scoreArrivalCandidate relaxed thresholds: 8000 ft / 20 km descending without destinationMatch is eligible", () => {
+  var result = core.scoreArrivalCandidate({
+    altFt: 8000, vRate: -18, distKm: 20, spdKts: 200
+  });
+  assert.equal(result.eligible, true);
+});
+
+test("scoreArrivalCandidate relaxed thresholds: 10000 ft / 25 km descending without destinationMatch is eligible", () => {
+  var result = core.scoreArrivalCandidate({
+    altFt: 10000, vRate: -10, distKm: 25, spdKts: 250
+  });
+  assert.equal(result.eligible, true);
+});
+
+test("scoreArrivalCandidate relaxed thresholds: 10001 ft descending without destinationMatch is ineligible", () => {
+  var result = core.scoreArrivalCandidate({
+    altFt: 10001, vRate: -18, distKm: 20, spdKts: 200
+  });
+  assert.equal(result.eligible, false);
+});
+
+test("scoreArrivalCandidate relaxed thresholds: 8000 ft not descending without destinationMatch is ineligible", () => {
+  var result = core.scoreArrivalCandidate({
+    altFt: 8000, vRate: 0, distKm: 20, spdKts: 200
+  });
+  assert.equal(result.eligible, false);
+});
+
+test("scoreArrivalCandidate relaxed thresholds: 26 km descending without destinationMatch is ineligible", () => {
+  var result = core.scoreArrivalCandidate({
+    altFt: 8000, vRate: -10, distKm: 26, spdKts: 200
+  });
+  assert.equal(result.eligible, false);
+});
+
+// --- findFlightStartIndex ---
+
+function mkPt(timeSec, onGround) {
+  return [timeSec, 40.0, -74.0, 3000, 90, onGround ? 1 : 0];
+}
+
+test("findFlightStartIndex returns 0 for null/empty path", () => {
+  assert.equal(core.findFlightStartIndex(null), 0);
+  assert.equal(core.findFlightStartIndex(undefined), 0);
+  assert.equal(core.findFlightStartIndex([]), 0);
+});
+
+test("findFlightStartIndex returns 0 for continuous airborne flight with no gaps", () => {
+  var path = [mkPt(100, false), mkPt(200, false), mkPt(300, false), mkPt(400, false)];
+  assert.equal(core.findFlightStartIndex(path), 0);
+});
+
+test("findFlightStartIndex returns first airborne index after on-ground segment", () => {
+  var path = [
+    mkPt(100, false), mkPt(200, false),
+    mkPt(300, true), mkPt(400, true),
+    mkPt(500, false), mkPt(600, false)
+  ];
+  assert.equal(core.findFlightStartIndex(path), 4);
+});
+
+test("findFlightStartIndex detects >30-min time gap with no ground points", () => {
+  var path = [
+    mkPt(1000, false), mkPt(1100, false),
+    mkPt(5000, false), mkPt(5100, false)
+  ];
+  assert.equal(core.findFlightStartIndex(path), 2);
+});
+
+test("findFlightStartIndex uses more recent of two boundary types", () => {
+  var path = [
+    mkPt(100, false),
+    mkPt(200, true), mkPt(300, true),
+    mkPt(400, false),
+    mkPt(3000, false), mkPt(3100, false)
+  ];
+  assert.equal(core.findFlightStartIndex(path), 4);
+});
+
+test("findFlightStartIndex returns 0 when all points are on-ground", () => {
+  var path = [mkPt(100, true), mkPt(200, true), mkPt(300, true)];
+  assert.equal(core.findFlightStartIndex(path), 0);
+});
+
+test("findFlightStartIndex preserves single flight ending on-ground (just-landed)", () => {
+  var path = [mkPt(100, false), mkPt(200, false), mkPt(300, true), mkPt(400, true)];
+  assert.equal(core.findFlightStartIndex(path), 0);
+});
+
+test("findFlightStartIndex handles two flights with turnaround, current flight landed", () => {
+  var path = [
+    mkPt(100, false),
+    mkPt(200, true), mkPt(300, true),
+    mkPt(400, false), mkPt(500, false),
+    mkPt(600, true)
+  ];
+  assert.equal(core.findFlightStartIndex(path), 3);
+});
+
+test("findFlightStartIndex ignores time gap within trailing ground segment", () => {
+  var path = [
+    mkPt(100, false), mkPt(200, false),
+    mkPt(300, true), mkPt(5000, true)
+  ];
+  assert.equal(core.findFlightStartIndex(path), 0);
 });

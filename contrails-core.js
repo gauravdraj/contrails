@@ -42,6 +42,11 @@
     return CARDINALS[Math.round(deg / 45) % 8];
   }
 
+  function angleDiffDeg(a, b) {
+    var delta = ((b - a) % 360 + 360) % 360;
+    return delta > 180 ? 360 - delta : delta;
+  }
+
   function parseCoordinate(value, min, max) {
     var parsed = parseFloat(value);
     if (!isFinite(parsed)) return null;
@@ -389,6 +394,25 @@
     return Math.atan2(altKm, Math.max(groundKm, 0.001)) * 180 / Math.PI;
   }
 
+  function findFlightStartIndex(path) {
+    if (!path || !path.length) return 0;
+    var scanEnd = path.length - 1;
+    while (scanEnd >= 0 && path[scanEnd][5]) scanEnd--;
+    if (scanEnd < 0) return 0;
+
+    var groundBound = 0;
+    for (var i = scanEnd; i >= 0; i--) {
+      if (path[i][5]) { groundBound = i + 1; break; }
+    }
+
+    var gapBound = 0;
+    for (var j = scanEnd; j >= 1; j--) {
+      if (path[j][0] - path[j - 1][0] > 1800) { gapBound = j; break; }
+    }
+
+    return Math.max(groundBound, gapBound);
+  }
+
   function scoreArrivalCandidate(input) {
     input = input || {};
     var altFt = isFinite(input.altFt) ? Math.max(0, input.altFt) : null;
@@ -440,8 +464,8 @@
       if (privateAircraft && confidence !== "high") eligible = false;
     } else {
       if (privateAircraft) eligible = false;
-      if (altFt == null || altFt > 6000) eligible = false;
-      if (distKm == null || distKm > 12) eligible = false;
+      if (altFt == null || altFt > 10000) eligible = false;
+      if (distKm == null || distKm > 25) eligible = false;
       if (!descending) eligible = false;
     }
 
@@ -483,6 +507,7 @@
     AIRLINE_ICAO_TO_IATA: AIRLINE_ICAO_TO_IATA_ALIASES,
     SQUAWK_ALERTS: SQUAWK_ALERTS,
     airlineName: airlineName,
+    angleDiffDeg: angleDiffDeg,
     bearingDegrees: bearingDegrees,
     computePlaybackDelayMs: computePlaybackDelayMs,
     buildViewPolicy: buildViewPolicy,
@@ -490,6 +515,7 @@
     cardinalDir: cardinalDir,
     elevationDeg: elevationDeg,
     escapeHtml: escapeHtml,
+    findFlightStartIndex: findFlightStartIndex,
     formatDistanceMiles: formatDistanceMiles,
     formatSpeedMph: formatSpeedMph,
     haversineKm: haversineKm,

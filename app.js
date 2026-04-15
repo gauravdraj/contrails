@@ -1,6 +1,7 @@
 (function() {
   const core = globalThis.ContrailsCore || {};
   const airlineName = core.airlineName;
+  const angleDiffDeg = core.angleDiffDeg;
   const bearingDegrees = core.bearingDegrees;
   const buildViewPolicy = core.buildViewPolicy;
   const buildViewportFetchSpec = core.buildViewportFetchSpec;
@@ -23,13 +24,14 @@
   const scoreArrivalCandidate = core.scoreArrivalCandidate;
   const slantKm = core.slantKm;
   const elevationDeg = core.elevationDeg;
+  const findFlightStartIndex = core.findFlightStartIndex;
   const SQUAWK_ALERT = core.SQUAWK_ALERTS;
   const AIRLINE_ICAO_TO_IATA = core.AIRLINE_ICAO_TO_IATA;
-  if (!airlineName || !bearingDegrees || !buildViewPolicy || !buildViewportFetchSpec || !cardinalDir ||
+  if (!airlineName || !angleDiffDeg || !bearingDegrees || !buildViewPolicy || !buildViewportFetchSpec || !cardinalDir ||
       !callsignVariants || !computePlaybackDelayMs || !escapeHtml || !formatDistanceMiles || !formatSpeedMph ||
       !haversineKm || !interpolatePlaybackPose || !interpolateTimedPose || !isLikelyPrivateCallsign ||
       !normalizeAircraftHex || !normalizeFlightQuery || !normalizeSearchText || !parseCoordinate || !projectLatLng ||
-      !scoreArrivalCandidate ||
+      !scoreArrivalCandidate || !findFlightStartIndex ||
       !roundTenths || !slantKm || !elevationDeg || !SQUAWK_ALERT) {
     throw new Error("Contrails core helpers failed to load.");
   }
@@ -2368,6 +2370,9 @@
   function ingestTrackPath(hex, data) {
     var path = data.path || data;
     if (!path || !path.length) return;
+    var flightStart = findFlightStartIndex(path);
+    path = path.slice(flightStart);
+    if (!path.length) return;
     var history = posHistory[hex];
     if (!history) { posHistory[hex] = []; history = posHistory[hex]; }
     var earliestLive = history.length ? history[0][2] : Infinity;
@@ -2383,7 +2388,7 @@
     }
     if (converted.length) {
       posHistory[hex] = converted.concat(history);
-      runOriginDetection(hex, data);
+      runOriginDetection(hex, { path: path });
     }
   }
 
@@ -3880,11 +3885,13 @@
       if (!a.callsign || a.ground || seenCallsigns[a.callsign]) continue;
       var rc = routeCache[a.callsign];
       if (rc && rc.origin && rc.origin.iata === airportIata) continue;
-      if (rc && rc.destination && rc.destination.iata !== airportIata) continue;
+      if (rc && rc.destination && rc.destination.iata !== airportIata && rc.confidence === "high") continue;
       var vRateFpm = a.vRate != null ? a.vRate * 60 : 0;
-      if (a.altFt == null || a.altFt > 6000 || vRateFpm > -500) continue;
+      if (a.altFt == null || a.altFt > 10000 || vRateFpm > -200) continue;
+      var toBearing = bearingDegrees(a.lat, a.lng, airportLat, airportLng);
+      if (a.track != null && angleDiffDeg(a.track, toBearing) > 60) continue;
       var distKm = haversineKm(a.lat, a.lng, airportLat, airportLng);
-      if (distKm > 20) continue;
+      if (distKm > 40) continue;
       var fallbackEntry = buildArrivalEntry(a, rc, airportIata, distKm, { proximity: true });
       if (fallbackEntry) arrivals.push(fallbackEntry);
     }
