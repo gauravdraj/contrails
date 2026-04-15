@@ -3,6 +3,7 @@
 
 import http.server
 import json
+import re
 import time
 import urllib.parse
 import urllib.request
@@ -160,7 +161,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._send_json({"error": str(e)}, status=502)
 
     def _handle_fr24_search(self):
-        import re
         query = self.path.split("/api/fr24/search/", 1)[-1].split("?", 1)[0]
         if not query or not re.fullmatch(r'[A-Za-z0-9]{2,10}', query):
             self._send_json({"error": "Invalid query"}, status=400)

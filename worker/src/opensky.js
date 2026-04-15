@@ -1,13 +1,6 @@
 import { MAJOR_AIRPORTS } from "./airports.js";
 import { haversineKm } from "./geo.js";
-import { json } from "./http.js";
 import { findNearestRegion } from "./regions.js";
-
-const OPENSKY_API = "https://opensky-network.org/api";
-const OPENSKY_AUTH_URL = "https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token";
-const OPENSKY_CACHE_TTL = 7200;
-const TRACK_STALE_MS = 20 * 60 * 1000;
-const TOKEN_CACHE_TTL = 1500;
 
 const ORIGIN_MAX_ALT_M = 2500;
 const ORIGIN_MAX_DIST_KM = 8;
@@ -116,80 +109,6 @@ export function extractOriginDest(track) {
   }
 
   return { origin, destination, ambiguous, lastTrackPoint };
-}
-
-async function fetchToken(env, cache) {
-  const clientId = env.OPENSKY_CLIENT_ID;
-  const clientSecret = env.OPENSKY_CLIENT_SECRET;
-  if (!clientId || !clientSecret) return null;
-
-  const cacheKey = new Request("https://opensky-token-cache/bearer");
-  const cached = await cache.match(cacheKey);
-  if (cached) {
-    const data = await cached.json();
-    return data.token;
-  }
-
-  let resp;
-  try {
-    resp = await fetch(OPENSKY_AUTH_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: `grant_type=client_credentials&client_id=${encodeURIComponent(clientId)}&client_secret=${encodeURIComponent(clientSecret)}`,
-      signal: AbortSignal.timeout(5000),
-    });
-  } catch (_) {
-    return null;
-  }
-  if (!resp.ok) return null;
-
-  const data = await resp.json();
-  const token = data.access_token;
-  if (!token) return null;
-
-  const cacheResp = json(200, { token });
-  cacheResp.headers.set("Cache-Control", `s-maxage=${TOKEN_CACHE_TTL}`);
-  await cache.put(cacheKey, cacheResp);
-  return token;
-}
-
-export async function fetchCachedTrack(hex, cache, ctx, env) {
-  if (!hex || !/^[0-9a-f]{6}$/i.test(hex)) return null;
-  const normalized = hex.toLowerCase();
-
-  const cacheKey = new Request(`https://opensky-track-cache/${normalized}`);
-  const cached = await cache.match(cacheKey);
-  if (cached) {
-    const track = await cached.json();
-    const lastPt = track?.path?.[track.path.length - 1];
-    if (lastPt && (Date.now() - lastPt[0] * 1000) < TRACK_STALE_MS) {
-      return track;
-    }
-  }
-
-  const headers = { "User-Agent": "contrails/1.0" };
-  const token = await fetchToken(env, cache);
-  if (token) headers["Authorization"] = `Bearer ${token}`;
-
-  let resp;
-  try {
-    resp = await fetch(
-      `${OPENSKY_API}/tracks/all?icao24=${normalized}&time=0`,
-      { headers, signal: AbortSignal.timeout(8000) },
-    );
-  } catch (_) {
-    return null;
-  }
-
-  if (!resp.ok) return null;
-
-  const track = await resp.json();
-  if (!track?.path?.length) return null;
-
-  const cacheResp = json(200, track);
-  cacheResp.headers.set("Cache-Control", `s-maxage=${OPENSKY_CACHE_TTL}`);
-  ctx.waitUntil(cache.put(cacheKey, cacheResp.clone()));
-  return track;
 }
 
 export function detectPhase(altFt, vRate, ground) {

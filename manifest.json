@@ -6,8 +6,8 @@
   "scope": "/contrails/",
   "display": "standalone",
   "orientation": "any",
-  "theme_color": "#07101b",
-  "background_color": "#07101b",
+  "theme_color": "#08111e",
+  "background_color": "#08111e",
   "icons": [
     {
       "src": "apple-touch-icon.png",

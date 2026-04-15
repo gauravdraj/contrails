@@ -11,26 +11,30 @@ if (!OPENSKY_USER || !OPENSKY_PASS) {
 
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || "https://gauravdraj.github.io").split(",");
 const trackCache = new Map();
-const CACHE_TTL = 15 * 60 * 1000;
+const FRESH_TTL = 4 * 60 * 60 * 1000;
+const STALE_TTL = 24 * 60 * 60 * 1000;
 
 const backoff = { until: 0, delay: 10_000 };
-const BACKOFF_MAX = 600_000;
+const BACKOFF_MAX = 30 * 60 * 1000;
+const MIN_REQUEST_INTERVAL = 30_000;
+let lastUpstreamRequest = 0;
 
 function isBackedOff() {
   return Date.now() < backoff.until;
 }
 
+function isThrottled() {
+  return Date.now() - lastUpstreamRequest < MIN_REQUEST_INTERVAL;
+}
+
 function triggerBackoff(retryAfterSec) {
-  if (retryAfterSec && retryAfterSec > 0) {
-    const ms = retryAfterSec * 1000;
-    backoff.delay = ms;
-    backoff.until = Date.now() + ms;
-  } else {
-    backoff.delay = Math.min(backoff.delay * 2, BACKOFF_MAX);
-    backoff.until = Date.now() + backoff.delay;
-  }
+  const ms = (retryAfterSec && retryAfterSec > 0)
+    ? Math.min(retryAfterSec * 1000, BACKOFF_MAX)
+    : Math.min(backoff.delay * 2, BACKOFF_MAX);
+  backoff.delay = ms;
+  backoff.until = Date.now() + ms;
   const resumeAt = new Date(backoff.until).toISOString();
-  console.log(`OpenSky 429 — backing off ${Math.round(backoff.delay / 1000)}s (resume ~${resumeAt})`);
+  console.log(`OpenSky 429 — backing off ${Math.round(ms / 1000)}s (resume ~${resumeAt})`);
 }
 
 function resetBackoff() {
@@ -51,6 +55,7 @@ function corsHeaders(req) {
 }
 
 function proxyOpenSky(path) {
+  lastUpstreamRequest = Date.now();
   const auth = Buffer.from(`${OPENSKY_USER}:${OPENSKY_PASS}`).toString("base64");
   return new Promise((resolve, reject) => {
     const req = https.get(
@@ -65,6 +70,12 @@ function proxyOpenSky(path) {
     req.on("timeout", () => { req.destroy(); reject(new Error("timeout")); });
     req.on("error", reject);
   });
+}
+
+function serveCached(cached, hdrs, res, stale) {
+  if (stale) hdrs["X-Cache"] = "stale";
+  res.writeHead(200, hdrs);
+  return res.end(cached.body);
 }
 
 const server = http.createServer(async (req, res) => {
@@ -85,13 +96,17 @@ const server = http.createServer(async (req, res) => {
     }
 
     const cached = trackCache.get(hex);
-    if (cached && Date.now() - cached.ts < CACHE_TTL) {
-      res.writeHead(200, hdrs);
-      return res.end(cached.body);
+    const age = cached ? Date.now() - cached.ts : Infinity;
+
+    if (cached && age < FRESH_TTL) {
+      return serveCached(cached, hdrs, res, false);
     }
 
-    if (isBackedOff()) {
-      const retry = Math.ceil((backoff.until - Date.now()) / 1000);
+    if (isBackedOff() || isThrottled()) {
+      if (cached && age < STALE_TTL) {
+        return serveCached(cached, hdrs, res, true);
+      }
+      const retry = isBackedOff() ? Math.ceil((backoff.until - Date.now()) / 1000) : 30;
       res.writeHead(503, { ...hdrs, "Retry-After": String(retry) });
       return res.end(JSON.stringify({ error: "opensky rate limited", retryAfter: retry }));
     }
@@ -107,6 +122,9 @@ const server = http.createServer(async (req, res) => {
       if (r.status === 429) {
         const retryAfterSec = parseInt(r.headers["x-rate-limit-retry-after-seconds"], 10) || 0;
         triggerBackoff(retryAfterSec);
+        if (cached && age < STALE_TTL) {
+          return serveCached(cached, hdrs, res, true);
+        }
         const clientRetry = Math.ceil((backoff.until - Date.now()) / 1000);
         res.writeHead(503, { ...hdrs, "Retry-After": String(clientRetry) });
         return res.end(JSON.stringify({ error: "opensky rate limited", retryAfter: clientRetry }));
@@ -114,6 +132,9 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(r.status, hdrs);
       return res.end(r.body || JSON.stringify({ error: `opensky ${r.status}` }));
     } catch (e) {
+      if (cached && age < STALE_TTL) {
+        return serveCached(cached, hdrs, res, true);
+      }
       res.writeHead(502, hdrs);
       return res.end(JSON.stringify({ error: e.message }));
     }
@@ -122,10 +143,17 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname === "/health") {
     const backedOff = isBackedOff();
     const retryIn = backedOff ? Math.ceil((backoff.until - Date.now()) / 1000) : 0;
+    let freshCount = 0, staleCount = 0;
+    const now = Date.now();
+    for (const [, v] of trackCache) {
+      const a = now - v.ts;
+      if (a < FRESH_TTL) freshCount++;
+      else if (a < STALE_TTL) staleCount++;
+    }
     res.writeHead(200, hdrs);
     return res.end(JSON.stringify({
       ok: !backedOff,
-      cached: trackCache.size,
+      cached: { fresh: freshCount, stale: staleCount, total: trackCache.size },
       rateLimited: backedOff,
       ...(backedOff && { retryInSeconds: retryIn, resumesAt: new Date(backoff.until).toISOString() }),
     }));

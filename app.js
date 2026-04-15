@@ -127,8 +127,6 @@
     if (isLocal) return "/api/routeset";
     return WORKER_URL + "/routeset";
   }
-  const OPENSKY_PROXY = "https://raspberrypi.tail7af116.ts.net";
-  var openskyProxyOk = null;
   function trackUrl(hex) {
     if (isLocal) return "/api/track/" + hex;
     return WORKER_URL + "/track/" + hex;
@@ -1738,7 +1736,6 @@
   var lastProactiveFetch = 0;
   var proactivePending = {};
   function proactiveFetchTracks() {
-    if (openskyProxyOk === false) return;
     var now = Date.now();
     if (now - lastProactiveFetch < 30000) return;
     lastProactiveFetch = now;
@@ -1755,13 +1752,15 @@
     for (var j = 0; j < targets.length; j++) {
       (function(hex) {
         proactivePending[hex] = true;
-        fetchProxyTrack(hex).then(function(data) {
-          delete proactivePending[hex];
-          if (data && (data.path ? data.path.length : data.length)) {
-            trackExtended[hex] = true;
-            ingestTrackPath(hex, data);
-          }
-        }).catch(function() { delete proactivePending[hex]; });
+        fetch(trackUrl(hex))
+          .then(function(r) { return r.json(); })
+          .then(function(data) {
+            delete proactivePending[hex];
+            if (data && (data.path ? data.path.length : data.length)) {
+              trackExtended[hex] = true;
+              ingestTrackPath(hex, data);
+            }
+          }).catch(function() { delete proactivePending[hex]; });
       })(targets[j]);
     }
   }
@@ -2439,46 +2438,13 @@
     }
   }
 
-  function fetchProxyTrack(hex) {
-    if (openskyProxyOk === false) return Promise.resolve(null);
-    return fetch(OPENSKY_PROXY + "/track?hex=" + hex, { signal: AbortSignal.timeout(5000) })
-      .then(function(r) {
-        if (r.ok) {
-          openskyProxyOk = true;
-          return r.json();
-        }
-        return r.json().catch(function() { return {}; }).then(function(body) {
-          if (r.status === 503 && body.retryAfter) {
-            var pauseMs = Math.min(body.retryAfter * 1000, 30 * 60 * 1000);
-            console.warn("[contrails] OpenSky rate-limited — retrying in " + Math.round(pauseMs / 60000) + "m");
-            openskyProxyOk = false;
-            setTimeout(function() { openskyProxyOk = null; }, pauseMs);
-          } else {
-            openskyProxyOk = false;
-            setTimeout(function() { openskyProxyOk = null; }, 5 * 60 * 1000);
-          }
-          return null;
-        });
-      })
-      .catch(function() {
-        openskyProxyOk = false;
-        setTimeout(function() { openskyProxyOk = null; }, 5 * 60 * 1000);
-        return null;
-      });
-  }
-
   function loadPopupTrack(hex) {
     if (!hex || trackExtended[hex]) return;
     trackExtended[hex] = true;
-    fetchProxyTrack(hex).then(function(data) {
-      if (data && (data.path ? data.path.length : data.length)) {
-        ingestTrackPath(hex, data);
-        return;
-      }
-      return fetch(trackUrl(hex))
-        .then(function(r) { return r.json(); })
-        .then(function(fallback) { ingestTrackPath(hex, fallback); });
-    }).catch(function() {});
+    fetch(trackUrl(hex))
+      .then(function(r) { return r.json(); })
+      .then(function(data) { ingestTrackPath(hex, data); })
+      .catch(function() {});
   }
 
   function fetchScheduleData(iata) {

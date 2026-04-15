@@ -7,3 +7,14 @@ node_modules/
 !.dev.vars.example
 .env*
 !.env.example
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# Python
+__pycache__/
+*.pyc
+.venv/

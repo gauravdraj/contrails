@@ -1,5 +1,8 @@
 # Contrails
 
+[![CI](https://github.com/gauravdraj/contrails/actions/workflows/ci.yml/badge.svg)](https://github.com/gauravdraj/contrails/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 <p align="center">
   <img src="contrails-logo.png" alt="Contrails logo" width="120">
 </p>
@@ -13,7 +16,7 @@ Open it at **[gauravdraj.github.io/contrails](https://gauravdraj.github.io/contr
 ## Highlights
 
 ### Tracking
-- Viewport-based aircraft browsing with ~3 s refresh
+- Viewport-based aircraft browsing with ~5 s refresh
 - Smooth marker interpolation between updates
 - Seeded and live altitude trails with fade
 - Altitude-colored plane icons with type-accurate silhouettes (light, turboprop, bizjet, narrowbody, widebody, quad)
@@ -54,14 +57,16 @@ The app stays GitHub Pages-friendly. The static frontend lives at the repo root,
 
 | Worker endpoint | Proxies to | Purpose |
 |---|---|---|
-| `GET /adsb/*` | api.adsb.lol/v2 | Live aircraft positions |
+| `GET /adsb/*` | adsb.lol (primary) / airplanes.live (backup) | Live aircraft positions with per-grid failover |
 | `GET,POST /route/*` | api.adsb.lol/api/0 | Route lookups |
-| `GET /geo` | Cloudflare request geodata | Approximate initial map area |
+| `POST /routeset` | ADSBDB + OpenSky | Batch route + track lookup for up to 20 planes |
+| `GET /track/<hex>` | OpenSky Network | Full flight track path |
 | `GET /schedule/<IATA>` | FlightRadar24 API | Airport schedule boards (cached 5 min) |
+| `GET /fr24search/<query>` | FlightRadar24 API | Flight search by callsign |
+| `GET /airport/<IATA>` | api.adsb.lol/v2 | Airport-centered traffic snapshot |
 | `GET /nearby?lat=&lng=` | api.adsb.lol/v2 + route API | Siri plane spotter (text, json, or html) |
 | `GET /photo/<hex>` | Planespotters API | Aircraft photo lookup (cached 24 h) |
-| `POST /routeset` | ADSBDB API | Batch route lookup for up to 20 planes |
-| `GET /flight/<callsign>` | AeroDataBox (RapidAPI) | Flight details by callsign (requires `AERODATABOX_KEY` secret) |
+| `GET /geo` | Cloudflare request geodata | Approximate initial map area |
 
 ## Local Development
 
@@ -131,6 +136,19 @@ npx wrangler deploy
 
 Then set the `WORKER_URL` constant in `app.js` to your worker's URL.
 
+## OpenSky Track Proxy (optional)
+
+Track data comes from [OpenSky Network](https://opensky-network.org/), which rate-limits aggressively and blocks many cloud IPs. The Worker tries OpenSky directly for batch route lookups, but for reliable individual track fetches the app supports an optional self-hosted proxy.
+
+The `local-proxy/` directory contains a small Node.js server and a setup script for deploying it on a Raspberry Pi (or any always-on box) behind a Cloudflare Tunnel:
+
+```bash
+cd local-proxy
+# Follow setup-pi.sh to install the proxy, create a tunnel, and get a public URL
+```
+
+Once running, set `OPENSKY_PROXY` in `app.js` to your proxy's URL. The proxy handles its own rate-limit backoff and serves stale-while-revalidate cached tracks.
+
 ## Files
 
 | File | Purpose |
@@ -144,16 +162,25 @@ Then set the `WORKER_URL` constant in `app.js` to your worker's URL.
 | `airports.json` | Airport positions (IATA, lat, lng, name) |
 | `runways.json` | Runway endpoints for overlay lines |
 | `worker/src/index.js` | Cloudflare Worker entrypoint and route wiring |
+| `worker/src/providers.js` | Traffic failover: adsb.lol primary, airplanes.live backup |
+| `worker/src/opensky.js` | OpenSky track fetching, route merging, phase detection |
+| `worker/src/enrich.js` | Route enrichment from track + ADSBDB data |
 | `worker/src/nearby.js` | Siri nearby-aircraft endpoint and formatting |
+| `worker/src/airport.js` | Airport-centered traffic endpoint |
 | `worker/src/adsbdb.js` | Shared ADSBDB route lookup helpers |
 | `worker/src/fr24.js` | FlightRadar24 schedule shaping helpers |
+| `worker/src/fr24-backoff.js` | FR24 rate-limit backoff and cached search |
+| `worker/src/regions.js` | Geographic region classification |
 | `worker/src/http.js` | Shared Worker response/CORS helpers |
 | `worker/src/geo.js` | Haversine, bearing, and cardinal helpers for the worker |
 | `worker/src/airports.js` | Major airport list for landing heuristics in `/nearby` |
+| `local-proxy/server.js` | Self-hosted OpenSky track proxy with rate-limit backoff |
+| `local-proxy/setup-pi.sh` | Raspberry Pi deployment script (systemd + Cloudflare Tunnel) |
 
 ## Credits
 
 - Aircraft silhouettes adapted from [tar1090](https://github.com/wiedehopf/tar1090) (GPL-3.0)
-- Live data from [adsb.lol](https://adsb.lol)
+- Live data from [adsb.lol](https://adsb.lol), backup feed from [airplanes.live](https://airplanes.live)
+- Track data from [OpenSky Network](https://opensky-network.org/)
 - Map tiles from [CARTO](https://carto.com/)
 - Built with [Leaflet](https://leafletjs.com/)

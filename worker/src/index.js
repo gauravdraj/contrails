@@ -3,7 +3,8 @@ import { buildSchedulePayload } from "./fr24.js";
 import { CORS_HEADERS, json } from "./http.js";
 import { handleAirport } from "./airport.js";
 import { handleNearby } from "./nearby.js";
-import { fetchCachedTrack, mergeRoutes, detectPhase, formatRouteLabel } from "./opensky.js";
+import { mergeRoutes, detectPhase, formatRouteLabel } from "./opensky.js";
+import { fetchTrace } from "./traces.js";
 import { fetchTraffic } from "./providers.js";
 import { fr24CheckBackoff, fr24TriggerBackoff, fr24ResetBackoff, fr24CachedSearch, FR24_HEADERS } from "./fr24-backoff.js";
 
@@ -179,7 +180,7 @@ async function handleTrack(url, env, ctx) {
   if (!/^[0-9a-f]{6}$/.test(hex)) return json(400, { error: "Invalid hex" });
 
   const cache = caches.default;
-  const track = await fetchCachedTrack(hex, cache, ctx, env);
+  const track = await fetchTrace(hex, cache, ctx);
   if (!track?.path) return json(200, null);
   return json(200, track.path);
 }
@@ -202,7 +203,7 @@ async function handleRouteset(request, env, ctx) {
   const results = await Promise.allSettled(
     limited.map(async (plane) => {
       const [trackResult, adsbdbResult] = await Promise.allSettled([
-        plane.hex ? fetchCachedTrack(plane.hex, cache, ctx, env) : Promise.resolve(null),
+        plane.hex ? fetchTrace(plane.hex, cache, ctx) : Promise.resolve(null),
         fetchCachedRouteEntry(plane.callsign, cache, ctx, ADSBDB_CACHE_TTL),
       ]);
       const track = trackResult.status === "fulfilled" ? trackResult.value : null;
