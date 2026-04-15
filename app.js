@@ -25,13 +25,15 @@
   const slantKm = core.slantKm;
   const elevationDeg = core.elevationDeg;
   const findFlightStartIndex = core.findFlightStartIndex;
+  const matchRunwayDesignator = core.matchRunwayDesignator;
+  const pointOnRunway = core.pointOnRunway;
   const SQUAWK_ALERT = core.SQUAWK_ALERTS;
   const AIRLINE_ICAO_TO_IATA = core.AIRLINE_ICAO_TO_IATA;
   if (!airlineName || !angleDiffDeg || !bearingDegrees || !buildViewPolicy || !buildViewportFetchSpec || !cardinalDir ||
       !callsignVariants || !computePlaybackDelayMs || !escapeHtml || !formatDistanceMiles || !formatSpeedMph ||
       !haversineKm || !interpolatePlaybackPose || !interpolateTimedPose || !isLikelyPrivateCallsign ||
       !normalizeAircraftHex || !normalizeFlightQuery || !normalizeSearchText || !parseCoordinate || !projectLatLng ||
-      !scoreArrivalCandidate || !findFlightStartIndex ||
+      !scoreArrivalCandidate || !findFlightStartIndex || !matchRunwayDesignator || !pointOnRunway ||
       !roundTenths || !slantKm || !elevationDeg || !SQUAWK_ALERT) {
     throw new Error("Contrails core helpers failed to load.");
   }
@@ -187,6 +189,8 @@
   const trackExtended = {};
   const scheduleDataCache = {};
   const SCHEDULE_CACHE_TTL = 5 * 60 * 1000;
+  var _runwaysInUseCache = {};
+  var RIU_CACHE_TTL = 300000;
 
   let map, userMarker, aircraftLayer, trailLayer, airportLayer, runwayLayer;
   let airportData = null;
@@ -3834,6 +3838,25 @@
     var list = Array.isArray(sourceAircraft) ? sourceAircraft : aircraft;
     var arrivals = [];
     var departures = [];
+    var activeDepThresholds = [];
+    var riuCached = _runwaysInUseCache[airportIata];
+    if (riuCached && riuCached.data && Array.isArray(riuCached.data.departing_runways)) {
+      var depRwys = runwayData && runwayData[airportIata];
+      var depDesigs = riuCached.data.departing_runways;
+      for (var d = 0; d < depDesigs.length; d++) {
+        var matched = matchRunwayDesignator(depRwys, airportIata, depDesigs[d]);
+        if (matched) activeDepThresholds.push(matched);
+      }
+    }
+    var activeArrThresholds = [];
+    if (riuCached && riuCached.data && Array.isArray(riuCached.data.arriving_runways)) {
+      var arrRwys = runwayData && runwayData[airportIata];
+      var arrDesigs = riuCached.data.arriving_runways;
+      for (var d = 0; d < arrDesigs.length; d++) {
+        var matched = matchRunwayDesignator(arrRwys, airportIata, arrDesigs[d]);
+        if (matched) activeArrThresholds.push(matched);
+      }
+    }
     for (var i = 0; i < list.length; i++) {
       var a = list[i];
       if (!a.callsign) continue;
@@ -3844,6 +3867,30 @@
           if (distKm > LANDING_SCAN_RADIUS_KM) continue;
           var inboundEntry = buildArrivalEntry(a, rc, airportIata, distKm);
           if (inboundEntry) arrivals.push(inboundEntry);
+        } else if (activeDepThresholds.length > 0) {
+          var distKm = haversineKm(a.lat, a.lng, airportLat, airportLng);
+          if (distKm <= 5) {
+            for (var t = 0; t < activeDepThresholds.length; t++) {
+              var th = activeDepThresholds[t];
+              var por = pointOnRunway(a.lat, a.lng, th.thresholdLat, th.thresholdLon, th.farEndLat, th.farEndLon);
+              if (por.onRunway) {
+                departures.push({
+                  hex: a.icao24,
+                  callsign: a.callsign,
+                  destIata: rc && rc.destination ? rc.destination.iata : null,
+                  aircraftType: a.aircraftType,
+                  lat: a.lat,
+                  lng: a.lng,
+                  speedKts: a.speedKts || 0,
+                  status: "Departing",
+                  distKm: distKm,
+                  runwayDistKm: por.distFromThresholdKm,
+                  hasDest: !!(rc && rc.destination)
+                });
+                break;
+              }
+            }
+          }
         }
       } else {
         if (rc && rc.destination && rc.destination.iata === airportIata) continue;
@@ -3853,15 +3900,25 @@
         var spdKts = a.speedKts || 0;
         var status = spdKts >= 50 ? "Departing" : spdKts >= 5 ? "Taxiing" : "Parked";
         var runwayDistKm = null;
-        var rwys = runwayData && runwayData[airportIata];
-        if (rwys) {
+        if (activeDepThresholds.length > 0) {
           var minD = Infinity;
-          for (var r = 0; r < rwys.length; r++) {
-            var rw = rwys[r];
-            var d = Math.min(haversineKm(a.lat, a.lng, rw[0], rw[1]), haversineKm(a.lat, a.lng, rw[3], rw[4]));
+          for (var t = 0; t < activeDepThresholds.length; t++) {
+            var th = activeDepThresholds[t];
+            var d = haversineKm(a.lat, a.lng, th.thresholdLat, th.thresholdLon);
             if (d < minD) minD = d;
           }
           if (minD < Infinity) runwayDistKm = minD;
+        } else {
+          var rwys = runwayData && runwayData[airportIata];
+          if (rwys) {
+            var minD = Infinity;
+            for (var r = 0; r < rwys.length; r++) {
+              var rw = rwys[r];
+              var d = Math.min(haversineKm(a.lat, a.lng, rw[0], rw[1]), haversineKm(a.lat, a.lng, rw[3], rw[4]));
+              if (d < minD) minD = d;
+            }
+            if (minD < Infinity) runwayDistKm = minD;
+          }
         }
         departures.push({
           hex: a.icao24,
@@ -3896,48 +3953,99 @@
       if (fallbackEntry) arrivals.push(fallbackEntry);
     }
     var landed = [];
-    for (var i = 0; i < list.length; i++) {
-      var a = list[i];
-      if (!a.callsign || !a.ground) continue;
-      var rc = routeCache[a.callsign];
-      if (!rc || !rc.destination || rc.destination.iata !== airportIata) continue;
-      var landedDist = haversineKm(a.lat, a.lng, airportLat, airportLng);
-      if (landedDist > 5) continue;
-      landed.push({
-        hex: a.icao24,
-        callsign: a.callsign,
-        originIata: rc && rc.origin ? rc.origin.iata : null,
-        aircraftType: a.aircraftType,
-        lat: a.lat,
-        lng: a.lng,
-        altFt: 0,
-        distKm: landedDist,
-        etaMin: 0,
-        arrivalScore: 0,
-        proximity: false,
-        landed: true
-      });
+    if (activeArrThresholds.length > 0) {
+      for (var i = 0; i < list.length; i++) {
+        var a = list[i];
+        if (!a.callsign) continue;
+        var rc = routeCache[a.callsign];
+        if (!rc || !rc.destination || rc.destination.iata !== airportIata) continue;
+        var landedDist = haversineKm(a.lat, a.lng, airportLat, airportLng);
+        if (!a.ground) {
+          if (landedDist > 5 || a.altFt == null || a.altFt >= 500) continue;
+        }
+        for (var t = 0; t < activeArrThresholds.length; t++) {
+          var th = activeArrThresholds[t];
+          var por = pointOnRunway(a.lat, a.lng, th.thresholdLat, th.thresholdLon, th.farEndLat, th.farEndLon);
+          if (por.onRunway) {
+            landed.push({
+              hex: a.icao24,
+              callsign: a.callsign,
+              originIata: rc && rc.origin ? rc.origin.iata : null,
+              aircraftType: a.aircraftType,
+              lat: a.lat,
+              lng: a.lng,
+              altFt: a.ground ? 0 : (a.altFt || 0),
+              distKm: landedDist,
+              etaMin: 0,
+              arrivalScore: 0,
+              proximity: false,
+              landed: true,
+              _rolloutDist: por.distFromThresholdKm
+            });
+            break;
+          }
+        }
+      }
+      landed.sort(function(a, b) { return b._rolloutDist - a._rolloutDist; });
+      if (landed.length > 5) landed.length = 5;
+      for (var i = 0; i < landed.length; i++) delete landed[i]._rolloutDist;
+    } else {
+      for (var i = 0; i < list.length; i++) {
+        var a = list[i];
+        if (!a.callsign || !a.ground) continue;
+        var rc = routeCache[a.callsign];
+        if (!rc || !rc.destination || rc.destination.iata !== airportIata) continue;
+        var landedDist = haversineKm(a.lat, a.lng, airportLat, airportLng);
+        if (landedDist > 5) continue;
+        landed.push({
+          hex: a.icao24,
+          callsign: a.callsign,
+          originIata: rc && rc.origin ? rc.origin.iata : null,
+          aircraftType: a.aircraftType,
+          lat: a.lat,
+          lng: a.lng,
+          altFt: 0,
+          distKm: landedDist,
+          etaMin: 0,
+          arrivalScore: 0,
+          proximity: false,
+          landed: true
+        });
+      }
+      landed.sort(function(a, b) { return a.distKm - b.distKm; });
+      if (landed.length > 5) landed.length = 5;
     }
-    landed.sort(function(a, b) { return a.distKm - b.distKm; });
-    if (landed.length > 5) landed.length = 5;
     arrivals.sort(compareArrivalEntries);
     arrivals = landed.concat(arrivals);
     if (arrivals.length > 15) arrivals.length = 15;
-    departures.sort(function(a, b) {
-      var statusOrd = { Departing: 0, Taxiing: 1, Parked: 2 };
-      var aOrd = statusOrd[a.status] != null ? statusOrd[a.status] : 2;
-      var bOrd = statusOrd[b.status] != null ? statusOrd[b.status] : 2;
-      if (aOrd !== bOrd) return aOrd - bOrd;
-      if (aOrd <= 1) {
-        if (a.runwayDistKm != null && b.runwayDistKm != null) {
+    if (activeDepThresholds.length > 0) {
+      departures.sort(function(a, b) {
+        var aNull = a.runwayDistKm == null;
+        var bNull = b.runwayDistKm == null;
+        if (aNull !== bNull) return aNull ? 1 : -1;
+        if (!aNull) {
           var rDiff = a.runwayDistKm - b.runwayDistKm;
           if (rDiff !== 0) return rDiff;
         }
         return b.speedKts - a.speedKts;
-      }
-      if (a.hasDest !== b.hasDest) return a.hasDest ? -1 : 1;
-      return a.distKm - b.distKm;
-    });
+      });
+    } else {
+      departures.sort(function(a, b) {
+        var statusOrd = { Departing: 0, Taxiing: 1, Parked: 2 };
+        var aOrd = statusOrd[a.status] != null ? statusOrd[a.status] : 2;
+        var bOrd = statusOrd[b.status] != null ? statusOrd[b.status] : 2;
+        if (aOrd !== bOrd) return aOrd - bOrd;
+        if (aOrd <= 1) {
+          if (a.runwayDistKm != null && b.runwayDistKm != null) {
+            var rDiff = a.runwayDistKm - b.runwayDistKm;
+            if (rDiff !== 0) return rDiff;
+          }
+          return b.speedKts - a.speedKts;
+        }
+        if (a.hasDest !== b.hasDest) return a.hasDest ? -1 : 1;
+        return a.distKm - b.distKm;
+      });
+    }
     if (departures.length > 15) departures.length = 15;
     return { arrivals: arrivals, departures: departures };
   }
@@ -4167,6 +4275,22 @@
     _activeAirportPopup.setContent(html);
   }
 
+  async function fetchRunwaysInUse(iata) {
+    if (!iata || iata.length !== 3) return null;
+    var cached = _runwaysInUseCache[iata];
+    if (cached && Date.now() - cached.fetchedAt < RIU_CACHE_TTL) return cached.data;
+    try {
+      var resp = await fetch("https://runwaysinuse.com/api/v1/runway/K" + iata);
+      if (!resp.ok) throw new Error(resp.status);
+      var data = await resp.json();
+      _runwaysInUseCache[iata] = { data: data, fetchedAt: Date.now() };
+      return data;
+    } catch (e) {
+      _runwaysInUseCache[iata] = { data: null, fetchedAt: Date.now() };
+      return null;
+    }
+  }
+
   function openAirportSchedulePopup(iata, name, lat, lng) {
     if (_activeAirportPopup) {
       map.closePopup(_activeAirportPopup);
@@ -4181,6 +4305,9 @@
     _activeAirportLng = lng;
     _activeScheduleDir = "arrivals";
     _lastScheduleHtml = "";
+    fetchRunwaysInUse(iata).then(function(riuData) {
+      if (riuData && _activeAirportIata === iata) renderSchedulePopup(_activeScheduleDir);
+    });
     var entry = getAirportPopupCacheEntry(iata);
 
     if (!entry.data) {

@@ -413,6 +413,87 @@
     return Math.max(groundBound, gapBound);
   }
 
+  function matchRunwayDesignator(runwayEntries, iata, designator) {
+    if (!runwayEntries || !runwayEntries.length || !iata || !designator) return null;
+    var desig = String(designator).toUpperCase().replace(/^0+/, "");
+    if (!desig) return null;
+    var numMatch = desig.match(/^(\d{1,2})/);
+    if (!numMatch) return null;
+    var desigHeading = parseInt(numMatch[1], 10) * 10;
+    var prefix = String(iata).toUpperCase() + " ";
+
+    for (var i = 0; i < runwayEntries.length; i++) {
+      var entry = runwayEntries[i];
+      if (!entry || entry.length < 7) continue;
+      var label = entry[6];
+      if (!label || typeof label !== "string") continue;
+      var upper = label.toUpperCase();
+      if (upper.indexOf(prefix) !== 0) continue;
+      var parts = upper.substring(prefix.length).split("/");
+      if (parts.length !== 2) continue;
+      var side1 = parts[0].replace(/^0+/, "") || "0";
+      var side2 = parts[1].replace(/^0+/, "") || "0";
+      if (side1 !== desig && side2 !== desig) continue;
+
+      var lat1 = entry[0], lon1 = entry[1];
+      var lat2 = entry[3], lon2 = entry[4];
+      var bearing12 = bearingDegrees(lat1, lon1, lat2, lon2);
+      var thresholdLat, thresholdLon, farEndLat, farEndLon;
+      if (angleDiffDeg(bearing12, desigHeading) <= 30) {
+        thresholdLat = lat1; thresholdLon = lon1;
+        farEndLat = lat2; farEndLon = lon2;
+      } else {
+        thresholdLat = lat2; thresholdLon = lon2;
+        farEndLat = lat1; farEndLon = lon1;
+      }
+      return {
+        entry: entry,
+        thresholdLat: thresholdLat,
+        thresholdLon: thresholdLon,
+        farEndLat: farEndLat,
+        farEndLon: farEndLon,
+        designator: desig
+      };
+    }
+    return null;
+  }
+
+  function crossTrackKm(pLat, pLon, aLat, aLon, bLat, bLon) {
+    var R = 6371;
+    var dAP = haversineKm(aLat, aLon, pLat, pLon);
+    var bearingAP = bearingDegrees(aLat, aLon, pLat, pLon) * Math.PI / 180;
+    var bearingAB = bearingDegrees(aLat, aLon, bLat, bLon) * Math.PI / 180;
+    return Math.asin(Math.sin(dAP / R) * Math.sin(bearingAP - bearingAB)) * R;
+  }
+
+  function alongTrackKm(pLat, pLon, aLat, aLon, bLat, bLon, crossTrack) {
+    var R = 6371;
+    var dAP = haversineKm(aLat, aLon, pLat, pLon);
+    var cosRatio = Math.cos(dAP / R) / Math.cos(crossTrack / R);
+    cosRatio = Math.max(-1, Math.min(1, cosRatio));
+    var along = Math.acos(cosRatio) * R;
+    if (angleDiffDeg(bearingDegrees(aLat, aLon, pLat, pLon), bearingDegrees(aLat, aLon, bLat, bLon)) > 90) {
+      along = -along;
+    }
+    return along;
+  }
+
+  function pointOnRunway(acLat, acLon, thresholdLat, thresholdLon, farEndLat, farEndLon, lateralToleranceKm, overshootBufferKm) {
+    if (lateralToleranceKm == null) lateralToleranceKm = 0.06;
+    if (overshootBufferKm == null) overshootBufferKm = 0.3;
+    var crossTrack = crossTrackKm(acLat, acLon, thresholdLat, thresholdLon, farEndLat, farEndLon);
+    var alongTrack = alongTrackKm(acLat, acLon, thresholdLat, thresholdLon, farEndLat, farEndLon, crossTrack);
+    var runwayLength = haversineKm(thresholdLat, thresholdLon, farEndLat, farEndLon);
+    var pastEnd = alongTrack > runwayLength;
+    return {
+      onRunway: Math.abs(crossTrack) <= lateralToleranceKm &&
+        alongTrack >= -overshootBufferKm &&
+        alongTrack <= runwayLength + overshootBufferKm,
+      distFromThresholdKm: alongTrack,
+      pastEnd: pastEnd
+    };
+  }
+
   function scoreArrivalCandidate(input) {
     input = input || {};
     var altFt = isFinite(input.altFt) ? Math.max(0, input.altFt) : null;
@@ -524,11 +605,13 @@
     isLikelyPrivateCallsign: isLikelyPrivateCallsign,
     kmToMiles: kmToMiles,
     knotsToMph: knotsToMph,
+    matchRunwayDesignator: matchRunwayDesignator,
     callsignVariants: callsignVariants,
     normalizeAircraftHex: normalizeAircraftHex,
     normalizeFlightQuery: normalizeFlightQuery,
     normalizeSearchText: normalizeSearchText,
     parseCoordinate: parseCoordinate,
+    pointOnRunway: pointOnRunway,
     projectLatLng: projectLatLng,
     roundTenths: roundTenths,
     scoreArrivalCandidate: scoreArrivalCandidate,

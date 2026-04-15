@@ -541,11 +541,146 @@ test("scoreArrivalCandidate relaxed thresholds: 26 km descending without destina
   assert.equal(result.eligible, false);
 });
 
+var SFO_RUNWAYS = [
+  [37.609,-122.382,0,37.6272,-122.37,0,"SFO 01L/19R"],
+  [37.6068,-122.381,0,37.6278,-122.367,0,"SFO 01R/19L"],
+  [37.6287,-122.393,0,37.6135,-122.357,0,"SFO 10L/28R"],
+  [37.6253,-122.391,0,37.6117,-122.358,0,"SFO 10R/28L"]
+];
+
+var BWI_RUNWAYS = [
+  [39.1669,-76.6714,0,39.1807,-76.6598,0,"BWI 04/22"],
+  [39.1747,-76.6896,0,39.1726,-76.6527,0,"BWI 10/28"],
+  [39.1874,-76.6635,0,39.1762,-76.6532,0,"BWI 15L/33R"],
+  [39.1854,-76.682,0,39.1642,-76.6624,0,"BWI 15R/33L"]
+];
+
+// --- pointOnRunway ---
+
+test("pointOnRunway: aircraft on runway centerline midpoint → onRunway true", () => {
+  var rwy = core.matchRunwayDesignator(SFO_RUNWAYS, "SFO", "28L");
+  var bearing = core.bearingDegrees(rwy.thresholdLat, rwy.thresholdLon, rwy.farEndLat, rwy.farEndLon);
+  var lengthM = core.haversineKm(rwy.thresholdLat, rwy.thresholdLon, rwy.farEndLat, rwy.farEndLon) * 1000;
+  var mid = core.projectLatLng(rwy.thresholdLat, rwy.thresholdLon, bearing, lengthM / 2);
+  var result = core.pointOnRunway(mid[0], mid[1], rwy.thresholdLat, rwy.thresholdLon, rwy.farEndLat, rwy.farEndLon);
+  assert.equal(result.onRunway, true);
+  assert.equal(result.pastEnd, false);
+  assert.ok(result.distFromThresholdKm > 0);
+});
+
+test("pointOnRunway: aircraft 100m off to the side → onRunway false", () => {
+  var rwy = core.matchRunwayDesignator(SFO_RUNWAYS, "SFO", "28L");
+  var bearing = core.bearingDegrees(rwy.thresholdLat, rwy.thresholdLon, rwy.farEndLat, rwy.farEndLon);
+  var lengthM = core.haversineKm(rwy.thresholdLat, rwy.thresholdLon, rwy.farEndLat, rwy.farEndLon) * 1000;
+  var mid = core.projectLatLng(rwy.thresholdLat, rwy.thresholdLon, bearing, lengthM / 2);
+  var offside = core.projectLatLng(mid[0], mid[1], bearing + 90, 100);
+  var result = core.pointOnRunway(offside[0], offside[1], rwy.thresholdLat, rwy.thresholdLon, rwy.farEndLat, rwy.farEndLon);
+  assert.equal(result.onRunway, false, "100m lateral offset exceeds 60m tolerance");
+});
+
+test("pointOnRunway: aircraft 200m past far end → onRunway true, pastEnd true", () => {
+  var rwy = core.matchRunwayDesignator(SFO_RUNWAYS, "SFO", "28L");
+  var bearing = core.bearingDegrees(rwy.thresholdLat, rwy.thresholdLon, rwy.farEndLat, rwy.farEndLon);
+  var past = core.projectLatLng(rwy.farEndLat, rwy.farEndLon, bearing, 200);
+  var result = core.pointOnRunway(past[0], past[1], rwy.thresholdLat, rwy.thresholdLon, rwy.farEndLat, rwy.farEndLon);
+  assert.equal(result.onRunway, true, "200m past end is within 300m buffer");
+  assert.equal(result.pastEnd, true);
+});
+
+test("pointOnRunway: aircraft 500m past far end → onRunway false", () => {
+  var rwy = core.matchRunwayDesignator(SFO_RUNWAYS, "SFO", "28L");
+  var bearing = core.bearingDegrees(rwy.thresholdLat, rwy.thresholdLon, rwy.farEndLat, rwy.farEndLon);
+  var past = core.projectLatLng(rwy.farEndLat, rwy.farEndLon, bearing, 500);
+  var result = core.pointOnRunway(past[0], past[1], rwy.thresholdLat, rwy.thresholdLon, rwy.farEndLat, rwy.farEndLon);
+  assert.equal(result.onRunway, false, "500m past end exceeds 300m buffer");
+});
+
+test("pointOnRunway: aircraft 100m before threshold → onRunway true", () => {
+  var rwy = core.matchRunwayDesignator(SFO_RUNWAYS, "SFO", "28L");
+  var bearing = core.bearingDegrees(rwy.thresholdLat, rwy.thresholdLon, rwy.farEndLat, rwy.farEndLon);
+  var before = core.projectLatLng(rwy.thresholdLat, rwy.thresholdLon, (bearing + 180) % 360, 100);
+  var result = core.pointOnRunway(before[0], before[1], rwy.thresholdLat, rwy.thresholdLon, rwy.farEndLat, rwy.farEndLon);
+  assert.equal(result.onRunway, true, "100m before threshold is within 300m buffer");
+  assert.ok(result.distFromThresholdKm < 0, "distFromThresholdKm should be negative");
+});
+
+test("pointOnRunway: aircraft 500m before threshold → onRunway false", () => {
+  var rwy = core.matchRunwayDesignator(SFO_RUNWAYS, "SFO", "28L");
+  var bearing = core.bearingDegrees(rwy.thresholdLat, rwy.thresholdLon, rwy.farEndLat, rwy.farEndLon);
+  var before = core.projectLatLng(rwy.thresholdLat, rwy.thresholdLon, (bearing + 180) % 360, 500);
+  var result = core.pointOnRunway(before[0], before[1], rwy.thresholdLat, rwy.thresholdLon, rwy.farEndLat, rwy.farEndLon);
+  assert.equal(result.onRunway, false, "500m before threshold exceeds 300m buffer");
+});
+
 // --- findFlightStartIndex ---
 
 function mkPt(timeSec, onGround) {
   return [timeSec, 40.0, -74.0, 3000, 90, onGround ? 1 : 0];
 }
+
+// --- matchRunwayDesignator ---
+
+test("matchRunwayDesignator: 28L matches SFO 10R/28L with correct threshold", () => {
+  var result = core.matchRunwayDesignator(SFO_RUNWAYS, "SFO", "28L");
+  assert.ok(result, "should find a match");
+  assert.equal(result.entry[6], "SFO 10R/28L");
+  assert.equal(result.designator, "28L");
+  var farBearing = core.bearingDegrees(result.thresholdLat, result.thresholdLon, result.farEndLat, result.farEndLon);
+  assert.ok(core.angleDiffDeg(farBearing, 280) < 30, "bearing from threshold to far end should be ~280");
+});
+
+test("matchRunwayDesignator: 10R matches same entry but returns opposite threshold", () => {
+  var r28L = core.matchRunwayDesignator(SFO_RUNWAYS, "SFO", "28L");
+  var r10R = core.matchRunwayDesignator(SFO_RUNWAYS, "SFO", "10R");
+  assert.ok(r10R, "should find a match");
+  assert.equal(r10R.entry[6], "SFO 10R/28L");
+  assert.equal(r10R.designator, "10R");
+  assert.equal(r10R.thresholdLat, r28L.farEndLat);
+  assert.equal(r10R.thresholdLon, r28L.farEndLon);
+  var farBearing = core.bearingDegrees(r10R.thresholdLat, r10R.thresholdLon, r10R.farEndLat, r10R.farEndLon);
+  assert.ok(core.angleDiffDeg(farBearing, 100) < 30, "bearing from threshold to far end should be ~100");
+});
+
+test("matchRunwayDesignator: 01L matches SFO 01L/19R (leading-zero designator)", () => {
+  var result = core.matchRunwayDesignator(SFO_RUNWAYS, "SFO", "01L");
+  assert.ok(result, "should find a match");
+  assert.equal(result.entry[6], "SFO 01L/19R");
+  assert.equal(result.designator, "1L");
+  var farBearing = core.bearingDegrees(result.thresholdLat, result.thresholdLon, result.farEndLat, result.farEndLon);
+  assert.ok(core.angleDiffDeg(farBearing, 10) < 30, "bearing from threshold to far end should be ~10");
+});
+
+test("matchRunwayDesignator: returns null for unmatched designator", () => {
+  assert.equal(core.matchRunwayDesignator(SFO_RUNWAYS, "SFO", "36L"), null);
+  assert.equal(core.matchRunwayDesignator(SFO_RUNWAYS, "SFO", "09"), null);
+});
+
+test("matchRunwayDesignator: returns null for null/empty entries", () => {
+  assert.equal(core.matchRunwayDesignator(null, "SFO", "28L"), null);
+  assert.equal(core.matchRunwayDesignator(undefined, "SFO", "28L"), null);
+  assert.equal(core.matchRunwayDesignator([], "SFO", "28L"), null);
+});
+
+test("matchRunwayDesignator: non-suffixed designator 04 matches BWI 04/22", () => {
+  var result = core.matchRunwayDesignator(BWI_RUNWAYS, "BWI", "04");
+  assert.ok(result, "should find a match");
+  assert.equal(result.entry[6], "BWI 04/22");
+  assert.equal(result.designator, "4");
+  var farBearing = core.bearingDegrees(result.thresholdLat, result.thresholdLon, result.farEndLat, result.farEndLon);
+  assert.ok(core.angleDiffDeg(farBearing, 40) < 30, "bearing from threshold to far end should be ~40");
+});
+
+test("matchRunwayDesignator: case-insensitive designator", () => {
+  var result = core.matchRunwayDesignator(SFO_RUNWAYS, "SFO", "28l");
+  assert.ok(result, "should match lowercase designator");
+  assert.equal(result.entry[6], "SFO 10R/28L");
+});
+
+test("matchRunwayDesignator: IATA mismatch returns null", () => {
+  assert.equal(core.matchRunwayDesignator(SFO_RUNWAYS, "LAX", "28L"), null);
+});
+
+// --- findFlightStartIndex ---
 
 test("findFlightStartIndex returns 0 for null/empty path", () => {
   assert.equal(core.findFlightStartIndex(null), 0);
