@@ -38,7 +38,7 @@
     throw new Error("Contrails core helpers failed to load.");
   }
 
-  const APP_VERSION = "v2.14";
+  const APP_VERSION = "v2.14.1";
   const isLocal = location.hostname === "localhost" || location.hostname === "127.0.0.1";
   const isIOSDevice = /iP(ad|hone|od)/.test(navigator.userAgent) ||
     (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
@@ -3766,7 +3766,7 @@
   var _airportPopupCache = {};
   var _activeAirportRefreshTimer = null;
   var AIRPORT_POPUP_FETCH_KM = 120;
-  var AIRPORT_POPUP_REFRESH_MS = 30000;
+  var AIRPORT_POPUP_REFRESH_MS = 5000;
   var AIRPORT_POPUP_CACHE_TTL = 2 * 60 * 1000;
 
   function relativeMinutes(unixTs) {
@@ -3920,6 +3920,33 @@
             if (minD < Infinity) runwayDistKm = minD;
           }
         }
+        if (spdKts >= 5 && status !== "Departing") {
+          if (activeDepThresholds.length > 0) {
+            for (var t = 0; t < activeDepThresholds.length; t++) {
+              var th = activeDepThresholds[t];
+              var por = pointOnRunway(a.lat, a.lng, th.thresholdLat, th.thresholdLon, th.farEndLat, th.farEndLon);
+              if (por.onRunway) {
+                status = "Departing";
+                runwayDistKm = por.distFromThresholdKm;
+                break;
+              }
+            }
+          } else {
+            var rwys = runwayData && runwayData[airportIata];
+            if (rwys) {
+              for (var r2 = 0; r2 < rwys.length; r2++) {
+                var rw2 = rwys[r2];
+                var porA = pointOnRunway(a.lat, a.lng, rw2[0], rw2[1], rw2[3], rw2[4]);
+                var porB = pointOnRunway(a.lat, a.lng, rw2[3], rw2[4], rw2[0], rw2[1]);
+                if (porA.onRunway || porB.onRunway) {
+                  status = "Departing";
+                  runwayDistKm = Math.min(porA.distFromThresholdKm, porB.distFromThresholdKm);
+                  break;
+                }
+              }
+            }
+          }
+        }
         departures.push({
           hex: a.icao24,
           callsign: a.callsign,
@@ -3990,6 +4017,7 @@
       if (landed.length > 5) landed.length = 5;
       for (var i = 0; i < landed.length; i++) delete landed[i]._rolloutDist;
     } else {
+      var rwys = runwayData && runwayData[airportIata];
       for (var i = 0; i < list.length; i++) {
         var a = list[i];
         if (!a.callsign || !a.ground) continue;
@@ -3997,6 +4025,18 @@
         if (!rc || !rc.destination || rc.destination.iata !== airportIata) continue;
         var landedDist = haversineKm(a.lat, a.lng, airportLat, airportLng);
         if (landedDist > 5) continue;
+        var onRwy = false;
+        if (rwys) {
+          for (var r3 = 0; r3 < rwys.length; r3++) {
+            var rw3 = rwys[r3];
+            var porA = pointOnRunway(a.lat, a.lng, rw3[0], rw3[1], rw3[3], rw3[4]);
+            var porB = pointOnRunway(a.lat, a.lng, rw3[3], rw3[4], rw3[0], rw3[1]);
+            if (porA.onRunway || porB.onRunway) { onRwy = true; break; }
+          }
+          if (!onRwy) continue;
+        } else {
+          if (landedDist > 0.5) continue;
+        }
         landed.push({
           hex: a.icao24,
           callsign: a.callsign,
@@ -4031,17 +4071,19 @@
       });
     } else {
       departures.sort(function(a, b) {
+        var aHasRwy = a.runwayDistKm != null;
+        var bHasRwy = b.runwayDistKm != null;
+        if (aHasRwy !== bHasRwy) return aHasRwy ? -1 : 1;
+        if (aHasRwy) {
+          var rDiff = a.runwayDistKm - b.runwayDistKm;
+          if (rDiff !== 0) return rDiff;
+          return b.speedKts - a.speedKts;
+        }
         var statusOrd = { Departing: 0, Taxiing: 1, Parked: 2 };
         var aOrd = statusOrd[a.status] != null ? statusOrd[a.status] : 2;
         var bOrd = statusOrd[b.status] != null ? statusOrd[b.status] : 2;
         if (aOrd !== bOrd) return aOrd - bOrd;
-        if (aOrd <= 1) {
-          if (a.runwayDistKm != null && b.runwayDistKm != null) {
-            var rDiff = a.runwayDistKm - b.runwayDistKm;
-            if (rDiff !== 0) return rDiff;
-          }
-          return b.speedKts - a.speedKts;
-        }
+        if (aOrd <= 1) return b.speedKts - a.speedKts;
         if (a.hasDest !== b.hasDest) return a.hasDest ? -1 : 1;
         return a.distKm - b.distKm;
       });
