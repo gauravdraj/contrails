@@ -38,7 +38,7 @@
     throw new Error("Contrails core helpers failed to load.");
   }
 
-  const APP_VERSION = "v2.15.0";
+  const APP_VERSION = "v2.15.1";
   const isLocal = location.hostname === "localhost" || location.hostname === "127.0.0.1";
   const isIOSDevice = /iP(ad|hone|od)/.test(navigator.userAgent) ||
     (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
@@ -1352,6 +1352,7 @@
       if (s.seen != null && s.seen > 15) continue;
       var heading = s.track != null ? s.track : (s.true_heading != null ? s.true_heading : s.mag_heading);
       if (isGround && heading == null) continue;
+      if (activeIds[hex]) continue;
 
       var callsign = (s.flight || "").trim() || null;
       var priv = isPrivate(callsign, s.t || null, s.category || null);
