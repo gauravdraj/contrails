@@ -38,7 +38,7 @@
     throw new Error("Contrails core helpers failed to load.");
   }
 
-  const APP_VERSION = "v2.14.1";
+  const APP_VERSION = "v2.15.0";
   const isLocal = location.hostname === "localhost" || location.hostname === "127.0.0.1";
   const isIOSDevice = /iP(ad|hone|od)/.test(navigator.userAgent) ||
     (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
@@ -3780,8 +3780,6 @@
     return sign + h + "h" + (m < 10 ? "0" : "") + m + "m";
   }
 
-  var LANDING_SCAN_RADIUS_KM = 350;
-
   function buildArrivalEntry(a, routeEntry, airportIata, distKm, options) {
     options = options || {};
     var destinationMatch = !!(routeEntry && routeEntry.destination && routeEntry.destination.iata === airportIata);
@@ -3857,95 +3855,152 @@
         if (matched) activeArrThresholds.push(matched);
       }
     }
+    function matchDepRunway(a) {
+      if (activeDepThresholds.length > 0) {
+        for (var t = 0; t < activeDepThresholds.length; t++) {
+          var th = activeDepThresholds[t];
+          var por = pointOnRunway(a.lat, a.lng, th.thresholdLat, th.thresholdLon, th.farEndLat, th.farEndLon);
+          if (por.onRunway) return { on: true, distFromThresholdKm: por.distFromThresholdKm };
+        }
+      }
+      return { on: false, distFromThresholdKm: null };
+    }
+    function matchArrRunway(a) {
+      if (activeArrThresholds.length > 0) {
+        for (var t = 0; t < activeArrThresholds.length; t++) {
+          var th = activeArrThresholds[t];
+          var por = pointOnRunway(a.lat, a.lng, th.thresholdLat, th.thresholdLon, th.farEndLat, th.farEndLon);
+          if (por.onRunway) return { on: true, distFromThresholdKm: por.distFromThresholdKm };
+        }
+      }
+      return { on: false, distFromThresholdKm: null };
+    }
+    function matchAnyRunway(a) {
+      if (activeDepThresholds.length > 0) {
+        for (var t = 0; t < activeDepThresholds.length; t++) {
+          var th = activeDepThresholds[t];
+          var por = pointOnRunway(a.lat, a.lng, th.thresholdLat, th.thresholdLon, th.farEndLat, th.farEndLon);
+          if (por.onRunway) return { on: true, distFromThresholdKm: por.distFromThresholdKm };
+        }
+      }
+      var rwys = runwayData && runwayData[airportIata];
+      if (rwys) {
+        for (var r = 0; r < rwys.length; r++) {
+          var rw = rwys[r];
+          var porA = pointOnRunway(a.lat, a.lng, rw[0], rw[1], rw[3], rw[4]);
+          if (porA.onRunway) return { on: true, distFromThresholdKm: porA.distFromThresholdKm };
+          var porB = pointOnRunway(a.lat, a.lng, rw[3], rw[4], rw[0], rw[1]);
+          if (porB.onRunway) return { on: true, distFromThresholdKm: porB.distFromThresholdKm };
+        }
+      }
+      return { on: false, distFromThresholdKm: null };
+    }
+    function nearestDepThresholdKm(a) {
+      if (activeDepThresholds.length > 0) {
+        var minD = Infinity;
+        for (var t = 0; t < activeDepThresholds.length; t++) {
+          var th = activeDepThresholds[t];
+          var d = haversineKm(a.lat, a.lng, th.thresholdLat, th.thresholdLon);
+          if (d < minD) minD = d;
+        }
+        return minD < Infinity ? minD : null;
+      }
+      var rwys = runwayData && runwayData[airportIata];
+      if (rwys) {
+        var minD = Infinity;
+        for (var r = 0; r < rwys.length; r++) {
+          var rw = rwys[r];
+          var d = Math.min(haversineKm(a.lat, a.lng, rw[0], rw[1]), haversineKm(a.lat, a.lng, rw[3], rw[4]));
+          if (d < minD) minD = d;
+        }
+        return minD < Infinity ? minD : null;
+      }
+      return null;
+    }
+
+    var departureHexes = {};
     for (var i = 0; i < list.length; i++) {
       var a = list[i];
       if (!a.callsign) continue;
       var rc = routeCache[a.callsign];
+      var destinationHere = !!(rc && rc.destination && rc.destination.iata === airportIata);
+      var originHere = !!(rc && rc.origin && rc.origin.iata === airportIata);
+      var distKm = haversineKm(a.lat, a.lng, airportLat, airportLng);
+
       if (!a.ground) {
-        if (rc && rc.destination && rc.destination.iata === airportIata) {
-          var distKm = haversineKm(a.lat, a.lng, airportLat, airportLng);
-          if (distKm > LANDING_SCAN_RADIUS_KM) continue;
+        if (destinationHere) {
+          if (distKm > AIRPORT_POPUP_FETCH_KM) continue;
           var inboundEntry = buildArrivalEntry(a, rc, airportIata, distKm);
           if (inboundEntry) arrivals.push(inboundEntry);
-        } else if (activeDepThresholds.length > 0) {
-          var distKm = haversineKm(a.lat, a.lng, airportLat, airportLng);
-          if (distKm <= 5) {
-            for (var t = 0; t < activeDepThresholds.length; t++) {
-              var th = activeDepThresholds[t];
-              var por = pointOnRunway(a.lat, a.lng, th.thresholdLat, th.thresholdLon, th.farEndLat, th.farEndLon);
-              if (por.onRunway) {
-                departures.push({
-                  hex: a.icao24,
-                  callsign: a.callsign,
-                  destIata: rc && rc.destination ? rc.destination.iata : null,
-                  aircraftType: a.aircraftType,
-                  lat: a.lat,
-                  lng: a.lng,
-                  speedKts: a.speedKts || 0,
-                  status: "Departing",
-                  distKm: distKm,
-                  runwayDistKm: por.distFromThresholdKm,
-                  hasDest: !!(rc && rc.destination)
-                });
-                break;
-              }
-            }
+          continue;
+        }
+        // Airborne-departure detection — not bound to RIU availability so non-US airports
+        // and RIU-unavailable cases still show planes climbing out after liftoff.
+        var vRateFpm = a.vRate != null ? a.vRate * 60 : 0;
+        var climbing = vRateFpm > 100;
+        var lowAlt = a.altFt != null && a.altFt < 6000;
+        var depRwy = matchDepRunway(a);
+        var bearingFromAirport = bearingDegrees(airportLat, airportLng, a.lat, a.lng);
+        var outboundTrack = a.track != null && angleDiffDeg(a.track, bearingFromAirport) < 75;
+        var shouldShow = false;
+        var depRunwayKm = null;
+        var depStatus = "Departing";
+        if (depRwy.on && distKm <= 5 && (a.altFt == null || a.altFt < 2000)) {
+          // Over the active departure runway at low altitude — takeoff roll / rotation.
+          // Gate on climbing or very low altitude to filter out level transit overflights.
+          if (climbing || (a.altFt != null && a.altFt < 500)) {
+            shouldShow = true;
+            depRunwayKm = depRwy.distFromThresholdKm;
+            depStatus = a.altFt != null && a.altFt > 500 ? "Climbing" : "Departing";
           }
+        } else if (originHere && distKm <= 15 && lowAlt && climbing) {
+          shouldShow = true;
+          depRunwayKm = nearestDepThresholdKm(a);
+          depStatus = "Climbing";
+        } else if (distKm <= 8 && lowAlt && climbing && outboundTrack) {
+          // No route info yet but geometry is strong: close, low, climbing, heading outbound.
+          shouldShow = true;
+          depRunwayKm = nearestDepThresholdKm(a);
+          depStatus = a.altFt != null && a.altFt > 500 ? "Climbing" : "Departing";
+        }
+        if (shouldShow) {
+          departures.push({
+            hex: a.icao24,
+            callsign: a.callsign,
+            destIata: rc && rc.destination ? rc.destination.iata : null,
+            aircraftType: a.aircraftType,
+            lat: a.lat,
+            lng: a.lng,
+            speedKts: a.speedKts || 0,
+            altFt: a.altFt,
+            status: depStatus,
+            distKm: distKm,
+            runwayDistKm: depRunwayKm,
+            hasDest: !!(rc && rc.destination)
+          });
+          departureHexes[a.icao24] = true;
         }
       } else {
-        if (rc && rc.destination && rc.destination.iata === airportIata) continue;
-        var distKm = haversineKm(a.lat, a.lng, airportLat, airportLng);
-        var hasOriginHere = rc && rc.origin && rc.origin.iata === airportIata;
-        if (distKm > (hasOriginHere ? 8 : 5)) continue;
+        // Ground aircraft whose destination is this airport are handled by the
+        // landed/taxi-in passes below so they show under arrivals, not departures.
+        if (destinationHere) continue;
+        if (distKm > (originHere ? 8 : 5)) continue;
         var spdKts = a.speedKts || 0;
-        var status = spdKts >= 50 ? "Departing" : spdKts >= 5 ? "Taxiing" : "Parked";
-        var runwayDistKm = null;
-        if (activeDepThresholds.length > 0) {
-          var minD = Infinity;
-          for (var t = 0; t < activeDepThresholds.length; t++) {
-            var th = activeDepThresholds[t];
-            var d = haversineKm(a.lat, a.lng, th.thresholdLat, th.thresholdLon);
-            if (d < minD) minD = d;
-          }
-          if (minD < Infinity) runwayDistKm = minD;
+        var anyRwy = matchAnyRunway(a);
+        var groundRunwayKm = anyRwy.on ? anyRwy.distFromThresholdKm : nearestDepThresholdKm(a);
+        var groundStatus;
+        if (spdKts >= 50) {
+          groundStatus = "Departing";
+        } else if (anyRwy.on && spdKts < 5) {
+          // Stopped on a runway — almost certainly holding in position for takeoff clearance.
+          groundStatus = "Holding";
+        } else if (anyRwy.on) {
+          // Rolling on a runway — treat as departing even below 50 kt.
+          groundStatus = "Departing";
+        } else if (spdKts >= 5) {
+          groundStatus = "Taxiing";
         } else {
-          var rwys = runwayData && runwayData[airportIata];
-          if (rwys) {
-            var minD = Infinity;
-            for (var r = 0; r < rwys.length; r++) {
-              var rw = rwys[r];
-              var d = Math.min(haversineKm(a.lat, a.lng, rw[0], rw[1]), haversineKm(a.lat, a.lng, rw[3], rw[4]));
-              if (d < minD) minD = d;
-            }
-            if (minD < Infinity) runwayDistKm = minD;
-          }
-        }
-        if (spdKts >= 5 && status !== "Departing") {
-          if (activeDepThresholds.length > 0) {
-            for (var t = 0; t < activeDepThresholds.length; t++) {
-              var th = activeDepThresholds[t];
-              var por = pointOnRunway(a.lat, a.lng, th.thresholdLat, th.thresholdLon, th.farEndLat, th.farEndLon);
-              if (por.onRunway) {
-                status = "Departing";
-                runwayDistKm = por.distFromThresholdKm;
-                break;
-              }
-            }
-          } else {
-            var rwys = runwayData && runwayData[airportIata];
-            if (rwys) {
-              for (var r2 = 0; r2 < rwys.length; r2++) {
-                var rw2 = rwys[r2];
-                var porA = pointOnRunway(a.lat, a.lng, rw2[0], rw2[1], rw2[3], rw2[4]);
-                var porB = pointOnRunway(a.lat, a.lng, rw2[3], rw2[4], rw2[0], rw2[1]);
-                if (porA.onRunway || porB.onRunway) {
-                  status = "Departing";
-                  runwayDistKm = Math.min(porA.distFromThresholdKm, porB.distFromThresholdKm);
-                  break;
-                }
-              }
-            }
-          }
+          groundStatus = "Parked";
         }
         departures.push({
           hex: a.icao24,
@@ -3955,11 +4010,12 @@
           lat: a.lat,
           lng: a.lng,
           speedKts: spdKts,
-          status: status,
+          status: groundStatus,
           distKm: distKm,
-          runwayDistKm: runwayDistKm,
+          runwayDistKm: groundRunwayKm,
           hasDest: !!(rc && rc.destination)
         });
+        departureHexes[a.icao24] = true;
       }
     }
     var seenCallsigns = {};
@@ -3967,6 +4023,7 @@
     for (var i = 0; i < list.length; i++) {
       var a = list[i];
       if (!a.callsign || a.ground || seenCallsigns[a.callsign]) continue;
+      if (departureHexes[a.icao24]) continue;
       var rc = routeCache[a.callsign];
       if (rc && rc.origin && rc.origin.iata === airportIata) continue;
       if (rc && rc.destination && rc.destination.iata !== airportIata && rc.confidence === "high") continue;
@@ -3974,12 +4031,13 @@
       if (a.altFt == null || a.altFt > 10000 || vRateFpm > -200) continue;
       var toBearing = bearingDegrees(a.lat, a.lng, airportLat, airportLng);
       if (a.track != null && angleDiffDeg(a.track, toBearing) > 60) continue;
-      var distKm = haversineKm(a.lat, a.lng, airportLat, airportLng);
-      if (distKm > 40) continue;
-      var fallbackEntry = buildArrivalEntry(a, rc, airportIata, distKm, { proximity: true });
+      var fbDistKm = haversineKm(a.lat, a.lng, airportLat, airportLng);
+      if (fbDistKm > 40) continue;
+      var fallbackEntry = buildArrivalEntry(a, rc, airportIata, fbDistKm, { proximity: true });
       if (fallbackEntry) arrivals.push(fallbackEntry);
     }
     var landed = [];
+    var landedHexes = {};
     if (activeArrThresholds.length > 0) {
       for (var i = 0; i < list.length; i++) {
         var a = list[i];
@@ -3990,30 +4048,27 @@
         if (!a.ground) {
           if (landedDist > 5 || a.altFt == null || a.altFt >= 500) continue;
         }
-        for (var t = 0; t < activeArrThresholds.length; t++) {
-          var th = activeArrThresholds[t];
-          var por = pointOnRunway(a.lat, a.lng, th.thresholdLat, th.thresholdLon, th.farEndLat, th.farEndLon);
-          if (por.onRunway) {
-            landed.push({
-              hex: a.icao24,
-              callsign: a.callsign,
-              originIata: rc && rc.origin ? rc.origin.iata : null,
-              aircraftType: a.aircraftType,
-              lat: a.lat,
-              lng: a.lng,
-              altFt: a.ground ? 0 : (a.altFt || 0),
-              distKm: landedDist,
-              etaMin: 0,
-              arrivalScore: 0,
-              proximity: false,
-              landed: true,
-              _rolloutDist: por.distFromThresholdKm
-            });
-            break;
-          }
-        }
+        var arrMatch = matchArrRunway(a);
+        if (!arrMatch.on) continue;
+        landed.push({
+          hex: a.icao24,
+          callsign: a.callsign,
+          originIata: rc && rc.origin ? rc.origin.iata : null,
+          aircraftType: a.aircraftType,
+          lat: a.lat,
+          lng: a.lng,
+          altFt: a.ground ? 0 : (a.altFt || 0),
+          distKm: landedDist,
+          etaMin: 0,
+          arrivalScore: 0,
+          proximity: false,
+          landed: true,
+          _rolloutDist: arrMatch.distFromThresholdKm
+        });
+        landedHexes[a.icao24] = true;
       }
-      landed.sort(function(a, b) { return b._rolloutDist - a._rolloutDist; });
+      // Ascending rollout distance: most-recent touchdown (still near threshold) ranks first.
+      landed.sort(function(a, b) { return a._rolloutDist - b._rolloutDist; });
       if (landed.length > 5) landed.length = 5;
       for (var i = 0; i < landed.length; i++) delete landed[i]._rolloutDist;
     } else {
@@ -4051,15 +4106,51 @@
           proximity: false,
           landed: true
         });
+        landedHexes[a.icao24] = true;
       }
       landed.sort(function(a, b) { return a.distKm - b.distKm; });
       if (landed.length > 5) landed.length = 5;
     }
+    // Taxi-in pass: ground aircraft whose destination is this airport but that aren't on
+    // the active arrival runway. Covers the runway-exit-to-gate gap where the aircraft would
+    // otherwise vanish from the panel for 5-15 minutes.
+    var taxiingIn = [];
+    for (var i = 0; i < list.length; i++) {
+      var a = list[i];
+      if (!a.callsign || !a.ground) continue;
+      if (landedHexes[a.icao24]) continue;
+      var rc = routeCache[a.callsign];
+      if (!rc || !rc.destination || rc.destination.iata !== airportIata) continue;
+      var taxDist = haversineKm(a.lat, a.lng, airportLat, airportLng);
+      if (taxDist > 6) continue;
+      var taxSpd = a.speedKts || 0;
+      taxiingIn.push({
+        hex: a.icao24,
+        callsign: a.callsign,
+        originIata: rc && rc.origin ? rc.origin.iata : null,
+        aircraftType: a.aircraftType,
+        lat: a.lat,
+        lng: a.lng,
+        altFt: 0,
+        distKm: taxDist,
+        etaMin: 0,
+        arrivalScore: 0,
+        proximity: false,
+        taxiingIn: true,
+        speedKts: taxSpd
+      });
+    }
+    taxiingIn.sort(function(a, b) { return a.distKm - b.distKm; });
+    if (taxiingIn.length > 5) taxiingIn.length = 5;
     arrivals.sort(compareArrivalEntries);
-    arrivals = landed.concat(arrivals);
+    arrivals = landed.concat(taxiingIn, arrivals);
     if (arrivals.length > 15) arrivals.length = 15;
     if (activeDepThresholds.length > 0) {
       departures.sort(function(a, b) {
+        var statusOrd = { Departing: 0, Climbing: 0, Holding: 1, Taxiing: 2, Parked: 3 };
+        var aOrd = statusOrd[a.status] != null ? statusOrd[a.status] : 3;
+        var bOrd = statusOrd[b.status] != null ? statusOrd[b.status] : 3;
+        if (aOrd !== bOrd) return aOrd - bOrd;
         var aNull = a.runwayDistKm == null;
         var bNull = b.runwayDistKm == null;
         if (aNull !== bNull) return aNull ? 1 : -1;
@@ -4079,11 +4170,11 @@
           if (rDiff !== 0) return rDiff;
           return b.speedKts - a.speedKts;
         }
-        var statusOrd = { Departing: 0, Taxiing: 1, Parked: 2 };
-        var aOrd = statusOrd[a.status] != null ? statusOrd[a.status] : 2;
-        var bOrd = statusOrd[b.status] != null ? statusOrd[b.status] : 2;
+        var statusOrd = { Departing: 0, Climbing: 0, Holding: 1, Taxiing: 2, Parked: 3 };
+        var aOrd = statusOrd[a.status] != null ? statusOrd[a.status] : 3;
+        var bOrd = statusOrd[b.status] != null ? statusOrd[b.status] : 3;
         if (aOrd !== bOrd) return aOrd - bOrd;
-        if (aOrd <= 1) return b.speedKts - a.speedKts;
+        if (aOrd <= 2) return b.speedKts - a.speedKts;
         if (a.hasDest !== b.hasDest) return a.hasDest ? -1 : 1;
         return a.distKm - b.distKm;
       });
@@ -4126,6 +4217,11 @@
             '<span class="sched-flight">' + flightNum + '</span>' +
             '<span class="sched-route">from ' + fromIata + (f.aircraftType ? ' \u00b7 ' + escapeHtml(f.aircraftType) : '') + '</span>' +
             '<span class="sched-landed">Landed</span>';
+        } else if (f.taxiingIn) {
+          html += '<span class="sched-dot green"></span>' +
+            '<span class="sched-flight">' + flightNum + '</span>' +
+            '<span class="sched-route">from ' + fromIata + (f.aircraftType ? ' \u00b7 ' + escapeHtml(f.aircraftType) : '') + '</span>' +
+            '<span class="sched-landed">Taxiing in</span>';
         } else {
           var altStr = f.altFt != null ? f.altFt.toLocaleString() + "ft" : "\u2014";
           var etaStr = formatLandingEta(f.etaMin);
@@ -4144,7 +4240,11 @@
         var flightNum = escapeHtml((cs || "\u2014").replace(/^([A-Za-z]+)(\d+)$/, "$1 $2"));
         var destIata = f.destIata ? escapeHtml(f.destIata) : "\u2014";
         var spdStr = f.speedKts >= 5 ? formatSpeedMph(f.speedKts) + "mph" : "\u2014";
-        var dotColor = f.status === "Departing" ? "cyan live" : f.status === "Taxiing" ? "green" : "gray";
+        var dotColor;
+        if (f.status === "Departing" || f.status === "Climbing") dotColor = "cyan live";
+        else if (f.status === "Holding") dotColor = "yellow";
+        else if (f.status === "Taxiing") dotColor = "green";
+        else dotColor = "gray";
         html += '<div class="sched-row" data-callsign="' + escapeHtml(cs) +
           '" data-hex="' + escapeHtml(f.hex || "") +
           '" data-lat="' + (f.lat != null ? String(f.lat) : "") +
