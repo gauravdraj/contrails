@@ -38,7 +38,7 @@
     throw new Error("Contrails core helpers failed to load.");
   }
 
-  const APP_VERSION = "v2.15.1";
+  const APP_VERSION = "v2.15.2";
   const isLocal = location.hostname === "localhost" || location.hostname === "127.0.0.1";
   const isIOSDevice = /iP(ad|hone|od)/.test(navigator.userAgent) ||
     (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
@@ -4461,7 +4461,7 @@
     }
 
     var liveData = entry.data || buildAirportPopupPlaceholder("Loading airport traffic…");
-    var popup = L.popup({ maxWidth: 320, minWidth: 280, closeButton: true, className: "" })
+    var popup = L.popup({ maxWidth: 320, minWidth: 280, closeButton: true, className: "", autoPan: false })
       .setLatLng([lat, lng])
       .setContent(buildScheduleCardContent(iata, name, liveData, "arrivals"))
       .openOn(map);
