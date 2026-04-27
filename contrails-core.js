@@ -650,31 +650,89 @@
     return statusOrd[status] != null ? statusOrd[status] : 3;
   }
 
-  function compareAirportDepartureEntries(a, b, options) {
+  function describeAirportDepartureStatus(row, options) {
     options = options || {};
-    var activeRunways = !!options.activeRunways;
-    var aHasRwy = a && a.runwayDistKm != null;
-    var bHasRwy = b && b.runwayDistKm != null;
-    var aOrd = airportDepartureStatusOrder(a && a.status);
-    var bOrd = airportDepartureStatusOrder(b && b.status);
-    if (activeRunways) {
-      if (aOrd !== bOrd) return aOrd - bOrd;
-      if (aHasRwy !== bHasRwy) return aHasRwy ? -1 : 1;
-      if (aHasRwy) {
-        var activeRwyDiff = a.runwayDistKm - b.runwayDistKm;
-        if (activeRwyDiff !== 0) return activeRwyDiff;
-      }
-      return (b && b.speedKts || 0) - (a && a.speedKts || 0);
+    row = row || {};
+    var status = row.status || "Parked";
+    var speedKts = row.speedKts || 0;
+    var runwayDistKm = row.runwayDistKm;
+    var activeRunway = !!row.activeRunway;
+    var onRunway = activeRunway || !!row.onRunway;
+    var nearRunway = runwayDistKm != null && runwayDistKm <= (options.activeRunways ? 1.5 : 1);
+    var routeOrigin = !!row.originMatch;
+    var confidence = "low";
+    var label = status;
+    var sortOrder = airportDepartureStatusOrder(status);
+
+    if (status === "Departing") {
+      label = "Rolling";
+      confidence = activeRunway || onRunway || speedKts >= 50 || routeOrigin ? "high" : "medium";
+      sortOrder = 0;
+    } else if (status === "Climbing") {
+      label = "Climbing out";
+      confidence = routeOrigin || activeRunway || nearRunway ? "high" : "medium";
+      sortOrder = 1;
+    } else if (status === "Holding") {
+      label = onRunway ? "Holding on runway" : "Holding";
+      confidence = activeRunway || onRunway || nearRunway || routeOrigin ? "high" : "medium";
+      sortOrder = 2;
+    } else if (status === "Taxiing") {
+      label = nearRunway ? "Taxiing near runway" : "Taxiing";
+      confidence = nearRunway || routeOrigin ? "medium" : "low";
+      sortOrder = 3;
+    } else {
+      label = routeOrigin ? "Parked, route matched" : "Parked";
+      confidence = routeOrigin ? "medium" : "low";
+      sortOrder = 4;
     }
 
-    if (aHasRwy !== bHasRwy) return aHasRwy ? -1 : 1;
-    if (aHasRwy) {
+    return {
+      label: label,
+      confidence: confidence,
+      sortOrder: sortOrder,
+      activeRunway: activeRunway,
+      onRunway: onRunway,
+      nearRunway: nearRunway,
+      routeOrigin: routeOrigin
+    };
+  }
+
+  function confidenceOrder(confidence) {
+    var ord = { high: 0, medium: 1, low: 2 };
+    return ord[confidence] != null ? ord[confidence] : 2;
+  }
+
+  function runwayPreferenceOrder(row, signal, options) {
+    options = options || {};
+    row = row || {};
+    signal = signal || describeAirportDepartureStatus(row, options);
+    if (signal.activeRunway) return 0;
+    if (signal.onRunway) return options.activeRunways ? 2 : 1;
+    if (signal.nearRunway) return 2;
+    if (row.runwayDistKm != null) return 3;
+    return 4;
+  }
+
+  function compareAirportDepartureEntries(a, b, options) {
+    options = options || {};
+    var aSignal = describeAirportDepartureStatus(a, options);
+    var bSignal = describeAirportDepartureStatus(b, options);
+    if (aSignal.sortOrder !== bSignal.sortOrder) return aSignal.sortOrder - bSignal.sortOrder;
+
+    var aRunwayPref = runwayPreferenceOrder(a, aSignal, options);
+    var bRunwayPref = runwayPreferenceOrder(b, bSignal, options);
+    if (aRunwayPref !== bRunwayPref) return aRunwayPref - bRunwayPref;
+
+    var aConf = confidenceOrder(aSignal.confidence);
+    var bConf = confidenceOrder(bSignal.confidence);
+    if (aConf !== bConf) return aConf - bConf;
+
+    if (!!(a && a.originMatch) !== !!(b && b.originMatch)) return a && a.originMatch ? -1 : 1;
+    if (a && a.runwayDistKm != null && b && b.runwayDistKm != null) {
       var rwyDiff = a.runwayDistKm - b.runwayDistKm;
       if (rwyDiff !== 0) return rwyDiff;
-      return (b && b.speedKts || 0) - (a && a.speedKts || 0);
     }
-    if (aOrd !== bOrd) return aOrd - bOrd;
-    if (aOrd <= 2) return (b && b.speedKts || 0) - (a && a.speedKts || 0);
+    if (aSignal.sortOrder <= 3) return (b && b.speedKts || 0) - (a && a.speedKts || 0);
     if (!!(a && a.hasDest) !== !!(b && b.hasDest)) return a && a.hasDest ? -1 : 1;
     var distA = a && a.distKm != null ? a.distKm : Infinity;
     var distB = b && b.distKm != null ? b.distKm : Infinity;
@@ -709,6 +767,7 @@
     computePlaybackDelayMs: computePlaybackDelayMs,
     compareAirportArrivalEntries: compareAirportArrivalEntries,
     compareAirportDepartureEntries: compareAirportDepartureEntries,
+    describeAirportDepartureStatus: describeAirportDepartureStatus,
     buildViewPolicy: buildViewPolicy,
     buildViewportFetchSpec: buildViewportFetchSpec,
     cardinalDir: cardinalDir,

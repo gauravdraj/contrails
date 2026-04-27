@@ -851,3 +851,69 @@ test("airport departure rows: runway rolling beats holding and taxiing for next 
   assert.deepEqual(callsigns(rows), ["ROLL1", "HOLD1", "TAXI1"]);
   assert.equal(next.callsign, "ROLL1", "top next takeoff summary row should be the rolling runway aircraft");
 });
+
+test("airport departure rows: climbing origin match beats parked aircraft near runway", () => {
+  var rows = core.sortAirportDepartureRows([
+    {
+      callsign: "PARK1",
+      status: "Parked",
+      runwayDistKm: 0.1,
+      speedKts: 0,
+      distKm: 0.3
+    },
+    {
+      callsign: "CLIMB1",
+      status: "Climbing",
+      runwayDistKm: 1.6,
+      speedKts: 165,
+      distKm: 4.2,
+      originMatch: true,
+      hasDest: true
+    },
+    {
+      callsign: "TAXI1",
+      status: "Taxiing",
+      runwayDistKm: 0.2,
+      speedKts: 12,
+      distKm: 0.6,
+      originMatch: true
+    }
+  ], { activeRunways: false });
+
+  assert.deepEqual(callsigns(rows), ["CLIMB1", "TAXI1", "PARK1"]);
+});
+
+test("airport departure status helper explains signal confidence without ETA", () => {
+  assert.deepEqual(core.describeAirportDepartureStatus({
+    callsign: "ROLL1",
+    status: "Departing",
+    speedKts: 42,
+    activeRunway: true,
+    onRunway: true,
+    runwayDistKm: 0.5
+  }, { activeRunways: true }), {
+    label: "Rolling",
+    confidence: "high",
+    sortOrder: 0,
+    activeRunway: true,
+    onRunway: true,
+    nearRunway: true,
+    routeOrigin: false
+  });
+
+  assert.deepEqual(core.describeAirportDepartureStatus({
+    callsign: "TAXI1",
+    status: "Taxiing",
+    speedKts: 14,
+    runwayDistKm: 0.8,
+    originMatch: true
+  }), {
+    label: "Taxiing near runway",
+    confidence: "medium",
+    sortOrder: 3,
+    activeRunway: false,
+    onRunway: false,
+    nearRunway: true,
+    routeOrigin: true
+  });
+});

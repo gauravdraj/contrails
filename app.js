@@ -24,6 +24,7 @@
   const scoreArrivalCandidate = core.scoreArrivalCandidate;
   const sortAirportArrivalRows = core.sortAirportArrivalRows;
   const sortAirportDepartureRows = core.sortAirportDepartureRows;
+  const describeAirportDepartureStatus = core.describeAirportDepartureStatus;
   const slantKm = core.slantKm;
   const elevationDeg = core.elevationDeg;
   const findFlightStartIndex = core.findFlightStartIndex;
@@ -35,7 +36,7 @@
       !callsignVariants || !computePlaybackDelayMs || !escapeHtml || !formatDistanceMiles || !formatSpeedMph ||
       !haversineKm || !interpolatePlaybackPose || !interpolateTimedPose || !isLikelyPrivateCallsign ||
       !normalizeAircraftHex || !normalizeFlightQuery || !normalizeSearchText || !parseCoordinate || !projectLatLng ||
-      !scoreArrivalCandidate || !sortAirportArrivalRows || !sortAirportDepartureRows ||
+      !scoreArrivalCandidate || !sortAirportArrivalRows || !sortAirportDepartureRows || !describeAirportDepartureStatus ||
       !findFlightStartIndex || !matchRunwayDesignator || !pointOnRunway ||
       !roundTenths || !slantKm || !elevationDeg || !SQUAWK_ALERT) {
     throw new Error("Contrails core helpers failed to load.");
@@ -3959,7 +3960,11 @@
             status: depStatus,
             distKm: distKm,
             runwayDistKm: depRunwayKm,
-            hasDest: !!(rc && rc.destination)
+            hasDest: !!(rc && rc.destination),
+            originMatch: originHere,
+            routeConfidence: rc && rc.confidence ? rc.confidence : null,
+            activeRunway: depRwy.on,
+            onRunway: depRwy.on
           });
           departureHexes[a.icao24] = true;
         }
@@ -3969,8 +3974,11 @@
         if (destinationHere) continue;
         if (distKm > (originHere ? 8 : 5)) continue;
         var spdKts = a.speedKts || 0;
+        var depRwyGround = matchDepRunway(a);
         var anyRwy = matchAnyRunway(a);
-        var groundRunwayKm = anyRwy.on ? anyRwy.distFromThresholdKm : nearestDepThresholdKm(a);
+        var groundRunwayKm = depRwyGround.on
+          ? depRwyGround.distFromThresholdKm
+          : (anyRwy.on ? anyRwy.distFromThresholdKm : nearestDepThresholdKm(a));
         var groundStatus;
         if (spdKts >= 50) {
           groundStatus = "Departing";
@@ -3996,7 +4004,11 @@
           status: groundStatus,
           distKm: distKm,
           runwayDistKm: groundRunwayKm,
-          hasDest: !!(rc && rc.destination)
+          hasDest: !!(rc && rc.destination),
+          originMatch: originHere,
+          routeConfidence: rc && rc.confidence ? rc.confidence : null,
+          activeRunway: depRwyGround.on,
+          onRunway: anyRwy.on
         });
         departureHexes[a.icao24] = true;
       }
@@ -4119,7 +4131,11 @@
     }
     arrivals = sortAirportArrivalRows(landed, taxiingIn, arrivals);
     departures = sortAirportDepartureRows(departures, { activeRunways: activeDepThresholds.length > 0 });
-    return { arrivals: arrivals, departures: departures };
+    return {
+      arrivals: arrivals,
+      departures: departures,
+      activeDepartureRunways: activeDepThresholds.length > 0
+    };
   }
 
   function buildScheduleCardContent(iata, name, liveData, dir) {
@@ -4179,6 +4195,14 @@
         var flightNum = escapeHtml((cs || "\u2014").replace(/^([A-Za-z]+)(\d+)$/, "$1 $2"));
         var destIata = f.destIata ? escapeHtml(f.destIata) : "\u2014";
         var spdStr = f.speedKts >= 5 ? formatSpeedMph(f.speedKts) + "mph" : "\u2014";
+        var depSignal = describeAirportDepartureStatus(f, { activeRunways: !!liveData.activeDepartureRunways });
+        var hintLabel = depSignal.label;
+        if (i === 0) {
+          var nextPrefix = depSignal.confidence === "high"
+            ? "Next off"
+            : (depSignal.confidence === "medium" ? "Likely next" : "Possible departure");
+          hintLabel = nextPrefix + " \u00b7 " + depSignal.label;
+        }
         var dotColor;
         if (f.status === "Departing" || f.status === "Climbing") dotColor = "cyan live";
         else if (f.status === "Holding") dotColor = "yellow";
@@ -4192,7 +4216,7 @@
           '<span class="sched-flight">' + flightNum + '</span>' +
           '<span class="sched-route">to ' + destIata + (f.aircraftType ? ' \u00b7 ' + escapeHtml(f.aircraftType) : '') + '</span>' +
           '<span class="sched-speed">' + spdStr + '</span>' +
-          '<span class="sched-hint">' + escapeHtml(f.status) + '</span>' +
+          '<span class="sched-hint">' + escapeHtml(hintLabel) + '</span>' +
           '</div>';
       }
     }
@@ -4204,6 +4228,7 @@
     return {
       arrivals: [],
       departures: [],
+      activeDepartureRunways: false,
       message: message
     };
   }
