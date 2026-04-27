@@ -610,6 +610,35 @@
     return rows;
   }
 
+  function airportRowDedupeKeys(row) {
+    var keys = [];
+    var hex = normalizeAircraftHex(row && row.hex);
+    if (hex) keys.push("hex:" + hex);
+    var callsign = row && row.callsign ? String(row.callsign).trim().toUpperCase() : "";
+    if (callsign) keys.push("cs:" + callsign);
+    return keys;
+  }
+
+  function dedupeAirportRows(rows) {
+    var seen = {};
+    var deduped = [];
+    for (var i = 0; i < rows.length; i++) {
+      var row = rows[i];
+      var keys = airportRowDedupeKeys(row);
+      var duplicate = false;
+      for (var k = 0; k < keys.length; k++) {
+        if (seen[keys[k]]) {
+          duplicate = true;
+          break;
+        }
+      }
+      if (duplicate) continue;
+      deduped.push(row);
+      for (var j = 0; j < keys.length; j++) seen[keys[j]] = true;
+    }
+    return deduped;
+  }
+
   function compareAirportLandedEntries(a, b) {
     var aRoll = a && a._rolloutDist != null ? a._rolloutDist : null;
     var bRoll = b && b._rolloutDist != null ? b._rolloutDist : null;
@@ -629,17 +658,17 @@
     var landedLimit = options.landedLimit == null ? 5 : options.landedLimit;
     var taxiingLimit = options.taxiingLimit == null ? 5 : options.taxiingLimit;
     var totalLimit = options.totalLimit == null ? 15 : options.totalLimit;
-    var landedRows = copyAirportRows(landed).sort(compareAirportLandedEntries);
-    var taxiingRows = copyAirportRows(taxiingIn).sort(function(a, b) {
+    var landedRows = dedupeAirportRows(copyAirportRows(landed).sort(compareAirportLandedEntries));
+    var taxiingRows = dedupeAirportRows(copyAirportRows(taxiingIn).sort(function(a, b) {
       var distA = a && a.distKm != null ? a.distKm : Infinity;
       var distB = b && b.distKm != null ? b.distKm : Infinity;
       if (distA !== distB) return distA - distB;
       return ((a && a.callsign) || "").localeCompare((b && b.callsign) || "");
-    });
-    var inboundRows = copyAirportRows(inbound).sort(compareAirportArrivalEntries);
+    }));
+    var inboundRows = dedupeAirportRows(copyAirportRows(inbound).sort(compareAirportArrivalEntries));
     limitAirportRows(landedRows, landedLimit);
     limitAirportRows(taxiingRows, taxiingLimit);
-    var rows = landedRows.concat(taxiingRows, inboundRows);
+    var rows = dedupeAirportRows(landedRows.concat(taxiingRows, inboundRows));
     limitAirportRows(rows, totalLimit);
     for (var i = 0; i < rows.length; i++) delete rows[i]._rolloutDist;
     return rows;
@@ -746,6 +775,7 @@
     var rows = copyAirportRows(departures).sort(function(a, b) {
       return compareAirportDepartureEntries(a, b, options);
     });
+    rows = dedupeAirportRows(rows);
     return limitAirportRows(rows, totalLimit);
   }
 

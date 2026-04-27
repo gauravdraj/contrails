@@ -822,6 +822,37 @@ test("airport arrival rows: landed and taxiing-in aircraft stay ahead of airborn
   assert.equal("_rolloutDist" in next, false, "internal rollout distance should not leak to display rows");
 });
 
+test("airport arrival rows: suppress duplicate aircraft across landing buckets", () => {
+  var landed = {
+    hex: "A1B2C3",
+    callsign: "UAL100",
+    landed: true,
+    distKm: 0.4,
+    arrivalScore: 0,
+    _rolloutDist: 0.2
+  };
+  var taxiingDuplicate = {
+    hex: "a1b2c3",
+    callsign: "UAL100",
+    taxiingIn: true,
+    distKm: 0.8,
+    arrivalScore: 0
+  };
+  var inboundDuplicate = inboundArrival("UAL100", {
+    altFt: 3500, vRate: -10, distKm: 10, spdKts: 160, destinationMatch: true
+  });
+  var otherInbound = inboundArrival("DAL200", {
+    altFt: 5000, vRate: -10, distKm: 18, spdKts: 200, destinationMatch: true
+  });
+
+  var rows = core.sortAirportArrivalRows([landed], [taxiingDuplicate], [inboundDuplicate, otherInbound]);
+  var next = core.getAirportNextRow({ arrivals: rows }, "arrivals");
+
+  assert.deepEqual(callsigns(rows), ["UAL100", "DAL200"]);
+  assert.equal(next.landed, true, "duplicate suppression should keep the highest-priority landed row");
+  assert.equal("_rolloutDist" in next, false, "internal rollout distance should not leak after dedupe");
+});
+
 test("airport departure rows: runway rolling beats holding and taxiing for next takeoff", () => {
   var rows = core.sortAirportDepartureRows([
     {
@@ -881,6 +912,40 @@ test("airport departure rows: climbing origin match beats parked aircraft near r
   ], { activeRunways: false });
 
   assert.deepEqual(callsigns(rows), ["CLIMB1", "TAXI1", "PARK1"]);
+});
+
+test("airport departure rows: suppress duplicate aircraft after priority sorting", () => {
+  var rows = core.sortAirportDepartureRows([
+    {
+      hex: "abc123",
+      callsign: "DUP100",
+      status: "Parked",
+      runwayDistKm: 0.2,
+      speedKts: 0,
+      distKm: 0.3
+    },
+    {
+      hex: "ABC123",
+      callsign: "DUP100",
+      status: "Departing",
+      runwayDistKm: 0.6,
+      speedKts: 40,
+      distKm: 0.8,
+      onRunway: true
+    },
+    {
+      hex: "def456",
+      callsign: "TAXI1",
+      status: "Taxiing",
+      runwayDistKm: 0.2,
+      speedKts: 12,
+      distKm: 0.6
+    }
+  ], { activeRunways: true });
+  var next = core.getAirportNextRow({ departures: rows }, "departures");
+
+  assert.deepEqual(callsigns(rows), ["DUP100", "TAXI1"]);
+  assert.equal(next.status, "Departing", "duplicate suppression should keep the sorted next-takeoff row");
 });
 
 test("airport departure status helper explains signal confidence without ETA", () => {
