@@ -11,6 +11,7 @@
   const escapeHtml = core.escapeHtml;
   const formatDistanceMiles = core.formatDistanceMiles;
   const formatSpeedMph = core.formatSpeedMph;
+  const getAirportNextRow = core.getAirportNextRow;
   const haversineKm = core.haversineKm;
   const interpolatePlaybackPose = core.interpolatePlaybackPose;
   const interpolateTimedPose = core.interpolateTimedPose;
@@ -34,7 +35,7 @@
   const AIRLINE_ICAO_TO_IATA = core.AIRLINE_ICAO_TO_IATA;
   if (!airlineName || !angleDiffDeg || !bearingDegrees || !buildViewPolicy || !buildViewportFetchSpec || !cardinalDir ||
       !callsignVariants || !computePlaybackDelayMs || !escapeHtml || !formatDistanceMiles || !formatSpeedMph ||
-      !haversineKm || !interpolatePlaybackPose || !interpolateTimedPose || !isLikelyPrivateCallsign ||
+      !getAirportNextRow || !haversineKm || !interpolatePlaybackPose || !interpolateTimedPose || !isLikelyPrivateCallsign ||
       !normalizeAircraftHex || !normalizeFlightQuery || !normalizeSearchText || !parseCoordinate || !projectLatLng ||
       !scoreArrivalCandidate || !sortAirportArrivalRows || !sortAirportDepartureRows || !describeAirportDepartureStatus ||
       !findFlightStartIndex || !matchRunwayDesignator || !pointOnRunway ||
@@ -3816,6 +3817,73 @@
     return "~" + Math.round(etaMin) + "min";
   }
 
+  function formatScheduleFlightNumber(callsign) {
+    return (callsign || "\u2014").replace(/^([A-Za-z]+)(\d+)$/, "$1 $2");
+  }
+
+  function formatLandingSummaryStatus(row) {
+    if (!row) return "";
+    if (row.landed) return "Landed";
+    if (row.taxiingIn) return "Taxiing in";
+    var eta = formatLandingEta(row.etaMin);
+    return eta ? "ETA " + eta : "Inbound";
+  }
+
+  function formatTakeoffSummaryStatus(row, liveData) {
+    if (!row) return "";
+    var signal = describeAirportDepartureStatus(row, {
+      activeRunways: !!(liveData && liveData.activeDepartureRunways)
+    });
+    if (row.status === "Holding") return signal.onRunway ? "Holding on runway" : "Holding";
+    if (row.status === "Departing") return "Departing";
+    if (row.status === "Climbing") return "Climbing";
+    if (row.status === "Taxiing") return signal.nearRunway ? "Taxiing near runway" : "Taxiing";
+    return row.status || signal.label;
+  }
+
+  function buildScheduleNextSummary(liveData, dir) {
+    var isArr = dir === "arrivals";
+    var next = getAirportNextRow(liveData, dir);
+    var message = liveData && liveData.message ? liveData.message : "";
+    var state = liveData && liveData.state ? liveData.state : "";
+    var title = isArr ? "Next landing" : "Next takeoff";
+    if (!next) {
+      var emptyClass = state === "loading" ? " loading" : (state === "error" ? " error" : " empty");
+      var emptyMessage = message || (isArr ? "No landing candidates nearby" : "No takeoff candidates nearby");
+      return '<div class="sched-next' + emptyClass + '">' +
+        '<div class="sched-next-kicker">' + title + '</div>' +
+        '<div class="sched-next-empty-text">' + escapeHtml(emptyMessage) + '</div>' +
+      '</div>';
+    }
+
+    var flightNum = escapeHtml(formatScheduleFlightNumber(next.callsign));
+    var statusText;
+    var routeParts = [];
+    var summaryClass = "sched-next";
+    if (isArr) {
+      statusText = formatLandingSummaryStatus(next);
+      if (next.originIata) routeParts.push("from " + next.originIata);
+      if (next.aircraftType) routeParts.push(next.aircraftType);
+    } else {
+      var depSignal = describeAirportDepartureStatus(next, { activeRunways: !!liveData.activeDepartureRunways });
+      if (depSignal.confidence === "medium") title = "Likely next takeoff";
+      else if (depSignal.confidence === "low") title = "Possible next takeoff";
+      statusText = formatTakeoffSummaryStatus(next, liveData);
+      if (next.destIata) routeParts.push("to " + next.destIata);
+      summaryClass += " departure";
+    }
+    var routeText = routeParts.length ? routeParts.join(" \u00b7 ") : "";
+
+    return '<div class="' + summaryClass + '">' +
+      '<div class="sched-next-kicker">' + escapeHtml(title) + '</div>' +
+      '<div class="sched-next-main">' +
+        '<span class="sched-next-flight">' + flightNum + '</span>' +
+        '<span class="sched-next-status">' + escapeHtml(statusText) + '</span>' +
+      '</div>' +
+      (routeText ? '<div class="sched-next-route">' + escapeHtml(routeText) + '</div>' : '') +
+    '</div>';
+  }
+
   function buildLiveScheduleData(airportIata, airportLat, airportLng, sourceAircraft) {
     var list = Array.isArray(sourceAircraft) ? sourceAircraft : aircraft;
     var arrivals = [];
@@ -4154,14 +4222,15 @@
         '<button class="sched-toggle-btn' + (isArr ? " active" : "") + '" data-dir="arrivals">Landings</button>' +
         '<button class="sched-toggle-btn' + (isArr ? "" : " active") + '" data-dir="departures">Takeoffs</button>' +
       '</div>';
+    html += buildScheduleNextSummary(liveData, dir);
     html += '<div class="sched-rows">';
     if (!items.length) {
-      html += '<div class="sched-empty">' + escapeHtml(message || "No aircraft nearby") + '</div>';
+      html += '<div class="sched-empty">' + escapeHtml(message || (isArr ? "No landings nearby" : "No takeoffs nearby")) + '</div>';
     } else if (isArr) {
       for (var i = 0; i < items.length; i++) {
         var f = items[i];
         var cs = f.callsign || "";
-        var flightNum = escapeHtml((cs || "\u2014").replace(/^([A-Za-z]+)(\d+)$/, "$1 $2"));
+        var flightNum = escapeHtml(formatScheduleFlightNumber(cs));
         var fromIata = f.originIata ? escapeHtml(f.originIata) : "\u2014";
         html += '<div class="sched-row" data-callsign="' + escapeHtml(cs) +
           '" data-hex="' + escapeHtml(f.hex || "") +
@@ -4192,7 +4261,7 @@
       for (var i = 0; i < items.length; i++) {
         var f = items[i];
         var cs = f.callsign || "";
-        var flightNum = escapeHtml((cs || "\u2014").replace(/^([A-Za-z]+)(\d+)$/, "$1 $2"));
+        var flightNum = escapeHtml(formatScheduleFlightNumber(cs));
         var destIata = f.destIata ? escapeHtml(f.destIata) : "\u2014";
         var spdStr = f.speedKts >= 5 ? formatSpeedMph(f.speedKts) + "mph" : "\u2014";
         var depSignal = describeAirportDepartureStatus(f, { activeRunways: !!liveData.activeDepartureRunways });
@@ -4224,12 +4293,13 @@
     return html;
   }
 
-  function buildAirportPopupPlaceholder(message) {
+  function buildAirportPopupPlaceholder(message, state) {
     return {
       arrivals: [],
       departures: [],
       activeDepartureRunways: false,
-      message: message
+      message: message,
+      state: state || "empty"
     };
   }
 
@@ -4374,7 +4444,10 @@
     var entry = _activeAirportIata ? getAirportPopupCacheEntry(_activeAirportIata) : null;
     var liveData = entry && entry.data
       ? entry.data
-      : buildAirportPopupPlaceholder(entry && entry.error ? entry.error : "Loading airport traffic…");
+      : buildAirportPopupPlaceholder(
+        entry && entry.error ? entry.error : "Loading airport traffic…",
+        entry && entry.error ? "error" : "loading"
+      );
     var html = buildScheduleCardContent(_activeAirportIata, _activeAirportName, liveData, dir);
     if (html === _lastScheduleHtml) return;
     _lastScheduleHtml = html;
@@ -4423,7 +4496,7 @@
       }
     }
 
-    var liveData = entry.data || buildAirportPopupPlaceholder("Loading airport traffic…");
+    var liveData = entry.data || buildAirportPopupPlaceholder("Loading airport traffic…", "loading");
     var popup = L.popup({ maxWidth: 320, minWidth: 280, closeButton: true, className: "airport-schedule-popup", autoPan: false })
       .setLatLng([lat, lng])
       .setContent(buildScheduleCardContent(iata, name, liveData, "arrivals"))
