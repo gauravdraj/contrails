@@ -652,6 +652,25 @@ body.noscroll { touch-action: none; }
 .leaflet-popup-tip { background: rgba(14, 26, 42, 0.98); }
 .leaflet-popup-content { margin: 12px 14px; font-size: 13px; line-height: 1.6; min-width: 200px; }
 .leaflet-popup-close-button { display: none; }
+.leaflet-popup.airport-schedule-popup .leaflet-popup-content { margin-top: 18px; }
+.leaflet-popup.airport-schedule-popup .leaflet-popup-close-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  top: 5px;
+  right: 5px;
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-size: 22px;
+  line-height: 1;
+  text-decoration: none;
+}
+.leaflet-popup.airport-schedule-popup .leaflet-popup-close-button:hover {
+  color: var(--text-strong);
+  background: rgba(255,255,255,0.06);
+}
 .leaflet-popup-content strong { color: var(--accent); font-size: 15px; }
 .popup-header {
   display: flex;

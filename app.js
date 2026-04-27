@@ -440,6 +440,13 @@
         popupRect.bottom > mapRect.bottom - edgeMargin ||
         popupRect.right > mapRect.right - edgeMargin;
     }
+    function isAirportSchedulePopup(popup) {
+      if (!popup) return false;
+      if (_activeAirportPopup && popup === _activeAirportPopup) return true;
+      if (!popup.getElement) return false;
+      var el = popup.getElement();
+      return !!(el && el.classList && el.classList.contains("airport-schedule-popup"));
+    }
     map.on("move", function() {
       if (_popupJustOpened || _autoPanning) return;
       if (popupCheckRafPending) return;
@@ -447,7 +454,7 @@
       requestAnimationFrame(function() {
         popupCheckRafPending = false;
         var p = map._popup;
-        if (p && popupPanelLeavingView(p)) map.closePopup();
+        if (p && !isAirportSchedulePopup(p) && popupPanelLeavingView(p)) map.closePopup();
       });
     });
     map.on("popupopen", function(e) {
@@ -552,7 +559,7 @@
       }
       if (_popupJustOpened || _autoPanning) { _autoPanning = false; return; }
       var p = map._popup;
-      if (p) {
+      if (p && !isAirportSchedulePopup(p)) {
         if (popupPanelLeavingView(p)) {
           map.closePopup();
         } else if (p._latlng && !map.getBounds().contains(p._latlng)) {
@@ -4392,7 +4399,7 @@
     }
 
     var liveData = entry.data || buildAirportPopupPlaceholder("Loading airport traffic…");
-    var popup = L.popup({ maxWidth: 320, minWidth: 280, closeButton: true, className: "", autoPan: false })
+    var popup = L.popup({ maxWidth: 320, minWidth: 280, closeButton: true, className: "airport-schedule-popup", autoPan: false })
       .setLatLng([lat, lng])
       .setContent(buildScheduleCardContent(iata, name, liveData, "arrivals"))
       .openOn(map);
