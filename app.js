@@ -4418,6 +4418,8 @@
   // --- FIDS (airport schedule board) ---
   var _fidsData = null;
   var _fidsDir = "arrivals";
+  var _fidsIata = null;
+  var _fidsRequestToken = 0;
 
   function fidsTime(ts) {
     if (!ts) return "\u2014";
@@ -4460,6 +4462,9 @@
   }
 
   window.openFids = function(iata, name, direction) {
+    var requestToken = ++_fidsRequestToken;
+    _fidsIata = iata;
+    _fidsData = null;
     document.getElementById("fids-title").textContent = iata;
     document.getElementById("fids-subtitle").textContent = name || "";
     document.getElementById("fids-body").innerHTML =
@@ -4471,6 +4476,7 @@
     document.getElementById("fids").classList.add("open");
 
     fetchScheduleData(iata).then(function(data) {
+      if (requestToken !== _fidsRequestToken || _fidsIata !== iata) return;
       if (!data) {
         document.getElementById("fids-body").innerHTML =
           '<div class="fids-empty">Failed to load schedule</div>';
@@ -4488,6 +4494,8 @@
   };
 
   window.closeFids = function() {
+    _fidsRequestToken++;
+    _fidsIata = null;
     document.getElementById("fids").classList.remove("open");
     _fidsData = null;
   };
