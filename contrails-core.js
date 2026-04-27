@@ -582,6 +582,122 @@
     };
   }
 
+  function compareAirportArrivalEntries(a, b) {
+    var scoreA = a && a.arrivalScore != null ? a.arrivalScore : Infinity;
+    var scoreB = b && b.arrivalScore != null ? b.arrivalScore : Infinity;
+    if (scoreA !== scoreB) return scoreA - scoreB;
+    if (!!(a && a.proximity) !== !!(b && b.proximity)) return a && a.proximity ? 1 : -1;
+    var distA = a && a.distKm != null ? a.distKm : Infinity;
+    var distB = b && b.distKm != null ? b.distKm : Infinity;
+    if (distA !== distB) return distA - distB;
+    return ((a && a.callsign) || "").localeCompare((b && b.callsign) || "");
+  }
+
+  function copyAirportRows(rows) {
+    if (!Array.isArray(rows)) return [];
+    var copied = [];
+    for (var i = 0; i < rows.length; i++) {
+      var src = rows[i] || {};
+      var dst = {};
+      for (var key in src) dst[key] = src[key];
+      copied.push(dst);
+    }
+    return copied;
+  }
+
+  function limitAirportRows(rows, limit) {
+    if (limit != null && rows.length > limit) rows.length = limit;
+    return rows;
+  }
+
+  function compareAirportLandedEntries(a, b) {
+    var aRoll = a && a._rolloutDist != null ? a._rolloutDist : null;
+    var bRoll = b && b._rolloutDist != null ? b._rolloutDist : null;
+    if (aRoll != null || bRoll != null) {
+      if (aRoll == null) return 1;
+      if (bRoll == null) return -1;
+      if (aRoll !== bRoll) return aRoll - bRoll;
+    }
+    var distA = a && a.distKm != null ? a.distKm : Infinity;
+    var distB = b && b.distKm != null ? b.distKm : Infinity;
+    if (distA !== distB) return distA - distB;
+    return ((a && a.callsign) || "").localeCompare((b && b.callsign) || "");
+  }
+
+  function sortAirportArrivalRows(landed, taxiingIn, inbound, options) {
+    options = options || {};
+    var landedLimit = options.landedLimit == null ? 5 : options.landedLimit;
+    var taxiingLimit = options.taxiingLimit == null ? 5 : options.taxiingLimit;
+    var totalLimit = options.totalLimit == null ? 15 : options.totalLimit;
+    var landedRows = copyAirportRows(landed).sort(compareAirportLandedEntries);
+    var taxiingRows = copyAirportRows(taxiingIn).sort(function(a, b) {
+      var distA = a && a.distKm != null ? a.distKm : Infinity;
+      var distB = b && b.distKm != null ? b.distKm : Infinity;
+      if (distA !== distB) return distA - distB;
+      return ((a && a.callsign) || "").localeCompare((b && b.callsign) || "");
+    });
+    var inboundRows = copyAirportRows(inbound).sort(compareAirportArrivalEntries);
+    limitAirportRows(landedRows, landedLimit);
+    limitAirportRows(taxiingRows, taxiingLimit);
+    var rows = landedRows.concat(taxiingRows, inboundRows);
+    limitAirportRows(rows, totalLimit);
+    for (var i = 0; i < rows.length; i++) delete rows[i]._rolloutDist;
+    return rows;
+  }
+
+  function airportDepartureStatusOrder(status) {
+    var statusOrd = { Departing: 0, Climbing: 0, Holding: 1, Taxiing: 2, Parked: 3 };
+    return statusOrd[status] != null ? statusOrd[status] : 3;
+  }
+
+  function compareAirportDepartureEntries(a, b, options) {
+    options = options || {};
+    var activeRunways = !!options.activeRunways;
+    var aHasRwy = a && a.runwayDistKm != null;
+    var bHasRwy = b && b.runwayDistKm != null;
+    var aOrd = airportDepartureStatusOrder(a && a.status);
+    var bOrd = airportDepartureStatusOrder(b && b.status);
+    if (activeRunways) {
+      if (aOrd !== bOrd) return aOrd - bOrd;
+      if (aHasRwy !== bHasRwy) return aHasRwy ? -1 : 1;
+      if (aHasRwy) {
+        var activeRwyDiff = a.runwayDistKm - b.runwayDistKm;
+        if (activeRwyDiff !== 0) return activeRwyDiff;
+      }
+      return (b && b.speedKts || 0) - (a && a.speedKts || 0);
+    }
+
+    if (aHasRwy !== bHasRwy) return aHasRwy ? -1 : 1;
+    if (aHasRwy) {
+      var rwyDiff = a.runwayDistKm - b.runwayDistKm;
+      if (rwyDiff !== 0) return rwyDiff;
+      return (b && b.speedKts || 0) - (a && a.speedKts || 0);
+    }
+    if (aOrd !== bOrd) return aOrd - bOrd;
+    if (aOrd <= 2) return (b && b.speedKts || 0) - (a && a.speedKts || 0);
+    if (!!(a && a.hasDest) !== !!(b && b.hasDest)) return a && a.hasDest ? -1 : 1;
+    var distA = a && a.distKm != null ? a.distKm : Infinity;
+    var distB = b && b.distKm != null ? b.distKm : Infinity;
+    if (distA !== distB) return distA - distB;
+    return ((a && a.callsign) || "").localeCompare((b && b.callsign) || "");
+  }
+
+  function sortAirportDepartureRows(departures, options) {
+    options = options || {};
+    var totalLimit = options.totalLimit == null ? 15 : options.totalLimit;
+    var rows = copyAirportRows(departures).sort(function(a, b) {
+      return compareAirportDepartureEntries(a, b, options);
+    });
+    return limitAirportRows(rows, totalLimit);
+  }
+
+  function getAirportNextRow(liveData, dir) {
+    var rows = dir === "departures"
+      ? liveData && liveData.departures
+      : liveData && liveData.arrivals;
+    return rows && rows.length ? rows[0] : null;
+  }
+
   return {
     AIRLINES: AIRLINES,
     AIRLINE_IATA_ALIASES: AIRLINE_IATA_ALIASES,
@@ -591,6 +707,8 @@
     angleDiffDeg: angleDiffDeg,
     bearingDegrees: bearingDegrees,
     computePlaybackDelayMs: computePlaybackDelayMs,
+    compareAirportArrivalEntries: compareAirportArrivalEntries,
+    compareAirportDepartureEntries: compareAirportDepartureEntries,
     buildViewPolicy: buildViewPolicy,
     buildViewportFetchSpec: buildViewportFetchSpec,
     cardinalDir: cardinalDir,
@@ -602,6 +720,7 @@
     haversineKm: haversineKm,
     interpolatePlaybackPose: interpolatePlaybackPose,
     interpolateTimedPose: interpolateTimedPose,
+    getAirportNextRow: getAirportNextRow,
     isLikelyPrivateCallsign: isLikelyPrivateCallsign,
     kmToMiles: kmToMiles,
     knotsToMph: knotsToMph,
@@ -615,6 +734,8 @@
     projectLatLng: projectLatLng,
     roundTenths: roundTenths,
     scoreArrivalCandidate: scoreArrivalCandidate,
+    sortAirportArrivalRows: sortAirportArrivalRows,
+    sortAirportDepartureRows: sortAirportDepartureRows,
     slantKm: slantKm
   };
 });

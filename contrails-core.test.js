@@ -747,3 +747,107 @@ test("findFlightStartIndex ignores time gap within trailing ground segment", () 
   ];
   assert.equal(core.findFlightStartIndex(path), 0);
 });
+
+function callsigns(rows) {
+  return rows.map(function(row) { return row.callsign; });
+}
+
+function inboundArrival(callsign, input) {
+  var scored = core.scoreArrivalCandidate(input);
+  return {
+    callsign: callsign,
+    arrivalScore: scored.score,
+    etaMin: scored.etaMin,
+    distKm: input.distKm,
+    altFt: input.altFt,
+    proximity: !!input.proximity
+  };
+}
+
+test("airport arrival rows: inbound next landing summary stays short-final", () => {
+  var shortFinal = inboundArrival("UAL100", {
+    altFt: 3500, vRate: -10, distKm: 10, spdKts: 160, destinationMatch: true
+  });
+  var approach = inboundArrival("DAL200", {
+    altFt: 5000, vRate: -10, distKm: 18, spdKts: 200, destinationMatch: true
+  });
+  var descendingInbound = inboundArrival("AAL300", {
+    altFt: 8000, vRate: -10, distKm: 30, spdKts: 280, destinationMatch: true
+  });
+
+  var rows = core.sortAirportArrivalRows([], [], [descendingInbound, approach, shortFinal]);
+  var next = core.getAirportNextRow({ arrivals: rows }, "arrivals");
+
+  assert.deepEqual(callsigns(rows), ["UAL100", "DAL200", "AAL300"]);
+  assert.equal(next.callsign, "UAL100", "top next landing summary row should be the short-final aircraft");
+});
+
+test("airport arrival rows: landed and taxiing-in aircraft stay ahead of airborne arrivals", () => {
+  var landedFartherDownRunway = {
+    callsign: "SWA202",
+    landed: true,
+    distKm: 0.8,
+    arrivalScore: 0,
+    _rolloutDist: 1.2
+  };
+  var mostRecentTouchdown = {
+    callsign: "ASA101",
+    landed: true,
+    distKm: 1.1,
+    arrivalScore: 0,
+    _rolloutDist: 0.2
+  };
+  var taxiingIn = {
+    callsign: "JBU303",
+    taxiingIn: true,
+    distKm: 0.1,
+    arrivalScore: 0
+  };
+  var airborneShortFinal = {
+    callsign: "DAL404",
+    distKm: 2,
+    arrivalScore: 0.01,
+    etaMin: 1
+  };
+
+  var rows = core.sortAirportArrivalRows(
+    [landedFartherDownRunway, mostRecentTouchdown],
+    [taxiingIn],
+    [airborneShortFinal]
+  );
+  var next = core.getAirportNextRow({ arrivals: rows }, "arrivals");
+
+  assert.deepEqual(callsigns(rows), ["ASA101", "SWA202", "JBU303", "DAL404"]);
+  assert.equal(next.callsign, "ASA101", "top next landing summary row should stay the most recent landed aircraft");
+  assert.equal("_rolloutDist" in next, false, "internal rollout distance should not leak to display rows");
+});
+
+test("airport departure rows: runway rolling beats holding and taxiing for next takeoff", () => {
+  var rows = core.sortAirportDepartureRows([
+    {
+      callsign: "HOLD1",
+      status: "Holding",
+      runwayDistKm: 0.05,
+      speedKts: 0,
+      distKm: 0.4
+    },
+    {
+      callsign: "TAXI1",
+      status: "Taxiing",
+      runwayDistKm: 0.02,
+      speedKts: 12,
+      distKm: 0.3
+    },
+    {
+      callsign: "ROLL1",
+      status: "Departing",
+      runwayDistKm: 0.7,
+      speedKts: 35,
+      distKm: 0.8
+    }
+  ], { activeRunways: true });
+  var next = core.getAirportNextRow({ departures: rows }, "departures");
+
+  assert.deepEqual(callsigns(rows), ["ROLL1", "HOLD1", "TAXI1"]);
+  assert.equal(next.callsign, "ROLL1", "top next takeoff summary row should be the rolling runway aircraft");
+});

@@ -22,6 +22,8 @@
   const projectLatLng = core.projectLatLng;
   const roundTenths = core.roundTenths;
   const scoreArrivalCandidate = core.scoreArrivalCandidate;
+  const sortAirportArrivalRows = core.sortAirportArrivalRows;
+  const sortAirportDepartureRows = core.sortAirportDepartureRows;
   const slantKm = core.slantKm;
   const elevationDeg = core.elevationDeg;
   const findFlightStartIndex = core.findFlightStartIndex;
@@ -33,7 +35,8 @@
       !callsignVariants || !computePlaybackDelayMs || !escapeHtml || !formatDistanceMiles || !formatSpeedMph ||
       !haversineKm || !interpolatePlaybackPose || !interpolateTimedPose || !isLikelyPrivateCallsign ||
       !normalizeAircraftHex || !normalizeFlightQuery || !normalizeSearchText || !parseCoordinate || !projectLatLng ||
-      !scoreArrivalCandidate || !findFlightStartIndex || !matchRunwayDesignator || !pointOnRunway ||
+      !scoreArrivalCandidate || !sortAirportArrivalRows || !sortAirportDepartureRows ||
+      !findFlightStartIndex || !matchRunwayDesignator || !pointOnRunway ||
       !roundTenths || !slantKm || !elevationDeg || !SQUAWK_ALERT) {
     throw new Error("Contrails core helpers failed to load.");
   }
@@ -3795,17 +3798,6 @@
     };
   }
 
-  function compareArrivalEntries(a, b) {
-    var scoreA = a.arrivalScore != null ? a.arrivalScore : Infinity;
-    var scoreB = b.arrivalScore != null ? b.arrivalScore : Infinity;
-    if (scoreA !== scoreB) return scoreA - scoreB;
-    if (!!a.proximity !== !!b.proximity) return a.proximity ? 1 : -1;
-    var distA = a.distKm != null ? a.distKm : Infinity;
-    var distB = b.distKm != null ? b.distKm : Infinity;
-    if (distA !== distB) return distA - distB;
-    return (a.callsign || '').localeCompare(b.callsign || '');
-  }
-
   function formatLandingEta(etaMin) {
     if (etaMin == null || !isFinite(etaMin)) return "";
     if (etaMin < 1) return "<1m";
@@ -4051,10 +4043,6 @@
         });
         landedHexes[a.icao24] = true;
       }
-      // Ascending rollout distance: most-recent touchdown (still near threshold) ranks first.
-      landed.sort(function(a, b) { return a._rolloutDist - b._rolloutDist; });
-      if (landed.length > 5) landed.length = 5;
-      for (var i = 0; i < landed.length; i++) delete landed[i]._rolloutDist;
     } else {
       var rwys = runwayData && runwayData[airportIata];
       for (var i = 0; i < list.length; i++) {
@@ -4092,8 +4080,6 @@
         });
         landedHexes[a.icao24] = true;
       }
-      landed.sort(function(a, b) { return a.distKm - b.distKm; });
-      if (landed.length > 5) landed.length = 5;
     }
     // Taxi-in pass: ground aircraft whose destination is this airport but that aren't on
     // the active arrival runway. Covers the runway-exit-to-gate gap where the aircraft would
@@ -4124,46 +4110,8 @@
         speedKts: taxSpd
       });
     }
-    taxiingIn.sort(function(a, b) { return a.distKm - b.distKm; });
-    if (taxiingIn.length > 5) taxiingIn.length = 5;
-    arrivals.sort(compareArrivalEntries);
-    arrivals = landed.concat(taxiingIn, arrivals);
-    if (arrivals.length > 15) arrivals.length = 15;
-    if (activeDepThresholds.length > 0) {
-      departures.sort(function(a, b) {
-        var statusOrd = { Departing: 0, Climbing: 0, Holding: 1, Taxiing: 2, Parked: 3 };
-        var aOrd = statusOrd[a.status] != null ? statusOrd[a.status] : 3;
-        var bOrd = statusOrd[b.status] != null ? statusOrd[b.status] : 3;
-        if (aOrd !== bOrd) return aOrd - bOrd;
-        var aNull = a.runwayDistKm == null;
-        var bNull = b.runwayDistKm == null;
-        if (aNull !== bNull) return aNull ? 1 : -1;
-        if (!aNull) {
-          var rDiff = a.runwayDistKm - b.runwayDistKm;
-          if (rDiff !== 0) return rDiff;
-        }
-        return b.speedKts - a.speedKts;
-      });
-    } else {
-      departures.sort(function(a, b) {
-        var aHasRwy = a.runwayDistKm != null;
-        var bHasRwy = b.runwayDistKm != null;
-        if (aHasRwy !== bHasRwy) return aHasRwy ? -1 : 1;
-        if (aHasRwy) {
-          var rDiff = a.runwayDistKm - b.runwayDistKm;
-          if (rDiff !== 0) return rDiff;
-          return b.speedKts - a.speedKts;
-        }
-        var statusOrd = { Departing: 0, Climbing: 0, Holding: 1, Taxiing: 2, Parked: 3 };
-        var aOrd = statusOrd[a.status] != null ? statusOrd[a.status] : 3;
-        var bOrd = statusOrd[b.status] != null ? statusOrd[b.status] : 3;
-        if (aOrd !== bOrd) return aOrd - bOrd;
-        if (aOrd <= 2) return b.speedKts - a.speedKts;
-        if (a.hasDest !== b.hasDest) return a.hasDest ? -1 : 1;
-        return a.distKm - b.distKm;
-      });
-    }
-    if (departures.length > 15) departures.length = 15;
+    arrivals = sortAirportArrivalRows(landed, taxiingIn, arrivals);
+    departures = sortAirportDepartureRows(departures, { activeRunways: activeDepThresholds.length > 0 });
     return { arrivals: arrivals, departures: departures };
   }
 
