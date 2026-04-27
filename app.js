@@ -1445,7 +1445,6 @@
     pruneStaleHistoryEntries(activeIds, now);
 
     renderMap();
-    refreshAirportLabels();
     if (refreshSearchUi) refreshSearchUi();
     if (!tryResolvePendingPlaneFocus()) maybeLookupPendingPlaneFocus();
     updateStatus();
@@ -1542,7 +1541,6 @@
       if (!resp.ok) return false;
       var routes = await resp.json();
       mergeRoutesetEntries(routes, candidates);
-      refreshAirportLabels();
       return true;
     } catch (e) {
       console.warn("Route fetch failed:", e);
@@ -2037,8 +2035,6 @@
   function buildAirportLabelHtml(iata) {
     return escapeHtml(iata);
   }
-
-  function refreshAirportLabels() {}
 
   function renderAirports() {
     var bounds = currentViewBounds(AIRPORT_VIEW_PAD);
@@ -2612,7 +2608,6 @@
         }
       }
     }
-    if (updated > 0) refreshAirportLabels();
     return updated;
   }
 
@@ -2788,14 +2783,13 @@
 
       if (!matched) tryFr24Search(a);
 
-      var cascaded = cascadeScheduleMatches();
+      cascadeScheduleMatches();
 
       var marker = markerMap[hex];
       if (marker && marker.getPopup() && marker.getPopup().isOpen()) {
         var updatedA = findAircraftById(hex);
         if (updatedA) marker.getPopup().setContent(buildPopup(updatedA));
       }
-      refreshAirportLabels();
     });
   }
 
@@ -3769,17 +3763,6 @@
   var AIRPORT_POPUP_FETCH_KM = 120;
   var AIRPORT_POPUP_REFRESH_MS = 5000;
   var AIRPORT_POPUP_CACHE_TTL = 2 * 60 * 1000;
-
-  function relativeMinutes(unixTs) {
-    var diffSec = unixTs - Math.floor(Date.now() / 1000);
-    if (Math.abs(diffSec) < 60) return "now";
-    var totalMin = Math.round(Math.abs(diffSec) / 60);
-    var sign = diffSec > 0 ? "+" : "-";
-    if (totalMin < 60) return sign + totalMin + "m";
-    var h = Math.floor(totalMin / 60);
-    var m = totalMin % 60;
-    return sign + h + "h" + (m < 10 ? "0" : "") + m + "m";
-  }
 
   function buildArrivalEntry(a, routeEntry, airportIata, distKm, options) {
     options = options || {};
