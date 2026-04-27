@@ -121,6 +121,8 @@
     if (window.visualViewport) {
       window.visualViewport.addEventListener("resize", syncLoadingViewportState);
       window.visualViewport.addEventListener("scroll", syncLoadingViewportState);
+      window.visualViewport.addEventListener("resize", function() { scheduleAirportPanelReposition(160); });
+      window.visualViewport.addEventListener("scroll", function() { scheduleAirportPanelReposition(160); });
     }
     syncLoadingViewportState();
   })();
@@ -476,42 +478,7 @@
             sharePlaneById(shareBtn.getAttribute("data-hex"));
             return;
           }
-          var toggleBtn = t.closest(".sched-toggle-btn");
-          if (toggleBtn) {
-            event.preventDefault();
-            event.stopPropagation();
-            var dir = toggleBtn.getAttribute("data-dir");
-            if (dir) {
-              _lastScheduleHtml = "";
-              renderSchedulePopup(dir);
-            }
-            return;
-          }
-          var schedRow = t.closest(".sched-row");
-          if (schedRow) {
-            var hex = schedRow.getAttribute("data-hex");
-            var cs = schedRow.getAttribute("data-callsign");
-            var lat = parseFloat(schedRow.getAttribute("data-lat") || "");
-            var lng = parseFloat(schedRow.getAttribute("data-lng") || "");
-            if (_activeAirportPopup) map.closePopup(_activeAirportPopup);
-            if (hex && focusAircraftById(hex, { center: true, openPopup: true, minZoom: 12 })) return;
-            if (hex && isFinite(lat) && isFinite(lng)) {
-              var label = (cs || hex).toUpperCase();
-              queuePendingPlaneFocus(hex, {
-                keepUrl: true,
-                label: label,
-                reason: "airport-popup"
-              });
-              setControlsFeedback("Centering on " + label + "…", "info", { timeoutMs: 4500 });
-              centerMapOnPlane(lat, lng, SEARCH_MIN_ZOOM);
-              return;
-            }
-            if (cs) {
-              var plane = findAircraftByQuery({ type: "callsign", value: cs.toUpperCase(), variants: [cs.toUpperCase()] });
-              if (plane) focusAircraftById(plane.icao24, { center: true, openPopup: true, minZoom: 12 });
-            }
-            return;
-          }
+          if (handleAirportSchedulePanelClick(event)) return;
         });
       }
       var popupSourceHex = null;
@@ -574,6 +541,7 @@
     }
     window.addEventListener("resize", function() {
       if (map) map.invalidateSize({ animate: false });
+      scheduleAirportPanelReposition(160);
     });
   }
 
@@ -3772,9 +3740,164 @@
   var _lastScheduleHtml = "";
   var _airportPopupCache = {};
   var _activeAirportRefreshTimer = null;
+  var _airportPanelRepositionTimer = null;
+  var AIRPORT_PANEL_DOCKED_QUERY = "(max-width: 759px)";
   var AIRPORT_POPUP_FETCH_KM = 120;
   var AIRPORT_POPUP_REFRESH_MS = 5000;
   var AIRPORT_POPUP_CACHE_TTL = 2 * 60 * 1000;
+
+  function isAirportPanelDocked() {
+    return typeof window.matchMedia === "function" &&
+      window.matchMedia(AIRPORT_PANEL_DOCKED_QUERY).matches;
+  }
+
+  function closeActiveAirportPanel() {
+    if (!_activeAirportPopup) return;
+    if (_activeAirportPopup._isAirportSheet && _activeAirportPopup.close) {
+      _activeAirportPopup.close();
+      return;
+    }
+    if (map) map.closePopup(_activeAirportPopup);
+  }
+
+  function handleAirportSchedulePanelClick(event) {
+    var t = event && event.target;
+    if (!t || !t.closest) return false;
+    var toggleBtn = t.closest(".sched-toggle-btn");
+    if (toggleBtn) {
+      event.preventDefault();
+      event.stopPropagation();
+      var dir = toggleBtn.getAttribute("data-dir");
+      if (dir) {
+        _lastScheduleHtml = "";
+        renderSchedulePopup(dir);
+      }
+      return true;
+    }
+    var schedRow = t.closest(".sched-row");
+    if (schedRow) {
+      event.preventDefault();
+      event.stopPropagation();
+      var hex = schedRow.getAttribute("data-hex");
+      var cs = schedRow.getAttribute("data-callsign");
+      var lat = parseFloat(schedRow.getAttribute("data-lat") || "");
+      var lng = parseFloat(schedRow.getAttribute("data-lng") || "");
+      closeActiveAirportPanel();
+      if (hex && focusAircraftById(hex, { center: true, openPopup: true, minZoom: 12 })) return true;
+      if (hex && isFinite(lat) && isFinite(lng)) {
+        var label = (cs || hex).toUpperCase();
+        queuePendingPlaneFocus(hex, {
+          keepUrl: true,
+          label: label,
+          reason: "airport-popup"
+        });
+        setControlsFeedback("Centering on " + label + "…", "info", { timeoutMs: 4500 });
+        centerMapOnPlane(lat, lng, SEARCH_MIN_ZOOM);
+        return true;
+      }
+      if (cs) {
+        var plane = findAircraftByQuery({ type: "callsign", value: cs.toUpperCase(), variants: [cs.toUpperCase()] });
+        if (plane) focusAircraftById(plane.icao24, { center: true, openPopup: true, minZoom: 12 });
+      }
+      return true;
+    }
+    return false;
+  }
+
+  function ensureAirportSheetPanel() {
+    var panel = document.getElementById("airport-panel");
+    var sheet = document.getElementById("airport-panel-sheet");
+    var content = document.getElementById("airport-panel-content");
+    var close = document.getElementById("airport-panel-close");
+    if (!panel || !sheet || !content || !close) return null;
+    if (!panel.__contrailsAirportSheetBound) {
+      panel.__contrailsAirportSheetBound = true;
+      close.addEventListener("click", function(event) {
+        event.preventDefault();
+        closeActiveAirportPanel();
+      });
+      content.addEventListener("click", handleAirportSchedulePanelClick);
+    }
+    return { panel: panel, sheet: sheet, content: content };
+  }
+
+  function openAirportSheetPanel(html) {
+    var els = ensureAirportSheetPanel();
+    if (!els) return null;
+    var removeHandlers = [];
+    var api = {
+      _isAirportSheet: true,
+      setContent: function(contentHtml) {
+        els.content.innerHTML = contentHtml;
+      },
+      getElement: function() {
+        return els.sheet;
+      },
+      on: function(eventName, handler) {
+        if (eventName === "remove" && typeof handler === "function") removeHandlers.push(handler);
+        return api;
+      },
+      close: function() {
+        if (!els.panel.classList.contains("open")) return;
+        els.panel.classList.remove("open");
+        els.panel.setAttribute("aria-hidden", "true");
+        els.content.innerHTML = "";
+        for (var i = 0; i < removeHandlers.length; i++) removeHandlers[i]();
+      }
+    };
+    api.setContent(html);
+    els.panel.classList.add("open");
+    els.panel.setAttribute("aria-hidden", "false");
+    return api;
+  }
+
+  function clearAirportPanelReposition() {
+    if (_airportPanelRepositionTimer) {
+      clearTimeout(_airportPanelRepositionTimer);
+      _airportPanelRepositionTimer = null;
+    }
+  }
+
+  function scheduleAirportPanelReposition(delayMs) {
+    if (!_activeAirportPopup || _activeAirportLat == null || _activeAirportLng == null) return;
+    clearAirportPanelReposition();
+    _airportPanelRepositionTimer = setTimeout(function() {
+      _airportPanelRepositionTimer = null;
+      panAirportIntoDockedMapRegion();
+    }, delayMs == null ? 80 : delayMs);
+  }
+
+  function panAirportIntoDockedMapRegion() {
+    if (!map || !_activeAirportPopup || _activeAirportLat == null || _activeAirportLng == null) return;
+    if (!isAirportPanelDocked() || !_activeAirportPopup.getElement) return;
+    var el = _activeAirportPopup.getElement();
+    if (!el || !el.getBoundingClientRect) return;
+    var mapEl = map.getContainer && map.getContainer();
+    if (!mapEl || !mapEl.getBoundingClientRect) return;
+
+    var mapRect = mapEl.getBoundingClientRect();
+    var panelRect = el.getBoundingClientRect();
+    if (mapRect.width < 1 || mapRect.height < 1 || panelRect.height < 1) return;
+
+    var panelTop = Math.max(0, Math.min(mapRect.height, panelRect.top - mapRect.top));
+    var visibleTop = 18;
+    var visibleBottom = Math.max(visibleTop + 120, panelTop - 12);
+    visibleBottom = Math.min(visibleBottom, mapRect.height - 18);
+    var visibleHeight = visibleBottom - visibleTop;
+    if (visibleHeight < 120) return;
+
+    var targetPoint = map.latLngToContainerPoint([_activeAirportLat, _activeAirportLng]);
+    var desiredX = mapRect.width / 2;
+    var desiredY = visibleTop + visibleHeight * 0.52;
+    var dx = targetPoint.x - desiredX;
+    var dy = targetPoint.y - desiredY;
+    if (Math.abs(dx) < 2 && Math.abs(dy) < 2) return;
+    map.panBy([Math.round(dx), Math.round(dy)], {
+      animate: true,
+      duration: 0.35,
+      easeLinearity: 0.25
+    });
+  }
 
   function buildArrivalEntry(a, routeEntry, airportIata, distKm, options) {
     options = options || {};
@@ -4452,6 +4575,7 @@
     if (html === _lastScheduleHtml) return;
     _lastScheduleHtml = html;
     _activeAirportPopup.setContent(html);
+    scheduleAirportPanelReposition();
   }
 
   async function fetchRunwaysInUse(iata) {
@@ -4471,11 +4595,7 @@
   }
 
   function openAirportSchedulePopup(iata, name, lat, lng) {
-    if (_activeAirportPopup) {
-      map.closePopup(_activeAirportPopup);
-      _activeAirportPopup = null;
-      _activeAirportIata = null;
-    }
+    closeActiveAirportPanel();
     clearActiveAirportRefreshTimer();
 
     _activeAirportIata = iata;
@@ -4497,12 +4617,27 @@
     }
 
     var liveData = entry.data || buildAirportPopupPlaceholder("Loading airport traffic…", "loading");
-    var popup = L.popup({ maxWidth: 320, minWidth: 280, closeButton: true, className: "airport-schedule-popup", autoPan: false })
-      .setLatLng([lat, lng])
-      .setContent(buildScheduleCardContent(iata, name, liveData, "arrivals"))
-      .openOn(map);
+    var dockedPanel = isAirportPanelDocked();
+    if (dockedPanel && map && map._popup) map.closePopup();
+    var panelHtml = buildScheduleCardContent(iata, name, liveData, "arrivals");
+    var popup = dockedPanel
+      ? openAirportSheetPanel(panelHtml)
+      : L.popup({
+        maxWidth: 340,
+        minWidth: 300,
+        closeButton: true,
+        className: "airport-schedule-popup",
+        autoPan: true,
+        autoPanPaddingTopLeft: [16, 88],
+        autoPanPaddingBottomRight: [16, 18]
+      })
+        .setLatLng([lat, lng])
+        .setContent(panelHtml)
+        .openOn(map);
+    if (!popup) return;
 
     _activeAirportPopup = popup;
+    scheduleAirportPanelReposition();
 
     popup.on("remove", function() {
       if (_activeAirportIata === iata) {
@@ -4513,6 +4648,7 @@
         _activeAirportLat = null;
         _activeAirportLng = null;
         _lastScheduleHtml = "";
+        clearAirportPanelReposition();
       }
     });
 
@@ -4623,7 +4759,7 @@
         return;
       }
       if (_activeAirportPopup) {
-        map.closePopup(_activeAirportPopup);
+        closeActiveAirportPanel();
       }
     });
   })();

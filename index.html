@@ -235,6 +235,7 @@ body.noscroll { touch-action: none; }
   flex-shrink: 0;
 }
 #controls-toggle:focus-visible,
+#airport-panel-close:focus-visible,
 #fids-close:focus-visible,
 .ftag:focus-visible,
 .mini-action:focus-visible,
@@ -728,6 +729,66 @@ body.noscroll { touch-action: none; }
 .popup-photo img { max-width: 280px; }
 .popup-photo { min-height: 0; }
 
+#airport-panel {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: none;
+  pointer-events: none;
+}
+#airport-panel.open { display: block; }
+#airport-panel-sheet {
+  position: absolute;
+  left: max(10px, env(safe-area-inset-left, 0px));
+  right: max(10px, env(safe-area-inset-right, 0px));
+  bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+  max-height: min(54dvh, 430px);
+  border: 1px solid var(--border-soft);
+  border-radius: 24px;
+  background: linear-gradient(180deg, rgba(14, 26, 42, 0.96) 0%, rgba(8, 16, 28, 0.98) 100%);
+  box-shadow: var(--shadow-lg);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  overflow: hidden;
+  pointer-events: auto;
+}
+#airport-panel-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-muted);
+  font-size: 26px;
+  line-height: 1;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+#airport-panel-close:hover { color: var(--text-strong); }
+#airport-panel-content {
+  padding: 16px 14px calc(16px + env(safe-area-inset-bottom, 0px));
+  overflow: hidden;
+}
+#airport-panel-content .sched-card {
+  width: 100%;
+  max-height: calc(min(54dvh, 430px) - 32px - env(safe-area-inset-bottom, 0px));
+}
+#airport-panel-content .sched-header { padding-right: 34px; }
+#airport-panel-content .sched-toggle-btn {
+  min-height: 34px;
+  border-radius: 10px;
+  font-size: 12px;
+}
+#airport-panel-content .sched-rows { max-height: none; }
+#airport-panel-content .sched-row { padding: 7px 0; }
+
 #fids { position: fixed; inset: 0; z-index: 1500; display: none; flex-direction: column; }
 #fids.open { display: flex; }
 #fids-backdrop {
@@ -1012,6 +1073,70 @@ body.noscroll { touch-action: none; }
   font-size: 13px;
 }
 
+@media (max-width: 759px) {
+  .leaflet-popup.airport-schedule-popup {
+    position: fixed !important;
+    left: max(10px, env(safe-area-inset-left, 0px)) !important;
+    right: max(10px, env(safe-area-inset-right, 0px)) !important;
+    bottom: calc(10px + env(safe-area-inset-bottom, 0px)) !important;
+    top: auto !important;
+    width: auto !important;
+    max-width: none !important;
+    margin: 0 !important;
+    transform: none !important;
+    z-index: 1200;
+  }
+
+  .leaflet-popup.airport-schedule-popup .leaflet-popup-content-wrapper {
+    max-height: min(54dvh, 430px);
+    border-radius: 24px;
+    overflow: hidden;
+    box-shadow: var(--shadow-lg);
+  }
+
+  .leaflet-popup.airport-schedule-popup .leaflet-popup-content {
+    width: auto !important;
+    min-width: 0;
+    margin: 16px 14px calc(16px + env(safe-area-inset-bottom, 0px));
+  }
+
+  .leaflet-popup.airport-schedule-popup .leaflet-popup-tip-container,
+  .leaflet-popup.airport-schedule-popup .leaflet-popup-tip {
+    display: none;
+  }
+
+  .leaflet-popup.airport-schedule-popup .leaflet-popup-close-button {
+    top: 8px;
+    right: 8px;
+    width: 34px;
+    height: 34px;
+    background: rgba(255, 255, 255, 0.05);
+  }
+
+  .leaflet-popup.airport-schedule-popup .sched-card {
+    width: 100%;
+    max-height: calc(min(54dvh, 430px) - 32px - env(safe-area-inset-bottom, 0px));
+  }
+
+  .leaflet-popup.airport-schedule-popup .sched-header {
+    padding-right: 34px;
+  }
+
+  .leaflet-popup.airport-schedule-popup .sched-toggle-btn {
+    min-height: 34px;
+    border-radius: 10px;
+    font-size: 12px;
+  }
+
+  .leaflet-popup.airport-schedule-popup .sched-rows {
+    max-height: none;
+  }
+
+  .leaflet-popup.airport-schedule-popup .sched-row {
+    padding: 7px 0;
+  }
+}
+
 @media (min-width: 760px) {
   #map-controls {
     width: min(320px, calc(100% - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px) - 24px));
@@ -1019,6 +1144,12 @@ body.noscroll { touch-action: none; }
 
   #map-controls.collapsed {
     width: min(260px, calc(100% - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px) - 96px));
+  }
+
+  #airport-panel-sheet {
+    left: auto;
+    width: min(360px, calc(100% - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px) - 24px));
+    max-height: min(70dvh, 520px);
   }
 
   #fids-sheet {
@@ -1084,6 +1215,12 @@ body.noscroll { touch-action: none; }
       <div id="reference-note">Using your live location for distance and bearing.</div>
       <div id="view-hint">Routes and labels appear when you zoom in.</div>
     </div>
+  </div>
+</div>
+<div id="airport-panel" aria-hidden="true">
+  <div id="airport-panel-sheet" role="dialog" aria-modal="false" aria-label="Airport traffic">
+    <button id="airport-panel-close" type="button" aria-label="Close airport traffic">&times;</button>
+    <div id="airport-panel-content"></div>
   </div>
 </div>
 <div id="fids">
