@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="application-name" content="Contrails">
 <meta name="theme-color" content="#08111e">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -299,7 +299,7 @@ body.noscroll { touch-action: none; }
   background: rgba(255, 255, 255, 0.05);
   color: var(--text-main);
   font: inherit;
-  font-size: 13px;
+  font-size: 16px;
   padding: 10px 14px;
   appearance: none;
   -webkit-appearance: none;
@@ -1203,10 +1203,10 @@ body.noscroll { touch-action: none; }
     </div>
     <div id="controls-feedback" role="status" aria-live="polite"></div>
     <div class="control-row" id="visibility-controls">
-      <button class="ftag on" data-f="private">Private</button>
-      <button class="ftag on" data-f="ground">Ground</button>
-      <button class="ftag on" data-f="trails">Trails</button>
-      <button class="ftag on" data-f="labels">Labels</button>
+      <button class="ftag on" data-f="private" aria-pressed="true">Private</button>
+      <button class="ftag on" data-f="ground" aria-pressed="true">Ground</button>
+      <button class="ftag on" data-f="trails" aria-pressed="true">Trails</button>
+      <button class="ftag on" data-f="labels" aria-pressed="true">Labels</button>
     </div>
     <div id="controls-meta">
       <div class="section-label">Altitude</div>
@@ -1224,17 +1224,20 @@ body.noscroll { touch-action: none; }
   </div>
 </div>
 <div id="fids">
-  <div id="fids-backdrop"></div>
-  <div id="fids-sheet">
+  <div id="fids-backdrop" aria-hidden="true"></div>
+  <div id="fids-sheet" role="dialog" aria-modal="false" aria-labelledby="fids-title">
     <div id="fids-header">
       <div><div id="fids-title"></div><div id="fids-subtitle"></div></div>
-      <button id="fids-close" aria-label="Close schedules">&times;</button>
+      <button id="fids-close" type="button" aria-label="Close flight schedules">&times;</button>
     </div>
-    <div id="fids-tabs">
-      <button class="fids-tab active" data-dir="arrivals">Arrivals</button>
-      <button class="fids-tab" data-dir="departures">Departures</button>
+    <div id="fids-tabs" role="tablist" aria-label="Flight schedule">
+      <button id="fids-tab-arrivals" class="fids-tab active" type="button" role="tab" data-dir="arrivals" aria-selected="true" aria-controls="fids-panel-arrivals">Arrivals</button>
+      <button id="fids-tab-departures" class="fids-tab" type="button" role="tab" data-dir="departures" aria-selected="false" aria-controls="fids-panel-departures">Departures</button>
     </div>
-    <div id="fids-body"></div>
+    <div id="fids-body">
+      <div id="fids-panel-arrivals" role="tabpanel" aria-labelledby="fids-tab-arrivals"></div>
+      <div id="fids-panel-departures" role="tabpanel" aria-labelledby="fids-tab-departures" hidden></div>
+    </div>
   </div>
 </div>
 

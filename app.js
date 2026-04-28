@@ -43,7 +43,7 @@
     throw new Error("Contrails core helpers failed to load.");
   }
 
-  const APP_VERSION = "v2.15.2";
+  const APP_VERSION = "v2.15.3";
   const isLocal = location.hostname === "localhost" || location.hostname === "127.0.0.1";
   const isIOSDevice = /iP(ad|hone|od)/.test(navigator.userAgent) ||
     (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
@@ -372,6 +372,31 @@
       '</g></svg>';
     var half = sz / 2;
     return L.divIcon({ html: svg, iconSize: [sz, sz], iconAnchor: [half, half], className: "plane-marker-icon" });
+  }
+
+  function focusWithoutScroll(el) {
+    if (!el || typeof el.focus !== "function") return;
+    try {
+      el.focus({ preventScroll: true });
+    } catch (e) {
+      el.focus();
+    }
+  }
+
+  function connectedFocusableElement(el) {
+    return !!(el && typeof el.focus === "function" && el.ownerDocument && el.ownerDocument.contains(el));
+  }
+
+  function captureOverlayOpener(overlayEl) {
+    var active = document.activeElement;
+    if (!connectedFocusableElement(active)) return null;
+    if (active === document.body || active === document.documentElement) return null;
+    if (overlayEl && overlayEl.contains && overlayEl.contains(active)) return null;
+    return active;
+  }
+
+  function restoreFocusIfConnected(el) {
+    if (connectedFocusableElement(el)) focusWithoutScroll(el);
   }
 
   // --- Map setup ---
@@ -1022,7 +1047,9 @@
     var btns = document.querySelectorAll("[data-f]");
     for (var i = 0; i < btns.length; i++) {
       var key = btns[i].getAttribute("data-f");
-      btns[i].classList.toggle("on", !!filters[key]);
+      var isOn = !!filters[key];
+      btns[i].classList.toggle("on", isOn);
+      btns[i].setAttribute("aria-pressed", isOn ? "true" : "false");
     }
   }
 
@@ -3336,6 +3363,7 @@
     function setSearchResultsVisible(visible) {
       resultsEl.hidden = !visible;
       input.setAttribute("aria-expanded", visible ? "true" : "false");
+      if (!visible) input.removeAttribute("aria-activedescendant");
     }
 
     function closeSearchResults() {
@@ -3343,6 +3371,35 @@
       highlightIndex = -1;
       resultsEl.innerHTML = "";
       setSearchResultsVisible(false);
+    }
+
+    function searchOptionIdBase(result) {
+      var rawKey = result && result.key ? result.key : "result";
+      var safeKey = String(rawKey).toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
+      return "search-option-" + (safeKey || "result");
+    }
+
+    function assignSearchOptionIds() {
+      var seenIds = {};
+      for (var i = 0; i < renderedResults.length; i++) {
+        var baseId = searchOptionIdBase(renderedResults[i]);
+        var count = seenIds[baseId] || 0;
+        seenIds[baseId] = count + 1;
+        renderedResults[i].domId = count ? baseId + "-" + count : baseId;
+      }
+    }
+
+    function syncSearchActiveDescendant() {
+      if (resultsEl.hidden ||
+          highlightIndex < 0 ||
+          highlightIndex >= renderedResults.length ||
+          !renderedResults[highlightIndex] ||
+          renderedResults[highlightIndex].disabled ||
+          !renderedResults[highlightIndex].domId) {
+        input.removeAttribute("aria-activedescendant");
+        return;
+      }
+      input.setAttribute("aria-activedescendant", renderedResults[highlightIndex].domId);
     }
 
     function matchScore(text, queryText) {
@@ -3506,6 +3563,7 @@
       var localExactMatch = exactQuery ? findAircraftByQuery(exactQuery) : null;
       var remoteResult = buildRemoteResult(exactQuery, localExactMatch);
       renderedResults = remoteResult ? localResults.concat(remoteResult) : localResults;
+      assignSearchOptionIds();
 
       if (!options.preserveHighlight) highlightIndex = -1;
       if (highlightIndex < 0 || highlightIndex >= renderedResults.length || renderedResults[highlightIndex].disabled) {
@@ -3515,6 +3573,7 @@
       if (!renderedResults.length) {
         resultsEl.innerHTML = '<div class="search-empty">No loaded matches yet. Keep typing a full flight or hex for a wider live lookup.</div>';
         setSearchResultsVisible(true);
+        syncSearchActiveDescendant();
         return;
       }
 
@@ -3523,7 +3582,7 @@
         var result = renderedResults[i];
         var classes = "search-option";
         if (i === highlightIndex) classes += " active";
-        html += '<button type="button" class="' + classes + '" data-index="' + i + '" role="option" aria-selected="' + (i === highlightIndex ? "true" : "false") + '"' + (result.disabled ? " disabled" : "") + '>' +
+        html += '<button type="button" id="' + result.domId + '" class="' + classes + '" data-index="' + i + '" role="option" aria-selected="' + (i === highlightIndex ? "true" : "false") + '"' + (result.disabled ? " disabled" : "") + '>' +
           '<span class="search-option-main">' +
             '<span class="search-option-label">' + escapeHtml(result.label) + '</span>' +
             '<span class="search-option-meta">' + escapeHtml(result.meta) + '</span>' +
@@ -3533,6 +3592,7 @@
       }
       resultsEl.innerHTML = html;
       setSearchResultsVisible(true);
+      syncSearchActiveDescendant();
     }
 
     function scheduleRemoteLookup(query, localExactMatch) {
@@ -3736,11 +3796,15 @@
   var _activeAirportName = null;
   var _activeAirportLat = null;
   var _activeAirportLng = null;
+  var _activeAirportScopeId = null;
+  var _airportScopeSeq = 0;
   var _activeScheduleDir = "arrivals";
   var _lastScheduleHtml = "";
   var _airportPopupCache = {};
   var _activeAirportRefreshTimer = null;
   var _airportPanelRepositionTimer = null;
+  var _airportFocusOpener = null;
+  var _airportRestoreFocusOnClose = true;
   var AIRPORT_PANEL_DOCKED_QUERY = "(max-width: 759px)";
   var AIRPORT_POPUP_FETCH_KM = 120;
   var AIRPORT_POPUP_REFRESH_MS = 5000;
@@ -3751,8 +3815,9 @@
       window.matchMedia(AIRPORT_PANEL_DOCKED_QUERY).matches;
   }
 
-  function closeActiveAirportPanel() {
+  function closeActiveAirportPanel(options) {
     if (!_activeAirportPopup) return;
+    _airportRestoreFocusOnClose = !(options && options.restoreFocus === false);
     if (_activeAirportPopup._isAirportSheet && _activeAirportPopup.close) {
       _activeAirportPopup.close();
       return;
@@ -3782,7 +3847,7 @@
       var cs = schedRow.getAttribute("data-callsign");
       var lat = parseFloat(schedRow.getAttribute("data-lat") || "");
       var lng = parseFloat(schedRow.getAttribute("data-lng") || "");
-      closeActiveAirportPanel();
+      closeActiveAirportPanel({ restoreFocus: false });
       if (hex && focusAircraftById(hex, { center: true, openPopup: true, minZoom: 12 })) return true;
       if (hex && isFinite(lat) && isFinite(lng)) {
         var label = (cs || hex).toUpperCase();
@@ -3821,7 +3886,11 @@
     return { panel: panel, sheet: sheet, content: content };
   }
 
-  function openAirportSheetPanel(html) {
+  function airportCloseLabel(iata) {
+    return "Close " + (iata ? iata + " " : "") + "airport traffic";
+  }
+
+  function openAirportSheetPanel(html, iata) {
     var els = ensureAirportSheetPanel();
     if (!els) return null;
     var removeHandlers = [];
@@ -3846,9 +3915,32 @@
       }
     };
     api.setContent(html);
+    var close = document.getElementById("airport-panel-close");
+    if (close) close.setAttribute("aria-label", airportCloseLabel(iata));
     els.panel.classList.add("open");
     els.panel.setAttribute("aria-hidden", "false");
     return api;
+  }
+
+  function updateAirportPopupCloseName(popup, iata) {
+    if (!popup || !popup.getElement) return;
+    var el = popup.getElement();
+    if (!el || !el.querySelector) return;
+    var close = el.querySelector(".leaflet-popup-close-button");
+    if (!close) return;
+    var label = airportCloseLabel(iata);
+    close.setAttribute("aria-label", label);
+    close.setAttribute("title", label);
+  }
+
+  function focusAirportPopupClose(popup) {
+    if (!popup || !popup.getElement) return;
+    var el = popup.getElement();
+    if (!el || !el.querySelector) return;
+    var close = popup._isAirportSheet
+      ? document.getElementById("airport-panel-close")
+      : el.querySelector(".leaflet-popup-close-button");
+    focusWithoutScroll(close);
   }
 
   function clearAirportPanelReposition() {
@@ -4329,21 +4421,23 @@
     };
   }
 
-  function buildScheduleCardContent(iata, name, liveData, dir) {
+  function buildScheduleCardContent(iata, name, liveData, dir, scopeId) {
     var isArr = dir === "arrivals";
     var items = isArr ? (liveData.arrivals || []) : (liveData.departures || []);
     var message = liveData && liveData.message ? liveData.message : "";
     var safeName = escapeHtml(name || "").replace(/"/g, "&quot;");
+    var titleId = scopeId ? scopeId + "-title" : "";
+    var titleAttr = titleId ? ' id="' + titleId + '"' : "";
     var html = '<div class="sched-card" data-sched-iata="' + escapeHtml(iata) +
       '" data-sched-name="' + safeName +
       '" data-sched-dir="' + dir + '">' +
-      '<div class="sched-header">' +
+      '<div class="sched-header"' + titleAttr + '>' +
         '<span class="sched-iata">' + escapeHtml(iata) + '</span> ' +
         '<span class="sched-name">' + escapeHtml(name) + '</span>' +
       '</div>' +
-      '<div class="sched-toggle">' +
-        '<button class="sched-toggle-btn' + (isArr ? " active" : "") + '" data-dir="arrivals">Landings</button>' +
-        '<button class="sched-toggle-btn' + (isArr ? "" : " active") + '" data-dir="departures">Takeoffs</button>' +
+      '<div class="sched-toggle" role="group" aria-label="Airport traffic view">' +
+        '<button type="button" class="sched-toggle-btn' + (isArr ? " active" : "") + '" data-dir="arrivals" aria-pressed="' + (isArr ? "true" : "false") + '">Landings</button>' +
+        '<button type="button" class="sched-toggle-btn' + (isArr ? "" : " active") + '" data-dir="departures" aria-pressed="' + (isArr ? "false" : "true") + '">Takeoffs</button>' +
       '</div>';
     html += buildScheduleNextSummary(liveData, dir);
     html += '<div class="sched-rows">';
@@ -4571,10 +4665,19 @@
         entry && entry.error ? entry.error : "Loading airport traffic…",
         entry && entry.error ? "error" : "loading"
       );
-    var html = buildScheduleCardContent(_activeAirportIata, _activeAirportName, liveData, dir);
+    var html = buildScheduleCardContent(_activeAirportIata, _activeAirportName, liveData, dir, _activeAirportScopeId);
     if (html === _lastScheduleHtml) return;
     _lastScheduleHtml = html;
     _activeAirportPopup.setContent(html);
+    if (!_activeAirportPopup._isAirportSheet && _activeAirportScopeId && _activeAirportPopup.getElement) {
+      var el = _activeAirportPopup.getElement();
+      if (el) {
+        el.setAttribute("role", "dialog");
+        el.setAttribute("aria-modal", "false");
+        el.setAttribute("aria-labelledby", _activeAirportScopeId + "-title");
+      }
+      updateAirportPopupCloseName(_activeAirportPopup, _activeAirportIata);
+    }
     scheduleAirportPanelReposition();
   }
 
@@ -4595,13 +4698,20 @@
   }
 
   function openAirportSchedulePopup(iata, name, lat, lng) {
-    closeActiveAirportPanel();
+    var existingAirportEl = _activeAirportPopup && _activeAirportPopup.getElement
+      ? _activeAirportPopup.getElement()
+      : null;
+    var airportOpener = captureOverlayOpener(existingAirportEl);
+    closeActiveAirportPanel({ restoreFocus: false });
     clearActiveAirportRefreshTimer();
 
+    _airportFocusOpener = airportOpener;
+    _airportRestoreFocusOnClose = true;
     _activeAirportIata = iata;
     _activeAirportName = name;
     _activeAirportLat = lat;
     _activeAirportLng = lng;
+    _activeAirportScopeId = "airport-sched-" + (++_airportScopeSeq);
     _activeScheduleDir = "arrivals";
     _lastScheduleHtml = "";
     fetchRunwaysInUse(iata).then(function(riuData) {
@@ -4619,9 +4729,9 @@
     var liveData = entry.data || buildAirportPopupPlaceholder("Loading airport traffic…", "loading");
     var dockedPanel = isAirportPanelDocked();
     if (dockedPanel && map && map._popup) map.closePopup();
-    var panelHtml = buildScheduleCardContent(iata, name, liveData, "arrivals");
+    var panelHtml = buildScheduleCardContent(iata, name, liveData, "arrivals", _activeAirportScopeId);
     var popup = dockedPanel
-      ? openAirportSheetPanel(panelHtml)
+      ? openAirportSheetPanel(panelHtml, iata)
       : L.popup({
         maxWidth: 340,
         minWidth: 300,
@@ -4634,21 +4744,41 @@
         .setLatLng([lat, lng])
         .setContent(panelHtml)
         .openOn(map);
-    if (!popup) return;
+    if (!popup) {
+      _airportFocusOpener = null;
+      _airportRestoreFocusOnClose = true;
+      return;
+    }
 
     _activeAirportPopup = popup;
+    if (!popup._isAirportSheet && _activeAirportScopeId && popup.getElement) {
+      var popupEl = popup.getElement();
+      if (popupEl) {
+        popupEl.setAttribute("role", "dialog");
+        popupEl.setAttribute("aria-modal", "false");
+        popupEl.setAttribute("aria-labelledby", _activeAirportScopeId + "-title");
+      }
+      updateAirportPopupCloseName(popup, iata);
+    }
+    focusAirportPopupClose(popup);
     scheduleAirportPanelReposition();
 
     popup.on("remove", function() {
       if (_activeAirportIata === iata) {
+        var restoreFocus = _airportRestoreFocusOnClose;
+        var restoreTarget = _airportFocusOpener;
         clearActiveAirportRefreshTimer();
         _activeAirportPopup = null;
         _activeAirportIata = null;
         _activeAirportName = null;
         _activeAirportLat = null;
         _activeAirportLng = null;
+        _activeAirportScopeId = null;
+        _airportFocusOpener = null;
+        _airportRestoreFocusOnClose = true;
         _lastScheduleHtml = "";
         clearAirportPanelReposition();
+        if (restoreFocus) restoreFocusIfConnected(restoreTarget);
       }
     });
 
@@ -4661,17 +4791,43 @@
   var _fidsDir = "arrivals";
   var _fidsIata = null;
   var _fidsRequestToken = 0;
+  var _fidsOpener = null;
 
   function fidsTime(ts) {
     if (!ts) return "\u2014";
     return new Date(ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   }
 
+  function fidsPanelForDir(dir) {
+    return document.getElementById("fids-panel-" + dir);
+  }
+
+  function setFidsActivePanelHtml(html) {
+    var panel = fidsPanelForDir(_fidsDir);
+    if (panel) panel.innerHTML = html;
+  }
+
+  function clearFidsPanels() {
+    var panels = document.querySelectorAll("#fids-body [role='tabpanel']");
+    for (var i = 0; i < panels.length; i++) panels[i].innerHTML = "";
+  }
+
+  function updateFidsTabState() {
+    var tabs = document.querySelectorAll(".fids-tab");
+    for (var t = 0; t < tabs.length; t++) {
+      var dir = tabs[t].getAttribute("data-dir");
+      var isActive = dir === _fidsDir;
+      var panel = fidsPanelForDir(dir);
+      tabs[t].classList.toggle("active", isActive);
+      tabs[t].setAttribute("aria-selected", isActive ? "true" : "false");
+      if (panel) panel.hidden = !isActive;
+    }
+  }
+
   function renderFidsTab() {
     var flights = _fidsData ? (_fidsData[_fidsDir] || []) : [];
-    var body = document.getElementById("fids-body");
     if (!flights.length) {
-      body.innerHTML = '<div class="fids-empty">No flights found</div>';
+      setFidsActivePanelHtml('<div class="fids-empty">No flights found</div>');
       return;
     }
     var isArr = _fidsDir === "arrivals";
@@ -4699,33 +4855,33 @@
           '<span class="ft-actual">Act ' + actual + '</span>' +
         '</div></div>';
     }
-    body.innerHTML = html;
+    setFidsActivePanelHtml(html);
   }
 
   window.openFids = function(iata, name, direction) {
     var requestToken = ++_fidsRequestToken;
+    var fids = document.getElementById("fids");
+    var wasOpen = fids && fids.classList.contains("open");
+    if (!wasOpen) _fidsOpener = captureOverlayOpener(fids);
     _fidsIata = iata;
     _fidsData = null;
     document.getElementById("fids-title").textContent = iata;
     document.getElementById("fids-subtitle").textContent = name || "";
-    document.getElementById("fids-body").innerHTML =
-      '<div class="fids-empty"><div class="spinner"></div><br>Loading schedule\u2026</div>';
     _fidsDir = direction || "arrivals";
-    var tabs = document.querySelectorAll(".fids-tab");
-    for (var t = 0; t < tabs.length; t++)
-      tabs[t].classList.toggle("active", tabs[t].getAttribute("data-dir") === _fidsDir);
-    document.getElementById("fids").classList.add("open");
+    clearFidsPanels();
+    updateFidsTabState();
+    setFidsActivePanelHtml('<div class="fids-empty"><div class="spinner"></div><br>Loading schedule\u2026</div>');
+    fids.classList.add("open");
+    focusWithoutScroll(document.getElementById("fids-close"));
 
     fetchScheduleData(iata).then(function(data) {
       if (requestToken !== _fidsRequestToken || _fidsIata !== iata) return;
       if (!data) {
-        document.getElementById("fids-body").innerHTML =
-          '<div class="fids-empty">Failed to load schedule</div>';
+        setFidsActivePanelHtml('<div class="fids-empty">Failed to load schedule</div>');
         return;
       }
       if (data.error) {
-        document.getElementById("fids-body").innerHTML =
-          '<div class="fids-empty">' + escapeHtml(data.error) + '</div>';
+        setFidsActivePanelHtml('<div class="fids-empty">' + escapeHtml(data.error) + '</div>');
         return;
       }
       _fidsData = data;
@@ -4737,8 +4893,13 @@
   window.closeFids = function() {
     _fidsRequestToken++;
     _fidsIata = null;
-    document.getElementById("fids").classList.remove("open");
+    var fids = document.getElementById("fids");
+    var wasOpen = fids && fids.classList.contains("open");
+    var restoreTarget = _fidsOpener;
+    fids.classList.remove("open");
     _fidsData = null;
+    _fidsOpener = null;
+    if (wasOpen) restoreFocusIfConnected(restoreTarget);
   };
 
   (function() {
@@ -4748,7 +4909,7 @@
     for (var i = 0; i < tabs.length; i++) {
       tabs[i].addEventListener("click", function() {
         _fidsDir = this.getAttribute("data-dir");
-        for (var j = 0; j < tabs.length; j++) tabs[j].classList.toggle("active", tabs[j] === this);
+        updateFidsTabState();
         renderFidsTab();
       });
     }
