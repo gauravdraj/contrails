@@ -124,6 +124,21 @@ Example output:
 https://gauravdraj.github.io/contrails/?lat=51.5074&lng=-0.1278&zoom=11
 ```
 
+## Scriptable Medium Widget
+
+For a trial iPhone widget with a photo-forward layout, use `scriptable/contrails-medium-widget.js` with the [Scriptable](https://scriptable.app/) app:
+
+1. Create a new Scriptable script named **Contrails Medium Widget**.
+2. Paste in the contents of `scriptable/contrails-medium-widget.js`.
+3. Run the script once inside Scriptable and allow location access.
+4. Add a **medium** Scriptable widget to the Home Screen and select the script.
+
+The widget calls `/nearby?format=json`, shows the closest aircraft with details, fetches `/photo/<hex>` when a Planespotters image is available, and opens the live Contrails map when tapped. iOS still controls widget refresh timing; the script requests a refresh after 1 minute, but the system may delay it.
+
+If you run your own Worker, update `WORKER_URL` at the top of the script. To pin the widget to a fixed area instead of the device location, set the widget parameter to `lat,lng` (for example, `37.62,-122.38`).
+
+Before publishing a widget change, test it in Scriptable on iOS and confirm the location prompt, aircraft/photo rendering, tap-through to the Contrails map, and refresh behavior.
+
 ## Deploying the Worker
 
 Requires a free [Cloudflare](https://dash.cloudflare.com/sign-up) account and Node.js:

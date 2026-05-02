@@ -43,7 +43,7 @@
     throw new Error("Contrails core helpers failed to load.");
   }
 
-  const APP_VERSION = "v2.15.3";
+  const APP_VERSION = "2.16";
   const isLocal = location.hostname === "localhost" || location.hostname === "127.0.0.1";
   const isIOSDevice = /iP(ad|hone|od)/.test(navigator.userAgent) ||
     (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
@@ -4424,6 +4424,7 @@
   function buildScheduleCardContent(iata, name, liveData, dir, scopeId) {
     var isArr = dir === "arrivals";
     var items = isArr ? (liveData.arrivals || []) : (liveData.departures || []);
+    var listRows = items.length > 0 ? items.slice(1) : [];
     var message = liveData && liveData.message ? liveData.message : "";
     var safeName = escapeHtml(name || "").replace(/"/g, "&quot;");
     var titleId = scopeId ? scopeId + "-title" : "";
@@ -4443,9 +4444,11 @@
     html += '<div class="sched-rows">';
     if (!items.length) {
       html += '<div class="sched-empty">' + escapeHtml(message || (isArr ? "No landings nearby" : "No takeoffs nearby")) + '</div>';
+    } else if (!listRows.length) {
+      html += '<div class="sched-empty">' + escapeHtml(isArr ? "No other landings nearby" : "No other takeoffs nearby") + '</div>';
     } else if (isArr) {
-      for (var i = 0; i < items.length; i++) {
-        var f = items[i];
+      for (var i = 0; i < listRows.length; i++) {
+        var f = listRows[i];
         var cs = f.callsign || "";
         var flightNum = escapeHtml(formatScheduleFlightNumber(cs));
         var fromIata = f.originIata ? escapeHtml(f.originIata) : "\u2014";
@@ -4475,20 +4478,14 @@
         html += '</div>';
       }
     } else {
-      for (var i = 0; i < items.length; i++) {
-        var f = items[i];
+      for (var i = 0; i < listRows.length; i++) {
+        var f = listRows[i];
         var cs = f.callsign || "";
         var flightNum = escapeHtml(formatScheduleFlightNumber(cs));
         var destIata = f.destIata ? escapeHtml(f.destIata) : "\u2014";
         var spdStr = f.speedKts >= 5 ? formatSpeedMph(f.speedKts) + "mph" : "\u2014";
         var depSignal = describeAirportDepartureStatus(f, { activeRunways: !!liveData.activeDepartureRunways });
         var hintLabel = depSignal.label;
-        if (i === 0) {
-          var nextPrefix = depSignal.confidence === "high"
-            ? "Next off"
-            : (depSignal.confidence === "medium" ? "Likely next" : "Possible departure");
-          hintLabel = nextPrefix + " \u00b7 " + depSignal.label;
-        }
         var dotColor;
         if (f.status === "Departing" || f.status === "Climbing") dotColor = "cyan live";
         else if (f.status === "Holding") dotColor = "yellow";

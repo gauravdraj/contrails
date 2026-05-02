@@ -914,6 +914,16 @@ test("airport departure rows: climbing origin match beats parked aircraft near r
   assert.deepEqual(callsigns(rows), ["CLIMB1", "TAXI1", "PARK1"]);
 });
 
+test("airport panel list rows omit the highlighted next row (arrivals and departures)", () => {
+  var arrLive = { arrivals: [{ callsign: "UAL100" }, { callsign: "DAL200" }] };
+  assert.equal(core.getAirportNextRow(arrLive, "arrivals").callsign, "UAL100");
+  assert.deepEqual(callsigns(arrLive.arrivals.slice(1)), ["DAL200"]);
+
+  var depLive = { departures: [{ callsign: "ASA101" }, { callsign: "JBU202" }] };
+  assert.equal(core.getAirportNextRow(depLive, "departures").callsign, "ASA101");
+  assert.deepEqual(callsigns(depLive.departures.slice(1)), ["JBU202"]);
+});
+
 test("airport departure rows: suppress duplicate aircraft after priority sorting", () => {
   var rows = core.sortAirportDepartureRows([
     {

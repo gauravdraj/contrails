@@ -197,15 +197,17 @@ function formatRouteContext(plane, routeData) {
   return null;
 }
 
-function formatNearbyEntry(num, plane, routeData) {
+function nearbyDisplayName(plane) {
+  if (plane.airline && plane.callsign) return plane.airline + " " + plane.callsign.substring(3);
+  return plane.callsign || plane.icao24;
+}
+
+function buildNearbyDisplay(num, plane, routeData) {
   const parts = [];
   const alert = SQUAWK_ALERTS[plane.squawk];
   if (alert) parts.push(`${num}. \u26A0 ${alert} (${plane.squawk})`);
 
-  let name = plane.callsign || plane.icao24;
-  if (plane.airline && plane.callsign) {
-    name = plane.airline + " " + plane.callsign.substring(3);
-  }
+  const name = nearbyDisplayName(plane);
   let identifier = (alert ? "   " : `${num}. `) + name;
   if (plane.type) identifier += ` (${plane.type})`;
   if (plane.priv) identifier += " [PRIVATE]";
@@ -213,12 +215,49 @@ function formatNearbyEntry(num, plane, routeData) {
 
   const routeLine = formatRouteContext(plane, routeData);
   const distance = `${shortMiles(plane.slantKm)} mi \u2191${plane.elevDeg}\u00B0 ${plane.cardinal}`;
-  let info = distance + ", " + shortAlt(plane.altFt);
+  const altitude = shortAlt(plane.altFt);
+  let info = distance + ", " + altitude;
   if (!routeLine) info += ", " + plane.vertical;
-  if (plane.altFt >= CONTRAIL_MIN_FT) info += ", contrail likely";
-  parts.push("   " + (routeLine ? `${routeLine} — ${info}` : info));
+  const contrailLikely = plane.altFt >= CONTRAIL_MIN_FT;
+  if (contrailLikely) info += ", contrail likely";
+  const detail = routeLine ? `${routeLine} — ${info}` : info;
+  parts.push("   " + detail);
 
-  return parts.join("\n");
+  return {
+    text: parts.join("\n"),
+    plane: {
+      rank: num,
+      name,
+      identifier,
+      callsign: plane.callsign,
+      icao24: plane.icao24,
+      type: plane.type,
+      registration: plane.registration,
+      private: plane.priv,
+      airline: plane.airline,
+      alert: alert || null,
+      squawk: plane.squawk,
+      routeLine,
+      detail,
+      distance,
+      distanceMiles: shortMiles(plane.slantKm),
+      slantKm: plane.slantKm,
+      elevationDeg: plane.elevDeg,
+      direction: plane.cardinal,
+      altitude,
+      altitudeFt: plane.altFt,
+      vertical: plane.vertical,
+      speedKts: plane.speedKts,
+      track: plane.track,
+      contrailLikely,
+      lat: plane.lat,
+      lng: plane.lng,
+    },
+  };
+}
+
+function formatNearbyEntry(num, plane, routeData) {
+  return buildNearbyDisplay(num, plane, routeData).text;
 }
 
 export async function handleNearby(url, env, ctx) {
@@ -250,7 +289,7 @@ export async function handleNearby(url, env, ctx) {
   if (!visible.length) {
     const message = "No aircraft detected nearby.";
     if (format === "text") return plainText(200, message);
-    if (format === "json") return json(200, { text: message, mapUrl: mapLink, anyAircraftDetected: false });
+    if (format === "json") return json(200, { text: message, mapUrl: mapLink, anyAircraftDetected: false, planes: [] });
     return nearbyHtml(message, mapLink);
   }
 
@@ -262,14 +301,23 @@ export async function handleNearby(url, env, ctx) {
   }
 
   const lines = [`${visible.length} aircraft nearby:\n`];
+  const planeSummaries = [];
   for (let index = 0; index < visible.length; index++) {
     const plane = visible[index];
     const routeData = routeMap[plane.callsign?.trim().toUpperCase()];
-    lines.push(formatNearbyEntry(index + 1, plane, routeData));
+    const summary = buildNearbyDisplay(index + 1, plane, routeData);
+    planeSummaries.push(summary.plane);
+    lines.push(summary.text);
   }
   const body = lines.join("\n");
 
   if (format === "text") return plainText(200, body);
-  if (format === "json") return json(200, { text: body, mapUrl: mapLink, anyAircraftDetected: true });
+  if (format === "json") return json(200, { text: body, mapUrl: mapLink, anyAircraftDetected: true, planes: planeSummaries });
   return nearbyHtml(body, mapLink);
 }
+
+export const __nearbyTest = {
+  buildNearbyDisplay,
+  buildNearbyPlane,
+  selectVisiblePlanes,
+};
