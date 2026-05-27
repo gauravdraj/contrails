@@ -43,7 +43,7 @@
     throw new Error("Contrails core helpers failed to load.");
   }
 
-  const APP_VERSION = "2.16";
+  const APP_VERSION = "2.17";
   const isLocal = location.hostname === "localhost" || location.hostname === "127.0.0.1";
   const isIOSDevice = /iP(ad|hone|od)/.test(navigator.userAgent) ||
     (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
@@ -259,6 +259,7 @@
   var moveEndDebounceTimer = null;
   let suppressViewportRefresh = false;
   let fetchAbortController = null;
+  let activeFetchUrl = null;
   let fetchRequestSeq = 0;
   let appBooted = false;
   let playbackDelayMs = REFRESH_MS + PLAYBACK_DELAY_SAFETY_MS;
@@ -1300,10 +1301,12 @@
     }
     syncUrlState();
     var url = adsbUrl("/lat/" + spec.center.lat.toFixed(4) + "/lon/" + spec.center.lng.toFixed(4) + "/dist/" + spec.fetchKm);
+    if (fetchAbortController && activeFetchUrl === url) return;
     var requestSeq = ++fetchRequestSeq;
     if (fetchAbortController && !options.skipAbort) fetchAbortController.abort();
     var controller = new AbortController();
     fetchAbortController = controller;
+    activeFetchUrl = url;
 
     try {
       var resp = await fetch(url, { signal: controller.signal });
@@ -1336,7 +1339,10 @@
       );
       updateViewHint(0);
     } finally {
-      if (fetchAbortController === controller) fetchAbortController = null;
+      if (fetchAbortController === controller) {
+        fetchAbortController = null;
+        activeFetchUrl = null;
+      }
       if (map) scheduleRefreshTimer(adaptiveRefreshMs());
     }
   }
