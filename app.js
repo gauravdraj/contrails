@@ -45,7 +45,7 @@
     throw new Error("Contrails core helpers failed to load.");
   }
 
-  const APP_VERSION = "2.20";
+  const APP_VERSION = "2.21";
   const isLocal = location.hostname === "localhost" || location.hostname === "127.0.0.1";
   const isIOSDevice = /iP(ad|hone|od)/.test(navigator.userAgent) ||
     (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
@@ -211,6 +211,8 @@
   var weatherOn = false;
   var _weatherLayer = null;
   var _weatherRefreshTs = 0;
+  var _weatherSource = null;
+  var _rvRadar = null;
   var _saveViewTimer = 0;
   var bootZoomOverride = null;
   const RAINVIEWER_INDEX_URL = "https://api.rainviewer.com/public/weather-maps.json";
@@ -567,6 +569,7 @@
     });
     map.on("moveend", function() {
       _isPanning = false;
+      if (weatherOn) maybeSwapWeatherSource();
       if (_followPanning) { _followPanning = false; return; }
       scheduleSaveLastView();
       if (!suppressViewportRefresh) {
@@ -1240,7 +1243,74 @@
     map.panTo([pose.lat, pose.lng], { animate: true, duration: 0.45, easeLinearity: 0.25 });
   }
 
-  // --- Weather radar overlay (RainViewer public tiles) ---
+  // --- Weather radar overlay (hybrid: IEM NEXRAD over CONUS, RainViewer global) ---
+  // IEM serves the real NWS NEXRAD mosaic natively at high zoom (sharp) but only
+  // covers the continental US. RainViewer is global, but its radar is only native
+  // through zoom 7 (upscaled above). We pick the source from the view center.
+  var CONUS_BOUNDS = { minLat: 22, maxLat: 50, minLng: -127, maxLng: -66 };
+
+  function viewIsConus() {
+    if (!map) return false;
+    var c = map.getCenter();
+    return c.lat >= CONUS_BOUNDS.minLat && c.lat <= CONUS_BOUNDS.maxLat &&
+           c.lng >= CONUS_BOUNDS.minLng && c.lng <= CONUS_BOUNDS.maxLng;
+  }
+
+  function buildIemLayer() {
+    // USCOMP-N0Q base-reflectivity mosaic, "-0" = latest frame. Native NEXRAD
+    // resolution (~1km) stays crisp into metro/street zoom; maxNativeZoom caps
+    // requests once there's no more real detail (and to be polite to IEM).
+    return L.tileLayer(
+      "https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/ridge::USCOMP-N0Q-0/{z}/{x}/{y}.png",
+      {
+        pane: "weatherPane", opacity: 0.7, maxNativeZoom: 12, maxZoom: 18,
+        tileSize: 256, crossOrigin: true,
+        attribution: 'Radar \u00a9 <a href="https://mesonet.agron.iastate.edu/">IEM</a> / NWS NEXRAD'
+      }
+    );
+  }
+
+  function buildRainviewerLayer() {
+    if (!_rvRadar || !_rvRadar.path) return null;
+    return L.tileLayer(
+      _rvRadar.host + _rvRadar.path + "/256/{z}/{x}/{y}/4/1_1.png",
+      {
+        pane: "weatherPane", opacity: 0.55, maxNativeZoom: 7, maxZoom: 18,
+        tileSize: 256, crossOrigin: true,
+        attribution: 'Radar \u00a9 <a href="https://www.rainviewer.com/">RainViewer</a>'
+      }
+    );
+  }
+
+  async function fetchRainviewerFrame() {
+    var resp = await fetch(RAINVIEWER_INDEX_URL, { cache: "no-store" });
+    if (!resp.ok) throw new Error("HTTP " + resp.status);
+    var data = await resp.json();
+    var past = (data && data.radar && data.radar.past) || [];
+    var nowcast = (data && data.radar && data.radar.nowcast) || [];
+    var frames = past.concat(nowcast);
+    var latest = frames.length ? frames[frames.length - 1] : null;
+    if (!latest || !latest.path) throw new Error("no radar frames");
+    _rvRadar = { host: (data && data.host) || "https://tilecache.rainviewer.com", path: latest.path };
+    return _rvRadar;
+  }
+
+  function applyWeatherLayer() {
+    if (!map || !weatherOn) return null;
+    var source = viewIsConus() ? "iem" : "rainviewer";
+    var layer = source === "iem" ? buildIemLayer() : buildRainviewerLayer();
+    if (!layer) return null;
+    if (_weatherLayer && map) map.removeLayer(_weatherLayer);
+    _weatherLayer = layer;
+    _weatherLayer.addTo(map);
+    _weatherSource = source;
+    return source;
+  }
+
+  function weatherSourceLabel(source) {
+    return source === "iem" ? "US radar \u00b7 NWS NEXRAD" : "Global radar \u00b7 RainViewer";
+  }
+
   async function enableWeather(opts) {
     opts = opts || {};
     weatherOn = true;
@@ -1248,28 +1318,28 @@
     if (btn) { btn.classList.add("on"); btn.setAttribute("aria-pressed", "true"); }
     if (!map) return;
     try {
-      var resp = await fetch(RAINVIEWER_INDEX_URL, { cache: "no-store" });
-      if (!resp.ok) throw new Error("HTTP " + resp.status);
-      var data = await resp.json();
-      var past = (data && data.radar && data.radar.past) || [];
-      var nowcast = (data && data.radar && data.radar.nowcast) || [];
-      var frames = past.concat(nowcast);
-      var latest = frames.length ? frames[frames.length - 1] : null;
-      var host = (data && data.host) || "https://tilecache.rainviewer.com";
-      if (!latest || !latest.path) throw new Error("no radar frames");
-      if (_weatherLayer && map) map.removeLayer(_weatherLayer);
-      // RainViewer radar is only served natively up to zoom 7; higher zooms
-      // return a "Zoom Level Not Supported" placeholder tile. maxNativeZoom
-      // makes Leaflet upscale the z7 radar across the whole map instead, so the
-      // overlay stays usable at any zoom (coarse global data, so it blurs when
-      // zoomed to street level — that's the source resolution, not a bug).
-      _weatherLayer = L.tileLayer(host + latest.path + "/256/{z}/{x}/{y}/4/1_1.png", {
-        pane: "weatherPane", opacity: 0.55, maxNativeZoom: 7, maxZoom: 18, tileSize: 256, crossOrigin: true
-      });
-      if (weatherOn) _weatherLayer.addTo(map);
+      // Always keep a RainViewer frame ready for the global fallback, even when
+      // booting over CONUS, so panning out of the US has data immediately.
+      await fetchRainviewerFrame();
+      if (!weatherOn) return; // toggled off mid-fetch
+      var source = applyWeatherLayer();
       _weatherRefreshTs = Date.now();
-      if (!opts.silent) setControlsFeedback("Weather radar on \u00b7 RainViewer", "info", { timeoutMs: 3500 });
+      if (!opts.silent && source) {
+        setControlsFeedback("Weather radar on \u00b7 " + weatherSourceLabel(source), "info", { timeoutMs: 3500 });
+      }
     } catch (e) {
+      // RainViewer index failed. If we're over CONUS we can still show IEM.
+      if (weatherOn && viewIsConus()) {
+        try {
+          if (_weatherLayer && map) map.removeLayer(_weatherLayer);
+          _weatherLayer = buildIemLayer();
+          _weatherLayer.addTo(map);
+          _weatherSource = "iem";
+          _weatherRefreshTs = Date.now();
+          if (!opts.silent) setControlsFeedback("Weather radar on \u00b7 " + weatherSourceLabel("iem"), "info", { timeoutMs: 3500 });
+          return;
+        } catch (e2) {}
+      }
       weatherOn = false;
       if (btn) { btn.classList.remove("on"); btn.setAttribute("aria-pressed", "false"); }
       if (!opts.silent) setControlsFeedback("Weather radar unavailable right now.", "info", { timeoutMs: 4000 });
@@ -1282,11 +1352,24 @@
     if (btn) { btn.classList.remove("on"); btn.setAttribute("aria-pressed", "false"); }
     if (_weatherLayer && map) map.removeLayer(_weatherLayer);
     _weatherLayer = null;
+    _weatherSource = null;
   }
 
   function toggleWeather() {
     if (weatherOn) disableWeather();
     else enableWeather();
+  }
+
+  // Swap the active radar source when the view crosses into/out of CONUS.
+  function maybeSwapWeatherSource() {
+    if (!weatherOn || !map) return;
+    var want = viewIsConus() ? "iem" : "rainviewer";
+    if (want === _weatherSource) return;
+    if (want === "rainviewer" && (!_rvRadar || !_rvRadar.path)) {
+      fetchRainviewerFrame().then(function() { if (weatherOn) applyWeatherLayer(); }).catch(function() {});
+      return;
+    }
+    applyWeatherLayer();
   }
 
   function maybeRefreshWeather() {
