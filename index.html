@@ -471,6 +471,85 @@ body.noscroll { touch-action: none; }
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.02);
 }
 
+#places-panel {
+  margin-top: 10px;
+  padding: 10px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-soft);
+  background: rgba(255, 255, 255, 0.04);
+}
+.places-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.places-save {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(124, 252, 155, 0.34);
+  color: var(--text-strong);
+  background: rgba(124, 252, 155, 0.14);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.places-empty {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+.places-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+}
+.places-go {
+  flex: 1 1 auto;
+  text-align: left;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 7px 10px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-soft);
+  color: var(--text-main);
+  background: var(--bg-chip);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.places-del {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  border: 1px solid var(--border-soft);
+  color: var(--text-muted);
+  background: var(--bg-chip);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+}
+.route-endpoint-label { background: none; border: none; }
+.route-endpoint-tag {
+  display: inline-block;
+  transform: translateX(-50%);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 1px 5px;
+  border-radius: 6px;
+  white-space: nowrap;
+  color: #0a0e17;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
+}
+.route-endpoint-tag.is-origin { background: #7CFC9B; }
+.route-endpoint-tag.is-dest { background: #FF9E6C; }
+
 #loading {
   position: fixed;
   inset: 0;
@@ -1072,6 +1151,18 @@ body.noscroll { touch-action: none; }
       <button class="ftag on" data-f="ground" aria-pressed="true">Ground</button>
       <button class="ftag on" data-f="trails" aria-pressed="true">Trails</button>
       <button class="ftag on" data-f="labels" aria-pressed="true">Labels</button>
+    </div>
+    <div class="control-row" id="feature-controls">
+      <button id="toggle-weather" class="ftag" type="button" aria-pressed="false" title="Toggle weather radar (RainViewer)">Weather</button>
+      <button id="toggle-follow" class="ftag" type="button" aria-pressed="false" title="Keep the map centered on the selected aircraft">Follow</button>
+      <button id="toggle-places" class="ftag" type="button" aria-expanded="false" aria-controls="places-panel" title="Saved locations">Places</button>
+    </div>
+    <div id="places-panel" hidden>
+      <div class="places-head">
+        <span class="section-label">Saved places</span>
+        <button id="places-save" type="button" class="places-save">+ Save current view</button>
+      </div>
+      <div id="places-list"></div>
     </div>
     <div id="controls-meta">
       <div class="section-label">Altitude</div>

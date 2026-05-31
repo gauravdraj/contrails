@@ -1051,3 +1051,35 @@ test("deriveActiveRunways: returns null with no aircraft or no runways", () => {
   assert.equal(core.deriveActiveRunways(SFO_RUNWAYS, "SFO", []), null);
   assert.equal(core.deriveActiveRunways(null, "SFO", [onRunwayAircraft("28L", { vRate: 12 })]), null);
 });
+
+test("greatCirclePoints: endpoints match the inputs", () => {
+  var pts = core.greatCirclePoints(37.62, -122.38, 40.64, -73.78, 32);
+  assert.equal(pts.length, 33);
+  assert.ok(Math.abs(pts[0][0] - 37.62) < 1e-6 && Math.abs(pts[0][1] - (-122.38)) < 1e-6);
+  assert.ok(Math.abs(pts[pts.length - 1][0] - 40.64) < 1e-6 && Math.abs(pts[pts.length - 1][1] - (-73.78)) < 1e-6);
+});
+
+test("greatCirclePoints: an east-west northern route bows poleward at the midpoint", () => {
+  // SFO->JFK both near 38-40N; the great circle arcs north of the straight
+  // line average latitude.
+  var pts = core.greatCirclePoints(37.62, -122.38, 40.64, -73.78, 64);
+  var mid = pts[32];
+  assert.ok(mid[0] > (37.62 + 40.64) / 2, "midpoint latitude should be north of the endpoint average");
+});
+
+test("greatCirclePoints: keeps longitude continuous across the antimeridian", () => {
+  // Tokyo (HND) -> Los Angeles (LAX) crosses the Pacific / 180deg line. No
+  // adjacent pair of sampled longitudes should jump by more than 180deg.
+  var pts = core.greatCirclePoints(35.55, 139.78, 33.94, -118.41, 64);
+  var maxJump = 0;
+  for (var i = 1; i < pts.length; i++) {
+    maxJump = Math.max(maxJump, Math.abs(pts[i][1] - pts[i - 1][1]));
+  }
+  assert.ok(maxJump < 180, "no longitude jump should exceed 180 degrees");
+});
+
+test("greatCirclePoints: identical points and bad input degrade gracefully", () => {
+  assert.deepEqual(core.greatCirclePoints(10, 20, 10, 20, 16), [[10, 20], [10, 20]]);
+  assert.deepEqual(core.greatCirclePoints(null, 1, 2, 3), []);
+  assert.deepEqual(core.greatCirclePoints(1, 1, NaN, 3), []);
+});

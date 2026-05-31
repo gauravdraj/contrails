@@ -839,6 +839,44 @@
     return rows && rows.length ? rows[0] : null;
   }
 
+  function greatCirclePoints(lat1, lng1, lat2, lng2, segments) {
+    // Sample the shortest-path great circle between two points as [lat, lng]
+    // pairs for drawing a curved route line. Longitude is kept continuous
+    // across the antimeridian (values may exceed +/-180) so Leaflet draws one
+    // unbroken polyline instead of wrapping it across the whole map.
+    if (lat1 == null || lng1 == null || lat2 == null || lng2 == null) return [];
+    if (!isFinite(lat1) || !isFinite(lng1) || !isFinite(lat2) || !isFinite(lng2)) return [];
+    segments = segments && segments > 1 ? Math.floor(segments) : 64;
+    var toRad = Math.PI / 180;
+    var toDeg = 180 / Math.PI;
+    var p1 = lat1 * toRad, l1 = lng1 * toRad;
+    var p2 = lat2 * toRad, l2 = lng2 * toRad;
+    var sinDp = Math.sin((p2 - p1) / 2);
+    var sinDl = Math.sin((l2 - l1) / 2);
+    var a = sinDp * sinDp + Math.cos(p1) * Math.cos(p2) * sinDl * sinDl;
+    var d = 2 * Math.asin(Math.min(1, Math.sqrt(a)));
+    if (d === 0) return [[lat1, lng1], [lat2, lng2]];
+    var pts = [];
+    var prevLng = null;
+    for (var i = 0; i <= segments; i++) {
+      var f = i / segments;
+      var A = Math.sin((1 - f) * d) / Math.sin(d);
+      var B = Math.sin(f * d) / Math.sin(d);
+      var x = A * Math.cos(p1) * Math.cos(l1) + B * Math.cos(p2) * Math.cos(l2);
+      var y = A * Math.cos(p1) * Math.sin(l1) + B * Math.cos(p2) * Math.sin(l2);
+      var z = A * Math.sin(p1) + B * Math.sin(p2);
+      var lat = Math.atan2(z, Math.sqrt(x * x + y * y)) * toDeg;
+      var lng = Math.atan2(y, x) * toDeg;
+      if (prevLng != null) {
+        while (lng - prevLng > 180) lng -= 360;
+        while (lng - prevLng < -180) lng += 360;
+      }
+      prevLng = lng;
+      pts.push([lat, lng]);
+    }
+    return pts;
+  }
+
   return {
     AIRLINES: AIRLINES,
     AIRLINE_IATA_ALIASES: AIRLINE_IATA_ALIASES,
@@ -860,6 +898,7 @@
     formatDistanceMiles: formatDistanceMiles,
     formatSpeedMph: formatSpeedMph,
     deriveActiveRunways: deriveActiveRunways,
+    greatCirclePoints: greatCirclePoints,
     haversineKm: haversineKm,
     interpolatePlaybackPose: interpolatePlaybackPose,
     interpolateTimedPose: interpolateTimedPose,
