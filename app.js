@@ -30,6 +30,7 @@
   const elevationDeg = core.elevationDeg;
   const findFlightStartIndex = core.findFlightStartIndex;
   const matchRunwayDesignator = core.matchRunwayDesignator;
+  const deriveActiveRunways = core.deriveActiveRunways;
   const pointOnRunway = core.pointOnRunway;
   const SQUAWK_ALERT = core.SQUAWK_ALERTS;
   const AIRLINE_ICAO_TO_IATA = core.AIRLINE_ICAO_TO_IATA;
@@ -38,12 +39,12 @@
       !getAirportNextRow || !haversineKm || !interpolatePlaybackPose || !interpolateTimedPose || !isLikelyPrivateCallsign ||
       !normalizeAircraftHex || !normalizeFlightQuery || !normalizeSearchText || !parseCoordinate || !projectLatLng ||
       !scoreArrivalCandidate || !sortAirportArrivalRows || !sortAirportDepartureRows || !describeAirportDepartureStatus ||
-      !findFlightStartIndex || !matchRunwayDesignator || !pointOnRunway ||
+      !findFlightStartIndex || !matchRunwayDesignator || !deriveActiveRunways || !pointOnRunway ||
       !roundTenths || !slantKm || !elevationDeg || !SQUAWK_ALERT) {
     throw new Error("Contrails core helpers failed to load.");
   }
 
-  const APP_VERSION = "2.17";
+  const APP_VERSION = "2.18";
   const isLocal = location.hostname === "localhost" || location.hostname === "127.0.0.1";
   const isIOSDevice = /iP(ad|hone|od)/.test(navigator.userAgent) ||
     (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
@@ -196,8 +197,6 @@
   const trackExtended = {};
   const scheduleDataCache = {};
   const SCHEDULE_CACHE_TTL = 5 * 60 * 1000;
-  var _runwaysInUseCache = {};
-  var RIU_CACHE_TTL = 300000;
 
   let map, userMarker, aircraftLayer, trailLayer, airportLayer, runwayLayer;
   let airportData = null;
@@ -4109,22 +4108,21 @@
     var list = Array.isArray(sourceAircraft) ? sourceAircraft : aircraft;
     var arrivals = [];
     var departures = [];
+    var airportRwys = runwayData && runwayData[airportIata];
+    var activeRunways = deriveActiveRunways(airportRwys, airportIata, list);
     var activeDepThresholds = [];
-    var riuCached = _runwaysInUseCache[airportIata];
-    if (riuCached && riuCached.data && Array.isArray(riuCached.data.departing_runways)) {
-      var depRwys = runwayData && runwayData[airportIata];
-      var depDesigs = riuCached.data.departing_runways;
+    if (activeRunways && activeRunways.departing_runways) {
+      var depDesigs = activeRunways.departing_runways;
       for (var d = 0; d < depDesigs.length; d++) {
-        var matched = matchRunwayDesignator(depRwys, airportIata, depDesigs[d]);
+        var matched = matchRunwayDesignator(airportRwys, airportIata, depDesigs[d]);
         if (matched) activeDepThresholds.push(matched);
       }
     }
     var activeArrThresholds = [];
-    if (riuCached && riuCached.data && Array.isArray(riuCached.data.arriving_runways)) {
-      var arrRwys = runwayData && runwayData[airportIata];
-      var arrDesigs = riuCached.data.arriving_runways;
+    if (activeRunways && activeRunways.arriving_runways) {
+      var arrDesigs = activeRunways.arriving_runways;
       for (var d = 0; d < arrDesigs.length; d++) {
-        var matched = matchRunwayDesignator(arrRwys, airportIata, arrDesigs[d]);
+        var matched = matchRunwayDesignator(airportRwys, airportIata, arrDesigs[d]);
         if (matched) activeArrThresholds.push(matched);
       }
     }
@@ -4684,22 +4682,6 @@
     scheduleAirportPanelReposition();
   }
 
-  async function fetchRunwaysInUse(iata) {
-    if (!iata || iata.length !== 3) return null;
-    var cached = _runwaysInUseCache[iata];
-    if (cached && Date.now() - cached.fetchedAt < RIU_CACHE_TTL) return cached.data;
-    try {
-      var resp = await fetch("https://runwaysinuse.com/api/v1/runway/K" + iata);
-      if (!resp.ok) throw new Error(resp.status);
-      var data = await resp.json();
-      _runwaysInUseCache[iata] = { data: data, fetchedAt: Date.now() };
-      return data;
-    } catch (e) {
-      _runwaysInUseCache[iata] = { data: null, fetchedAt: Date.now() };
-      return null;
-    }
-  }
-
   function openAirportSchedulePopup(iata, name, lat, lng) {
     var existingAirportEl = _activeAirportPopup && _activeAirportPopup.getElement
       ? _activeAirportPopup.getElement()
@@ -4717,9 +4699,6 @@
     _activeAirportScopeId = "airport-sched-" + (++_airportScopeSeq);
     _activeScheduleDir = "arrivals";
     _lastScheduleHtml = "";
-    fetchRunwaysInUse(iata).then(function(riuData) {
-      if (riuData && _activeAirportIata === iata) renderSchedulePopup(_activeScheduleDir);
-    });
     var entry = getAirportPopupCacheEntry(iata);
 
     if (!entry.data) {
@@ -4789,139 +4768,9 @@
     else scheduleActiveAirportRefresh(AIRPORT_POPUP_REFRESH_MS);
   }
 
-  // --- FIDS (airport schedule board) ---
-  var _fidsData = null;
-  var _fidsDir = "arrivals";
-  var _fidsIata = null;
-  var _fidsRequestToken = 0;
-  var _fidsOpener = null;
-
-  function fidsTime(ts) {
-    if (!ts) return "\u2014";
-    return new Date(ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  }
-
-  function fidsPanelForDir(dir) {
-    return document.getElementById("fids-panel-" + dir);
-  }
-
-  function setFidsActivePanelHtml(html) {
-    var panel = fidsPanelForDir(_fidsDir);
-    if (panel) panel.innerHTML = html;
-  }
-
-  function clearFidsPanels() {
-    var panels = document.querySelectorAll("#fids-body [role='tabpanel']");
-    for (var i = 0; i < panels.length; i++) panels[i].innerHTML = "";
-  }
-
-  function updateFidsTabState() {
-    var tabs = document.querySelectorAll(".fids-tab");
-    for (var t = 0; t < tabs.length; t++) {
-      var dir = tabs[t].getAttribute("data-dir");
-      var isActive = dir === _fidsDir;
-      var panel = fidsPanelForDir(dir);
-      tabs[t].classList.toggle("active", isActive);
-      tabs[t].setAttribute("aria-selected", isActive ? "true" : "false");
-      if (panel) panel.hidden = !isActive;
-    }
-  }
-
-  function renderFidsTab() {
-    var flights = _fidsData ? (_fidsData[_fidsDir] || []) : [];
-    if (!flights.length) {
-      setFidsActivePanelHtml('<div class="fids-empty">No flights found</div>');
-      return;
-    }
-    var isArr = _fidsDir === "arrivals";
-    var html = "";
-    for (var i = 0; i < flights.length; i++) {
-      var f = flights[i];
-      var color = escapeHtml(f.color || "gray");
-      var sched = escapeHtml(fidsTime(isArr ? f.sched_arr : f.sched_dep));
-      var est = escapeHtml(fidsTime(isArr ? f.est_arr : f.est_dep));
-      var actual = escapeHtml(fidsTime(isArr ? f.actual_arr : f.actual_dep));
-      var route = isArr
-        ? (f.from_iata ? "from " + escapeHtml(f.from_iata) : "")
-        : (f.to_iata ? "to " + escapeHtml(f.to_iata) : "");
-      if (f.ac_code) route = route ? route + " \u00b7 " + escapeHtml(f.ac_code) : escapeHtml(f.ac_code);
-      html += '<div class="fids-row">' +
-        '<div class="fids-top">' +
-          '<div><span class="fids-flight-num">' + escapeHtml(f.flight || "\u2014") + '</span>' +
-          '<span class="fids-airline-name">' + escapeHtml(f.airline || "") + '</span></div>' +
-          '<span class="fids-badge ' + color + '">' + escapeHtml(f.status || "\u2014") + '</span>' +
-        '</div>' +
-        (route ? '<div class="fids-route">' + route + '</div>' : '') +
-        '<div class="fids-times">' +
-          '<span>Sched ' + sched + '</span>' +
-          '<span>Est ' + est + '</span>' +
-          '<span class="ft-actual">Act ' + actual + '</span>' +
-        '</div></div>';
-    }
-    setFidsActivePanelHtml(html);
-  }
-
-  window.openFids = function(iata, name, direction) {
-    var requestToken = ++_fidsRequestToken;
-    var fids = document.getElementById("fids");
-    var wasOpen = fids && fids.classList.contains("open");
-    if (!wasOpen) _fidsOpener = captureOverlayOpener(fids);
-    _fidsIata = iata;
-    _fidsData = null;
-    document.getElementById("fids-title").textContent = iata;
-    document.getElementById("fids-subtitle").textContent = name || "";
-    _fidsDir = direction || "arrivals";
-    clearFidsPanels();
-    updateFidsTabState();
-    setFidsActivePanelHtml('<div class="fids-empty"><div class="spinner"></div><br>Loading schedule\u2026</div>');
-    fids.classList.add("open");
-    focusWithoutScroll(document.getElementById("fids-close"));
-
-    fetchScheduleData(iata).then(function(data) {
-      if (requestToken !== _fidsRequestToken || _fidsIata !== iata) return;
-      if (!data) {
-        setFidsActivePanelHtml('<div class="fids-empty">Failed to load schedule</div>');
-        return;
-      }
-      if (data.error) {
-        setFidsActivePanelHtml('<div class="fids-empty">' + escapeHtml(data.error) + '</div>');
-        return;
-      }
-      _fidsData = data;
-      if (data.name) document.getElementById("fids-subtitle").textContent = data.name;
-      renderFidsTab();
-    });
-  };
-
-  window.closeFids = function() {
-    _fidsRequestToken++;
-    _fidsIata = null;
-    var fids = document.getElementById("fids");
-    var wasOpen = fids && fids.classList.contains("open");
-    var restoreTarget = _fidsOpener;
-    fids.classList.remove("open");
-    _fidsData = null;
-    _fidsOpener = null;
-    if (wasOpen) restoreFocusIfConnected(restoreTarget);
-  };
-
   (function() {
-    document.getElementById("fids-backdrop").addEventListener("click", window.closeFids);
-    document.getElementById("fids-close").addEventListener("click", window.closeFids);
-    var tabs = document.querySelectorAll(".fids-tab");
-    for (var i = 0; i < tabs.length; i++) {
-      tabs[i].addEventListener("click", function() {
-        _fidsDir = this.getAttribute("data-dir");
-        updateFidsTabState();
-        renderFidsTab();
-      });
-    }
     document.addEventListener("keydown", function(e) {
       if (e.key !== "Escape") return;
-      if (document.getElementById("fids").classList.contains("open")) {
-        window.closeFids();
-        return;
-      }
       if (_activeAirportPopup) {
         closeActiveAirportPanel();
       }

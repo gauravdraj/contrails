@@ -73,7 +73,6 @@ body.noscroll { touch-action: none; }
   -webkit-backface-visibility: hidden;
   backface-visibility: hidden;
 }
-#fids-body::-webkit-scrollbar { width: 0; height: 0; }
 
 .vert-up { color: var(--success); }
 .vert-down { color: var(--danger); }
@@ -236,7 +235,6 @@ body.noscroll { touch-action: none; }
 }
 #controls-toggle:focus-visible,
 #airport-panel-close:focus-visible,
-#fids-close:focus-visible,
 .ftag:focus-visible,
 .mini-action:focus-visible,
 .search-option:focus-visible,
@@ -594,8 +592,7 @@ body.noscroll { touch-action: none; }
     transition: none;
   }
 
-  #loading .spinner,
-  .fids-empty .spinner {
+  #loading .spinner {
     animation: none;
     border-top-color: rgba(255, 255, 255, 0.12);
     border-right-color: var(--accent);
@@ -788,132 +785,6 @@ body.noscroll { touch-action: none; }
 }
 #airport-panel-content .sched-rows { max-height: none; }
 #airport-panel-content .sched-row { padding: 7px 0; }
-
-#fids { position: fixed; inset: 0; z-index: 1500; display: none; flex-direction: column; }
-#fids.open { display: flex; }
-#fids-backdrop {
-  flex: 1;
-  min-height: 60px;
-  background: linear-gradient(180deg, rgba(4, 9, 16, 0) 0%, rgba(4, 9, 16, 0.48) 100%);
-}
-#fids-sheet {
-  max-height: 82vh;
-  max-height: 82dvh;
-  background: linear-gradient(180deg, rgba(12, 22, 37, 0.94) 0%, rgba(8, 16, 28, 0.98) 100%);
-  border: 1px solid var(--border-soft);
-  border-bottom: none;
-  border-radius: 24px 24px 0 0;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  box-shadow: var(--shadow-lg);
-  backdrop-filter: blur(18px);
-  -webkit-backdrop-filter: blur(18px);
-}
-#fids-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 16px 16px 12px;
-  border-bottom: 1px solid var(--border-soft);
-}
-#fids-title {
-  font-size: 19px;
-  font-weight: 700;
-  color: var(--text-strong);
-  letter-spacing: -0.02em;
-}
-#fids-subtitle { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
-#fids-close {
-  width: 38px;
-  height: 38px;
-  border-radius: 12px;
-  border: 1px solid var(--border-soft);
-  background: rgba(255, 255, 255, 0.05);
-  color: var(--text-muted);
-  font-size: 28px;
-  cursor: pointer;
-  padding: 0;
-  line-height: 1;
-}
-#fids-close:hover { color: var(--text-strong); }
-#fids-tabs {
-  display: flex;
-  gap: 8px;
-  padding: 10px 16px 0;
-  border-bottom: 1px solid var(--border-soft);
-}
-.fids-tab {
-  flex: 1;
-  padding: 10px 12px;
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: 12px 12px 0 0;
-  color: var(--text-soft);
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: color 0.15s, background 0.15s, border-color 0.15s;
-}
-.fids-tab.active {
-  color: var(--text-strong);
-  background: rgba(105, 199, 255, 0.1);
-  border-color: rgba(105, 199, 255, 0.2);
-}
-#fids-body {
-  overflow-y: auto;
-  flex: 1;
-  -webkit-overflow-scrolling: touch;
-  overscroll-behavior: contain;
-  padding: 8px 12px calc(18px + env(safe-area-inset-bottom, 0px));
-}
-.fids-row {
-  padding: 12px 14px;
-  margin-bottom: 10px;
-  border: 1px solid var(--border-soft);
-  border-radius: var(--radius-md);
-  background: linear-gradient(180deg, rgba(17, 28, 45, 0.96) 0%, rgba(11, 20, 34, 0.92) 100%);
-  box-shadow: var(--shadow-md);
-}
-.fids-row:last-child { margin-bottom: 0; }
-.fids-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
-.fids-flight-num { font-size: 15px; font-weight: 700; color: var(--text-strong); }
-.fids-airline-name { font-size: 12px; color: var(--text-muted); margin-left: 8px; font-weight: 400; }
-.fids-badge {
-  font-size: 11px;
-  font-weight: 600;
-  padding: 3px 9px;
-  border-radius: 999px;
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-.fids-badge.green { color: var(--success); background: rgba(74,222,128,0.12); }
-.fids-badge.yellow { color: #facc15; background: rgba(250,204,21,0.12); }
-.fids-badge.orange { color: #fb923c; background: rgba(251,146,60,0.12); }
-.fids-badge.red { color: var(--danger); background: rgba(248,113,113,0.12); }
-.fids-badge.gray, .fids-badge { color: var(--text-muted); background: rgba(136,153,170,0.08); }
-.fids-route { font-size: 12px; color: var(--text-muted); margin-top: 5px; }
-.fids-times { display: flex; gap: 14px; margin-top: 7px; font-size: 11px; color: var(--text-soft); flex-wrap: wrap; }
-.fids-times span { white-space: nowrap; }
-.fids-times .ft-actual { color: var(--text-main); font-weight: 600; }
-.fids-empty {
-  padding: 34px 20px;
-  text-align: center;
-  color: var(--text-muted);
-  font-size: 14px;
-  border: 1px dashed var(--border-soft);
-  border-radius: var(--radius-md);
-  background: rgba(255,255,255,0.03);
-}
-.fids-empty .spinner {
-  width: 24px;
-  height: 24px;
-  border: 2px solid rgba(255,255,255,0.12);
-  border-top-color: var(--accent);
-  border-radius: 50%;
-  animation: spin 0.8s linear infinite;
-  display: inline-block;
-}
 
 .sched-card {
   width: 280px;
@@ -1151,12 +1022,6 @@ body.noscroll { touch-action: none; }
     width: min(360px, calc(100% - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px) - 24px));
     max-height: min(70dvh, 520px);
   }
-
-  #fids-sheet {
-    max-height: 86dvh;
-    width: min(720px, calc(100% - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px) - 24px));
-    margin: 0 auto;
-  }
 }
 </style>
 </head>
@@ -1223,24 +1088,6 @@ body.noscroll { touch-action: none; }
     <div id="airport-panel-content"></div>
   </div>
 </div>
-<div id="fids">
-  <div id="fids-backdrop" aria-hidden="true"></div>
-  <div id="fids-sheet" role="dialog" aria-modal="false" aria-labelledby="fids-title">
-    <div id="fids-header">
-      <div><div id="fids-title"></div><div id="fids-subtitle"></div></div>
-      <button id="fids-close" type="button" aria-label="Close flight schedules">&times;</button>
-    </div>
-    <div id="fids-tabs" role="tablist" aria-label="Flight schedule">
-      <button id="fids-tab-arrivals" class="fids-tab active" type="button" role="tab" data-dir="arrivals" aria-selected="true" aria-controls="fids-panel-arrivals">Arrivals</button>
-      <button id="fids-tab-departures" class="fids-tab" type="button" role="tab" data-dir="departures" aria-selected="false" aria-controls="fids-panel-departures">Departures</button>
-    </div>
-    <div id="fids-body">
-      <div id="fids-panel-arrivals" role="tabpanel" aria-labelledby="fids-tab-arrivals"></div>
-      <div id="fids-panel-departures" role="tabpanel" aria-labelledby="fids-tab-departures" hidden></div>
-    </div>
-  </div>
-</div>
-
 <script src="contrails-core.js"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://unpkg.com/leaflet-doubletapdrag@0.1.2/Leaflet.DoubleTapDrag.js"></script>

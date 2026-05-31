@@ -992,3 +992,62 @@ test("airport departure status helper explains signal confidence without ETA", (
     routeOrigin: true
   });
 });
+
+// --- deriveActiveRunways ---
+
+function onRunwayAircraft(designator, overrides) {
+  // Place a synthetic aircraft at the midpoint of an SFO runway, tracking in the
+  // designator's direction, so geometry matches a real on-runway target.
+  var rwy = core.matchRunwayDesignator(SFO_RUNWAYS, "SFO", designator);
+  var bearing = core.bearingDegrees(rwy.thresholdLat, rwy.thresholdLon, rwy.farEndLat, rwy.farEndLon);
+  var lengthM = core.haversineKm(rwy.thresholdLat, rwy.thresholdLon, rwy.farEndLat, rwy.farEndLon) * 1000;
+  var mid = core.projectLatLng(rwy.thresholdLat, rwy.thresholdLon, bearing, lengthM / 2);
+  return Object.assign({ lat: mid[0], lng: mid[1], track: bearing, altFt: 150, vRate: 0, ground: false }, overrides || {});
+}
+
+test("deriveActiveRunways: climbing aircraft on a runway marks it departing", () => {
+  var ac = onRunwayAircraft("28L", { vRate: 12, altFt: 250 }); // +720 fpm
+  var res = core.deriveActiveRunways(SFO_RUNWAYS, "SFO", [ac]);
+  assert.ok(res, "should detect an active runway");
+  assert.deepEqual(res.departing_runways, ["28L"]);
+  assert.deepEqual(res.arriving_runways, []);
+});
+
+test("deriveActiveRunways: descending aircraft on a runway marks it arriving", () => {
+  var ac = onRunwayAircraft("28L", { vRate: -12, altFt: 120 }); // -720 fpm
+  var res = core.deriveActiveRunways(SFO_RUNWAYS, "SFO", [ac]);
+  assert.ok(res, "should detect an active runway");
+  assert.deepEqual(res.arriving_runways, ["28L"]);
+  assert.deepEqual(res.departing_runways, []);
+});
+
+test("deriveActiveRunways: direction of travel selects the correct designator", () => {
+  var rwy = core.matchRunwayDesignator(SFO_RUNWAYS, "SFO", "28L");
+  var bearing = core.bearingDegrees(rwy.thresholdLat, rwy.thresholdLon, rwy.farEndLat, rwy.farEndLon);
+  var lengthM = core.haversineKm(rwy.thresholdLat, rwy.thresholdLon, rwy.farEndLat, rwy.farEndLon) * 1000;
+  var mid = core.projectLatLng(rwy.thresholdLat, rwy.thresholdLon, bearing, lengthM / 2);
+  // Same physical runway, but tracking the reciprocal direction = the 10R end.
+  var ac = { lat: mid[0], lng: mid[1], track: (bearing + 180) % 360, altFt: 250, vRate: 12, ground: false };
+  var res = core.deriveActiveRunways(SFO_RUNWAYS, "SFO", [ac]);
+  assert.deepEqual(res.departing_runways, ["10R"]);
+});
+
+test("deriveActiveRunways: high overflight is ignored", () => {
+  var ac = onRunwayAircraft("28L", { altFt: 30000, vRate: 12 });
+  assert.equal(core.deriveActiveRunways(SFO_RUNWAYS, "SFO", [ac]), null);
+});
+
+test("deriveActiveRunways: level traffic with no vertical signal is ignored", () => {
+  var ac = onRunwayAircraft("28L", { vRate: 0, altFt: 200 });
+  assert.equal(core.deriveActiveRunways(SFO_RUNWAYS, "SFO", [ac]), null);
+});
+
+test("deriveActiveRunways: aircraft off any runway is ignored", () => {
+  var ac = { lat: 37.7, lng: -122.45, track: 280, altFt: 250, vRate: 12, ground: false };
+  assert.equal(core.deriveActiveRunways(SFO_RUNWAYS, "SFO", [ac]), null);
+});
+
+test("deriveActiveRunways: returns null with no aircraft or no runways", () => {
+  assert.equal(core.deriveActiveRunways(SFO_RUNWAYS, "SFO", []), null);
+  assert.equal(core.deriveActiveRunways(null, "SFO", [onRunwayAircraft("28L", { vRate: 12 })]), null);
+});

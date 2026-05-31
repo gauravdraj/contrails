@@ -458,6 +458,59 @@
     return null;
   }
 
+  function deriveActiveRunways(runwayEntries, iata, aircraft, options) {
+    // Infer which runway ends are actively in use for arrivals/departures from
+    // live ADS-B, replacing the defunct runwaysinuse.com feed. Only aircraft
+    // physically on a runway with a clear vertical signal contribute, so
+    // overflights and ambiguous ground rollouts never fabricate active runways.
+    // Returns { departing_runways, arriving_runways } (designator strings) or
+    // null when there is no confident signal, in which case callers fall back to
+    // pure-geometry classification exactly as before.
+    if (!runwayEntries || !runwayEntries.length || !aircraft || !aircraft.length) return null;
+    options = options || {};
+    var maxAltFt = options.maxAltFt != null ? options.maxAltFt : 1500;
+    var climbFpm = options.climbFpm != null ? options.climbFpm : 200;
+    var prefix = String(iata || "").toUpperCase() + " ";
+    var departing = {};
+    var arriving = {};
+
+    for (var i = 0; i < aircraft.length; i++) {
+      var a = aircraft[i];
+      if (!a || a.lat == null || a.lng == null || a.track == null) continue;
+      if (a.altFt != null && a.altFt > maxAltFt) continue;
+      var vRateFpm = a.vRate != null ? a.vRate * 60 : null;
+      if (vRateFpm == null) continue;
+      var isDep = vRateFpm >= climbFpm;
+      var isArr = vRateFpm <= -climbFpm;
+      if (!isDep && !isArr) continue; // level / ground rollout — too ambiguous
+
+      for (var r = 0; r < runwayEntries.length; r++) {
+        var entry = runwayEntries[r];
+        if (!entry || entry.length < 7) continue;
+        var por = pointOnRunway(a.lat, a.lng, entry[0], entry[1], entry[3], entry[4]);
+        if (!por.onRunway) continue;
+        var label = entry[6];
+        if (typeof label !== "string" || label.toUpperCase().indexOf(prefix) !== 0) continue;
+        var parts = label.toUpperCase().substring(prefix.length).split("/");
+        if (parts.length !== 2) continue;
+        var d0 = parts[0].trim();
+        var d1 = parts[1].trim();
+        // Pick the designator matching the aircraft's direction of travel.
+        var h0 = parseInt(d0, 10) * 10;
+        var h1 = parseInt(d1, 10) * 10;
+        var inUse = angleDiffDeg(a.track, h0) <= angleDiffDeg(a.track, h1) ? d0 : d1;
+        if (isDep) departing[inUse] = true;
+        if (isArr) arriving[inUse] = true;
+        break;
+      }
+    }
+
+    var depList = Object.keys(departing);
+    var arrList = Object.keys(arriving);
+    if (!depList.length && !arrList.length) return null;
+    return { departing_runways: depList, arriving_runways: arrList };
+  }
+
   function crossTrackKm(pLat, pLon, aLat, aLon, bLat, bLon) {
     var R = 6371;
     var dAP = haversineKm(aLat, aLon, pLat, pLon);
@@ -806,6 +859,7 @@
     findFlightStartIndex: findFlightStartIndex,
     formatDistanceMiles: formatDistanceMiles,
     formatSpeedMph: formatSpeedMph,
+    deriveActiveRunways: deriveActiveRunways,
     haversineKm: haversineKm,
     interpolatePlaybackPose: interpolatePlaybackPose,
     interpolateTimedPose: interpolateTimedPose,
