@@ -1,0 +1,23 @@
+name: Healthcheck
+
+# Daily live probe of the deployed Worker. Catches silent upstream breakage
+# (e.g. a data provider tightening its User-Agent policy and returning 403,
+# which surfaces as a 502) that unit tests can't see. A persistent failure
+# stays red and emails the repo owner; transient upstream flakes are absorbed
+# by a single retry. Run manually anytime via the "Run workflow" button.
+
+on:
+  schedule:
+    - cron: "37 15 * * *" # 08:37 PT / 15:37 UTC daily
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Probe live Worker endpoints
+        run: node scripts/healthcheck.mjs || (sleep 30 && node scripts/healthcheck.mjs)
