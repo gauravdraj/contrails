@@ -45,7 +45,7 @@
     throw new Error("Contrails core helpers failed to load.");
   }
 
-  const APP_VERSION = "2.19";
+  const APP_VERSION = "2.20";
   const isLocal = location.hostname === "localhost" || location.hostname === "127.0.0.1";
   const isIOSDevice = /iP(ad|hone|od)/.test(navigator.userAgent) ||
     (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
@@ -1258,8 +1258,13 @@
       var host = (data && data.host) || "https://tilecache.rainviewer.com";
       if (!latest || !latest.path) throw new Error("no radar frames");
       if (_weatherLayer && map) map.removeLayer(_weatherLayer);
+      // RainViewer radar is only served natively up to zoom 7; higher zooms
+      // return a "Zoom Level Not Supported" placeholder tile. maxNativeZoom
+      // makes Leaflet upscale the z7 radar across the whole map instead, so the
+      // overlay stays usable at any zoom (coarse global data, so it blurs when
+      // zoomed to street level — that's the source resolution, not a bug).
       _weatherLayer = L.tileLayer(host + latest.path + "/256/{z}/{x}/{y}/4/1_1.png", {
-        pane: "weatherPane", opacity: 0.55, maxZoom: 18, tileSize: 256, crossOrigin: true
+        pane: "weatherPane", opacity: 0.55, maxNativeZoom: 7, maxZoom: 18, tileSize: 256, crossOrigin: true
       });
       if (weatherOn) _weatherLayer.addTo(map);
       _weatherRefreshTs = Date.now();
