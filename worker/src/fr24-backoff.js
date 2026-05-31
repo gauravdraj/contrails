@@ -4,7 +4,7 @@ let backoffDelay = 10000;
 const BACKOFF_CACHE_KEY = new Request('https://fr24-backoff-state/global');
 const SEARCH_CACHE_TTL = 300;
 
-export const FR24_HEADERS = { "User-Agent": "Mozilla/5.0 (compatible; contrails/1.0)" };
+export const FR24_HEADERS = { "User-Agent": "Mozilla/5.0 (compatible; contrails/1.0; +https://gauravdraj.github.io/contrails/)" };
 
 export async function fr24CheckBackoff() {
   if (Date.now() < backoffUntil) return true;

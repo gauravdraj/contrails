@@ -40,7 +40,7 @@ export async function fetchTrace(hex, cache, ctx) {
   for (const base of PROVIDERS) {
     try {
       const resp = await fetch(traceUrl(base, normalized), {
-        headers: { "User-Agent": "contrails/1.0", "Accept-Encoding": "gzip" },
+        headers: { "User-Agent": "contrails/1.0 (+https://gauravdraj.github.io/contrails/)", "Accept-Encoding": "gzip" },
         signal: AbortSignal.timeout(TRACE_TIMEOUT),
       });
       if (!resp.ok) continue;

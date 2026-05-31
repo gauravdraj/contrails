@@ -21,11 +21,11 @@ CORS_HEADERS = {
     "Access-Control-Allow-Headers": "Content-Type",
 }
 PROXY_HEADERS = {
-    "User-Agent": "contrails/1.0",
+    "User-Agent": "contrails/1.0 (+https://gauravdraj.github.io/contrails/)",
     "Content-Type": "application/json",
 }
 FR24_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (compatible; contrails/1.0)",
+    "User-Agent": "Mozilla/5.0 (compatible; contrails/1.0; +https://gauravdraj.github.io/contrails/)",
 }
 SCHEDULE_CACHE = {}
 LOCAL_GEO = {

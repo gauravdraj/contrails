@@ -60,7 +60,7 @@ function proxyOpenSky(path) {
   return new Promise((resolve, reject) => {
     const req = https.get(
       `https://opensky-network.org/api${path}`,
-      { headers: { Authorization: `Basic ${auth}`, "User-Agent": "contrails/1.0" }, timeout: 10000 },
+      { headers: { Authorization: `Basic ${auth}`, "User-Agent": "contrails/1.0 (+https://gauravdraj.github.io/contrails/)" }, timeout: 10000 },
       (res) => {
         let body = "";
         res.on("data", (c) => (body += c));

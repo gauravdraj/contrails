@@ -13,7 +13,7 @@ const MAX_GRID_ENTRIES = 200;
 const KM_PER_NM = 1.852;
 const BACKUP_MAX_RADIUS_NM = 250;
 
-const PROXY_HEADERS = { "User-Agent": "contrails/1.0" };
+const PROXY_HEADERS = { "User-Agent": "contrails/1.0 (+https://gauravdraj.github.io/contrails/)" };
 
 const gridState = new Map();
 

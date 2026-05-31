@@ -1,7 +1,7 @@
 import { json } from "./http.js";
 
 const ADSBDB_API = "https://api.adsbdb.com/v0";
-const ADSBDB_HEADERS = { "User-Agent": "contrails/1.0" };
+const ADSBDB_HEADERS = { "User-Agent": "contrails/1.0 (+https://gauravdraj.github.io/contrails/)" };
 
 export function normalizeCallsign(callsign) {
   if (!callsign) return null;

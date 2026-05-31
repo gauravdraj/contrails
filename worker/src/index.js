@@ -17,8 +17,10 @@ const FR24_CACHE_TTL = 300;
 const PHOTO_CACHE_TTL = 86400;
 const ADSBDB_CACHE_TTL = 3600;
 
+const CONTACT_USER_AGENT = "contrails/1.0 (+https://gauravdraj.github.io/contrails/)";
+
 const JSON_PROXY_HEADERS = {
-  "User-Agent": "contrails/1.0",
+  "User-Agent": CONTACT_USER_AGENT,
   "Content-Type": "application/json",
 };
 
@@ -150,7 +152,7 @@ async function handlePhoto(url, ctx) {
 
   try {
     const resp = await fetch(`${PLANESPOTTERS_API}/hex/${hex}`, {
-      headers: { "User-Agent": "contrails/1.0" },
+      headers: { "User-Agent": CONTACT_USER_AGENT },
     });
     if (!resp.ok) throw new Error("HTTP " + resp.status);
 

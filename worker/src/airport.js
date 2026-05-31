@@ -161,7 +161,7 @@ export function resolveAirport(iata) {
 export async function fetchAirportAircraft(lat, lng) {
   const resp = await fetch(
     `${ADSB_API}/lat/${lat.toFixed(4)}/lon/${lng.toFixed(4)}/dist/${AIRPORT_RADIUS_NM}`,
-    { headers: { "User-Agent": "contrails/1.0" } },
+    { headers: { "User-Agent": "contrails/1.0 (+https://gauravdraj.github.io/contrails/)" } },
   );
   if (!resp.ok) throw new Error("HTTP " + resp.status);
   return resp.json();
