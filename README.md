@@ -89,6 +89,16 @@ node --test worker/src/*.test.js
 node smoke-boot.mjs
 ```
 
+To probe the live deployed Worker and catch silent upstream breakage (for
+example a data provider rejecting the request User-Agent), run the health check.
+It hits every Worker endpoint with a real aircraft and exits non-zero if any
+required check fails, so it can drive CI, a cron job, or a watcher:
+
+```bash
+node scripts/healthcheck.mjs                 # checks the live worker
+node scripts/healthcheck.mjs <worker-url>    # checks a custom deployment
+```
+
 Manual iPhone checks:
 
 - Compare the normal Safari tab against the Home Screen launch.
@@ -173,6 +183,7 @@ Once running, set `OPENSKY_PROXY` in `app.js` to your proxy's URL. The proxy han
 | `contrails-core.js` | Shared pure helpers (geometry, policy, airlines, escaping) used by the app and tests |
 | `contrails-core.test.js` | Unit tests for shared helper logic |
 | `smoke-boot.mjs` | Local smoke check for page boot with fixed coordinates |
+| `scripts/healthcheck.mjs` | Live Worker endpoint health check (catches silent upstream breakage) |
 | `server.py` | Local dev server with ADS-B, route, and schedule proxying |
 | `airports.json` | Airport positions (IATA, lat, lng, name) |
 | `runways.json` | Runway endpoints for overlay lines |
