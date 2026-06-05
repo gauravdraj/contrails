@@ -1030,6 +1030,45 @@ test("classifyGroundDepartureStatus: low-speed track is not trusted for directio
   }), "Holding");
 });
 
+test("classifyGroundDepartureStatus: taxiing along an inactive/other runway is not Departing", () => {
+  // On a runway, aligned to its centerline, but it isn't the active departure
+  // runway -> back-taxi/transit on an inactive runway, not a takeoff roll.
+  assert.equal(core.classifyGroundDepartureStatus({
+    speedKts: 22, track: 10, onActiveDepRunway: false, onAnyRunway: true,
+    anyRunwayBearing: 10, haveActiveDep: true
+  }), "Taxiing");
+});
+
+test("classifyGroundDepartureStatus: crossing an inactive runway perpendicular is Taxiing", () => {
+  assert.equal(core.classifyGroundDepartureStatus({
+    speedKts: 16, track: 100, onActiveDepRunway: false, onAnyRunway: true,
+    anyRunwayBearing: 10, haveActiveDep: true
+  }), "Taxiing");
+});
+
+test("classifyGroundDepartureStatus: fast aligned roll on an undetected 2nd active runway is Departing", () => {
+  // Safety valve: a confirmed fast, centerline-aligned roll on a parallel we didn't
+  // flag active this tick should still count as a departure.
+  assert.equal(core.classifyGroundDepartureStatus({
+    speedKts: 90, track: 11, onActiveDepRunway: false, onAnyRunway: true,
+    anyRunwayBearing: 10, haveActiveDep: true
+  }), "Departing");
+});
+
+test("classifyGroundDepartureStatus: with no active signal, crossing a runway is still Taxiing", () => {
+  assert.equal(core.classifyGroundDepartureStatus({
+    speedKts: 18, track: 100, onActiveDepRunway: false, onAnyRunway: true,
+    anyRunwayBearing: 10, haveActiveDep: false
+  }), "Taxiing");
+});
+
+test("classifyGroundDepartureStatus: with no active signal, aligned on a runway is Departing", () => {
+  assert.equal(core.classifyGroundDepartureStatus({
+    speedKts: 18, track: 12, onActiveDepRunway: false, onAnyRunway: true,
+    anyRunwayBearing: 10, haveActiveDep: false
+  }), "Departing");
+});
+
 test("classifyGroundDepartureStatus: preserves prior behavior when direction is unknown", () => {
   assert.equal(core.classifyGroundDepartureStatus({
     speedKts: 60, onAnyRunway: false

@@ -734,28 +734,69 @@
 
   function classifyGroundDepartureStatus(input) {
     // Decide the ground phase of an on-airport aircraft, taking its direction of
-    // travel into account. A plane physically over the active departure runway but
-    // tracking opposite (or across) the takeoff direction is back-taxiing to the
-    // start of the runway (or rolling out after a landing on the reciprocal end),
-    // NOT beginning a takeoff roll. Such aircraft must not be labelled "Departing"
-    // / next departure. Returns "Departing" | "Holding" | "Taxiing" | "Parked".
+    // travel and which runway it is on into account. Two ways an on-runway aircraft
+    // is NOT actually starting a takeoff roll:
+    //   1. It is on the active departure runway but tracking opposite (or across)
+    //      the takeoff direction — back-taxiing to the start to line up, or rolling
+    //      out from a landing on the reciprocal end.
+    //   2. It is on a DIFFERENT runway than the one(s) departures are using
+    //      (an inactive/closed runway, or just crossing one) — taxiing, not
+    //      departing.
+    // Such aircraft must not be labelled "Departing" / next departure.
+    // Returns "Departing" | "Holding" | "Taxiing" | "Parked".
     input = input || {};
     var speedKts = isFinite(input.speedKts) ? input.speedKts : 0;
+    var track = input.track;
     var onActiveDepRunway = !!input.onActiveDepRunway;
     var onAnyRunway = !!input.onAnyRunway;
+    var haveActiveDep = !!input.haveActiveDep;
     var minTrackSpeedKts = input.minTrackSpeedKts == null ? 5 : input.minTrackSpeedKts;
-    var alignToleranceDeg = input.alignToleranceDeg == null ? 60 : input.alignToleranceDeg;
-    // ADS-B track is unreliable at very low groundspeed, so only trust the
-    // direction signal once the aircraft is actually moving.
-    var directionTrustworthy = speedKts >= minTrackSpeedKts &&
-      input.track != null && input.depRunwayBearing != null;
-    var opposedToDeparture = onActiveDepRunway && directionTrustworthy &&
-      angleDiffDeg(input.track, input.depRunwayBearing) > alignToleranceDeg;
+    var tol = input.alignToleranceDeg == null ? 60 : input.alignToleranceDeg;
+    // ADS-B track is unreliable at very low groundspeed, so only trust direction
+    // once the aircraft is actually moving.
+    var moving = speedKts >= minTrackSpeedKts && track != null;
+    var fast = speedKts >= 50;
 
-    if (opposedToDeparture) return "Taxiing";
-    if (speedKts >= 50) return "Departing";
-    if (onAnyRunway && speedKts < 5) return "Holding";
-    if (onAnyRunway) return "Departing";
+    function depAligned() {
+      // Tracking roughly in the active takeoff direction.
+      return input.depRunwayBearing != null && track != null &&
+        angleDiffDeg(track, input.depRunwayBearing) <= tol;
+    }
+    function axisAligned(bearing) {
+      // Tracking roughly along the runway centerline (either direction) — i.e. NOT
+      // crossing it. Direction-agnostic since an inactive runway has no "in use" end.
+      if (bearing == null || track == null) return false;
+      var along = angleDiffDeg(track, bearing);
+      var reciprocal = angleDiffDeg(track, (bearing + 180) % 360);
+      return Math.min(along, reciprocal) <= tol;
+    }
+
+    if (onActiveDepRunway) {
+      if (moving && !depAligned()) return "Taxiing"; // opposite / crossing the active runway
+      if (fast) return "Departing";
+      if (speedKts < 5) return "Holding"; // lined up, waiting for clearance
+      return "Departing"; // rolling in the takeoff direction
+    }
+
+    if (onAnyRunway) {
+      if (haveActiveDep) {
+        // Departures are happening on the active runway, and this is not it. Only
+        // accept a confirmed fast, centerline-aligned takeoff roll (covers a second
+        // active runway we didn't detect this tick). Everything else — crossing,
+        // taxiing along a closed/inactive runway, sitting — is taxiing.
+        if (fast && (track == null || axisAligned(input.anyRunwayBearing))) return "Departing";
+        return "Taxiing";
+      }
+      // No active-runway signal at all: fall back to geometry, but still reject
+      // aircraft crossing the runway perpendicular.
+      if (moving && input.anyRunwayBearing != null && !axisAligned(input.anyRunwayBearing)) return "Taxiing";
+      if (speedKts < 5) return "Holding";
+      return "Departing";
+    }
+
+    // Not on any detected runway. A fast ground roll is almost certainly a takeoff
+    // whose runway geometry we missed; anything slower is taxiing/parked.
+    if (fast) return "Departing";
     if (speedKts >= 5) return "Taxiing";
     return "Parked";
   }

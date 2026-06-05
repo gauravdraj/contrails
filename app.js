@@ -47,7 +47,7 @@
     throw new Error("Contrails core helpers failed to load.");
   }
 
-  const APP_VERSION = "2.22";
+  const APP_VERSION = "2.23";
   const isLocal = location.hostname === "localhost" || location.hostname === "127.0.0.1";
   const isIOSDevice = /iP(ad|hone|od)/.test(navigator.userAgent) ||
     (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
@@ -4601,20 +4601,29 @@
         for (var t = 0; t < activeDepThresholds.length; t++) {
           var th = activeDepThresholds[t];
           var por = pointOnRunway(a.lat, a.lng, th.thresholdLat, th.thresholdLon, th.farEndLat, th.farEndLon);
-          if (por.onRunway) return { on: true, distFromThresholdKm: por.distFromThresholdKm };
+          if (por.onRunway) {
+            return {
+              on: true,
+              distFromThresholdKm: por.distFromThresholdKm,
+              bearing: bearingDegrees(th.thresholdLat, th.thresholdLon, th.farEndLat, th.farEndLon)
+            };
+          }
         }
       }
       var rwys = runwayData && runwayData[airportIata];
       if (rwys) {
         for (var r = 0; r < rwys.length; r++) {
           var rw = rwys[r];
+          // Runway centerline axis; direction-agnostic, used to tell along-runway
+          // motion (possible departure) from crossing it (taxiing).
+          var axis = bearingDegrees(rw[0], rw[1], rw[3], rw[4]);
           var porA = pointOnRunway(a.lat, a.lng, rw[0], rw[1], rw[3], rw[4]);
-          if (porA.onRunway) return { on: true, distFromThresholdKm: porA.distFromThresholdKm };
+          if (porA.onRunway) return { on: true, distFromThresholdKm: porA.distFromThresholdKm, bearing: axis };
           var porB = pointOnRunway(a.lat, a.lng, rw[3], rw[4], rw[0], rw[1]);
-          if (porB.onRunway) return { on: true, distFromThresholdKm: porB.distFromThresholdKm };
+          if (porB.onRunway) return { on: true, distFromThresholdKm: porB.distFromThresholdKm, bearing: axis };
         }
       }
-      return { on: false, distFromThresholdKm: null };
+      return { on: false, distFromThresholdKm: null, bearing: null };
     }
     function nearestDepThresholdKm(a) {
       if (activeDepThresholds.length > 0) {
@@ -4716,15 +4725,17 @@
         var groundRunwayKm = depRwyGround.on
           ? depRwyGround.distFromThresholdKm
           : (anyRwy.on ? anyRwy.distFromThresholdKm : nearestDepThresholdKm(a));
-        // Direction-aware: a plane over the active departure runway tracking opposite
-        // the takeoff direction is taxiing alongside/back to the start (or rolling out
-        // from a reciprocal landing), not beginning a takeoff roll.
+        // Direction- and runway-aware: a plane tracking opposite/across the active
+        // departure runway, or sitting on a different (inactive/closed) runway or
+        // crossing one, is taxiing — not beginning a takeoff roll.
         var groundStatus = classifyGroundDepartureStatus({
           speedKts: spdKts,
           track: a.track,
           onActiveDepRunway: depRwyGround.on,
           onAnyRunway: anyRwy.on,
-          depRunwayBearing: depRwyGround.bearing
+          depRunwayBearing: depRwyGround.bearing,
+          anyRunwayBearing: anyRwy.bearing,
+          haveActiveDep: activeDepThresholds.length > 0
         });
         departures.push({
           hex: a.icao24,
