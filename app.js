@@ -47,7 +47,7 @@
     throw new Error("Contrails core helpers failed to load.");
   }
 
-  const APP_VERSION = "2.25";
+  const APP_VERSION = "2.26";
   const isLocal = location.hostname === "localhost" || location.hostname === "127.0.0.1";
   const isIOSDevice = /iP(ad|hone|od)/.test(navigator.userAgent) ||
     (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
@@ -4291,7 +4291,7 @@
       }
       return true;
     }
-    var schedRow = t.closest(".sched-row");
+    var schedRow = t.closest(".sched-row, .sched-next-clickable");
     if (schedRow) {
       event.preventDefault();
       event.stopPropagation();
@@ -4541,7 +4541,13 @@
     }
     var routeText = routeParts.length ? routeParts.join(" \u00b7 ") : "";
 
-    return '<div class="' + summaryClass + '">' +
+    // Make the highlighted next-flight summary tappable, matching the rows below.
+    var nextAttrs = ' data-callsign="' + escapeHtml(next.callsign || "") +
+      '" data-hex="' + escapeHtml(next.hex || "") +
+      '" data-lat="' + (next.lat != null ? String(next.lat) : "") +
+      '" data-lng="' + (next.lng != null ? String(next.lng) : "") + '"';
+
+    return '<div class="' + summaryClass + ' sched-next-clickable" role="button" tabindex="0"' + nextAttrs + '>' +
       '<div class="sched-next-kicker">' + escapeHtml(title) + '</div>' +
       '<div class="sched-next-main">' +
         '<span class="sched-next-flight">' + flightNum + '</span>' +
