@@ -47,7 +47,7 @@
     throw new Error("Contrails core helpers failed to load.");
   }
 
-  const APP_VERSION = "2.26";
+  const APP_VERSION = "2.27";
   const isLocal = location.hostname === "localhost" || location.hostname === "127.0.0.1";
   const isIOSDevice = /iP(ad|hone|od)/.test(navigator.userAgent) ||
     (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);

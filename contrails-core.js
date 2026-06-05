@@ -809,7 +809,10 @@
     var runwayDistKm = row.runwayDistKm;
     var activeRunway = !!row.activeRunway;
     var onRunway = activeRunway || !!row.onRunway;
-    var nearRunway = runwayDistKm != null && runwayDistKm <= (options.activeRunways ? 1.5 : 1);
+    // "Near runway" must mean genuinely at the threshold/hold area. The old 1.5 km
+    // band tagged planes abeam the middle of a long runway (e.g. SFO 28L is 3.3 km)
+    // as "near runway" while they still had a km+ taxi to the departure end.
+    var nearRunway = runwayDistKm != null && runwayDistKm <= (options.activeRunways ? 0.7 : 1);
     var routeOrigin = !!row.originMatch;
     var confidence = "low";
     var label = status;
