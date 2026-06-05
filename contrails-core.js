@@ -732,6 +732,34 @@
     return statusOrd[status] != null ? statusOrd[status] : 3;
   }
 
+  function classifyGroundDepartureStatus(input) {
+    // Decide the ground phase of an on-airport aircraft, taking its direction of
+    // travel into account. A plane physically over the active departure runway but
+    // tracking opposite (or across) the takeoff direction is back-taxiing to the
+    // start of the runway (or rolling out after a landing on the reciprocal end),
+    // NOT beginning a takeoff roll. Such aircraft must not be labelled "Departing"
+    // / next departure. Returns "Departing" | "Holding" | "Taxiing" | "Parked".
+    input = input || {};
+    var speedKts = isFinite(input.speedKts) ? input.speedKts : 0;
+    var onActiveDepRunway = !!input.onActiveDepRunway;
+    var onAnyRunway = !!input.onAnyRunway;
+    var minTrackSpeedKts = input.minTrackSpeedKts == null ? 5 : input.minTrackSpeedKts;
+    var alignToleranceDeg = input.alignToleranceDeg == null ? 60 : input.alignToleranceDeg;
+    // ADS-B track is unreliable at very low groundspeed, so only trust the
+    // direction signal once the aircraft is actually moving.
+    var directionTrustworthy = speedKts >= minTrackSpeedKts &&
+      input.track != null && input.depRunwayBearing != null;
+    var opposedToDeparture = onActiveDepRunway && directionTrustworthy &&
+      angleDiffDeg(input.track, input.depRunwayBearing) > alignToleranceDeg;
+
+    if (opposedToDeparture) return "Taxiing";
+    if (speedKts >= 50) return "Departing";
+    if (onAnyRunway && speedKts < 5) return "Holding";
+    if (onAnyRunway) return "Departing";
+    if (speedKts >= 5) return "Taxiing";
+    return "Parked";
+  }
+
   function describeAirportDepartureStatus(row, options) {
     options = options || {};
     row = row || {};
@@ -888,6 +916,7 @@
     computePlaybackDelayMs: computePlaybackDelayMs,
     compareAirportArrivalEntries: compareAirportArrivalEntries,
     compareAirportDepartureEntries: compareAirportDepartureEntries,
+    classifyGroundDepartureStatus: classifyGroundDepartureStatus,
     describeAirportDepartureStatus: describeAirportDepartureStatus,
     buildViewPolicy: buildViewPolicy,
     buildViewportFetchSpec: buildViewportFetchSpec,

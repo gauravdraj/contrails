@@ -26,6 +26,7 @@
   const sortAirportArrivalRows = core.sortAirportArrivalRows;
   const sortAirportDepartureRows = core.sortAirportDepartureRows;
   const describeAirportDepartureStatus = core.describeAirportDepartureStatus;
+  const classifyGroundDepartureStatus = core.classifyGroundDepartureStatus;
   const slantKm = core.slantKm;
   const elevationDeg = core.elevationDeg;
   const findFlightStartIndex = core.findFlightStartIndex;
@@ -40,12 +41,13 @@
       !getAirportNextRow || !haversineKm || !interpolatePlaybackPose || !interpolateTimedPose || !isLikelyPrivateCallsign ||
       !normalizeAircraftHex || !normalizeFlightQuery || !normalizeSearchText || !parseCoordinate || !projectLatLng ||
       !scoreArrivalCandidate || !sortAirportArrivalRows || !sortAirportDepartureRows || !describeAirportDepartureStatus ||
+      !classifyGroundDepartureStatus ||
       !findFlightStartIndex || !matchRunwayDesignator || !deriveActiveRunways || !greatCirclePoints || !pointOnRunway ||
       !roundTenths || !slantKm || !elevationDeg || !SQUAWK_ALERT) {
     throw new Error("Contrails core helpers failed to load.");
   }
 
-  const APP_VERSION = "2.21";
+  const APP_VERSION = "2.22";
   const isLocal = location.hostname === "localhost" || location.hostname === "127.0.0.1";
   const isIOSDevice = /iP(ad|hone|od)/.test(navigator.userAgent) ||
     (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
@@ -4572,10 +4574,17 @@
         for (var t = 0; t < activeDepThresholds.length; t++) {
           var th = activeDepThresholds[t];
           var por = pointOnRunway(a.lat, a.lng, th.thresholdLat, th.thresholdLon, th.farEndLat, th.farEndLon);
-          if (por.onRunway) return { on: true, distFromThresholdKm: por.distFromThresholdKm };
+          if (por.onRunway) {
+            return {
+              on: true,
+              distFromThresholdKm: por.distFromThresholdKm,
+              // Bearing the aircraft would track during a takeoff roll on this end.
+              bearing: bearingDegrees(th.thresholdLat, th.thresholdLon, th.farEndLat, th.farEndLon)
+            };
+          }
         }
       }
-      return { on: false, distFromThresholdKm: null };
+      return { on: false, distFromThresholdKm: null, bearing: null };
     }
     function matchArrRunway(a) {
       if (activeArrThresholds.length > 0) {
@@ -4707,20 +4716,16 @@
         var groundRunwayKm = depRwyGround.on
           ? depRwyGround.distFromThresholdKm
           : (anyRwy.on ? anyRwy.distFromThresholdKm : nearestDepThresholdKm(a));
-        var groundStatus;
-        if (spdKts >= 50) {
-          groundStatus = "Departing";
-        } else if (anyRwy.on && spdKts < 5) {
-          // Stopped on a runway — almost certainly holding in position for takeoff clearance.
-          groundStatus = "Holding";
-        } else if (anyRwy.on) {
-          // Rolling on a runway — treat as departing even below 50 kt.
-          groundStatus = "Departing";
-        } else if (spdKts >= 5) {
-          groundStatus = "Taxiing";
-        } else {
-          groundStatus = "Parked";
-        }
+        // Direction-aware: a plane over the active departure runway tracking opposite
+        // the takeoff direction is taxiing alongside/back to the start (or rolling out
+        // from a reciprocal landing), not beginning a takeoff roll.
+        var groundStatus = classifyGroundDepartureStatus({
+          speedKts: spdKts,
+          track: a.track,
+          onActiveDepRunway: depRwyGround.on,
+          onAnyRunway: anyRwy.on,
+          depRunwayBearing: depRwyGround.bearing
+        });
         departures.push({
           hex: a.icao24,
           callsign: a.callsign,

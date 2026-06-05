@@ -993,6 +993,58 @@ test("airport departure status helper explains signal confidence without ETA", (
   });
 });
 
+// --- classifyGroundDepartureStatus ---
+
+test("classifyGroundDepartureStatus: on active runway tracking takeoff direction is Departing", () => {
+  assert.equal(core.classifyGroundDepartureStatus({
+    speedKts: 25, track: 280, onActiveDepRunway: true, onAnyRunway: true, depRunwayBearing: 281
+  }), "Departing");
+});
+
+test("classifyGroundDepartureStatus: on active runway tracking opposite is back-taxi -> Taxiing", () => {
+  // Plane parallel to the runway but moving the reciprocal direction = taxiing to the
+  // start to line up. Must NOT be labelled Departing/next departure.
+  assert.equal(core.classifyGroundDepartureStatus({
+    speedKts: 22, track: 100, onActiveDepRunway: true, onAnyRunway: true, depRunwayBearing: 281
+  }), "Taxiing");
+});
+
+test("classifyGroundDepartureStatus: crossing the active runway perpendicular is Taxiing", () => {
+  assert.equal(core.classifyGroundDepartureStatus({
+    speedKts: 18, track: 190, onActiveDepRunway: true, onAnyRunway: true, depRunwayBearing: 281
+  }), "Taxiing");
+});
+
+test("classifyGroundDepartureStatus: fast roll opposite the active runway is not Departing", () => {
+  // e.g. a high-speed rollout from a reciprocal landing should not be a departure.
+  assert.equal(core.classifyGroundDepartureStatus({
+    speedKts: 70, track: 101, onActiveDepRunway: true, onAnyRunway: true, depRunwayBearing: 281
+  }), "Taxiing");
+});
+
+test("classifyGroundDepartureStatus: low-speed track is not trusted for direction", () => {
+  // Below the movement threshold ADS-B track is noise, so don't downgrade a
+  // lined-up aircraft holding in position.
+  assert.equal(core.classifyGroundDepartureStatus({
+    speedKts: 2, track: 100, onActiveDepRunway: true, onAnyRunway: true, depRunwayBearing: 281
+  }), "Holding");
+});
+
+test("classifyGroundDepartureStatus: preserves prior behavior when direction is unknown", () => {
+  assert.equal(core.classifyGroundDepartureStatus({
+    speedKts: 60, onAnyRunway: false
+  }), "Departing");
+  assert.equal(core.classifyGroundDepartureStatus({
+    speedKts: 20, onAnyRunway: true, onActiveDepRunway: false
+  }), "Departing");
+  assert.equal(core.classifyGroundDepartureStatus({
+    speedKts: 12, onAnyRunway: false
+  }), "Taxiing");
+  assert.equal(core.classifyGroundDepartureStatus({
+    speedKts: 1, onAnyRunway: false
+  }), "Parked");
+});
+
 // --- deriveActiveRunways ---
 
 function onRunwayAircraft(designator, overrides) {
