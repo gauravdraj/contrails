@@ -47,7 +47,7 @@
     throw new Error("Contrails core helpers failed to load.");
   }
 
-  const APP_VERSION = "2.23";
+  const APP_VERSION = "2.24";
   const isLocal = location.hostname === "localhost" || location.hostname === "127.0.0.1";
   const isIOSDevice = /iP(ad|hone|od)/.test(navigator.userAgent) ||
     (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
@@ -4255,6 +4255,10 @@
   var _airportRestoreFocusOnClose = true;
   var AIRPORT_PANEL_DOCKED_QUERY = "(max-width: 759px)";
   var AIRPORT_POPUP_FETCH_KM = 120;
+  // Outer radius (km) for the departures dashboard: once a climbing aircraft is
+  // farther than this from the airport it has left the perimeter / immediate
+  // climbout and is just an en-route flight, so it drops off the board.
+  var DEPARTURE_PERIMETER_KM = 6;
   var AIRPORT_POPUP_REFRESH_MS = 5000;
   var AIRPORT_POPUP_CACHE_TTL = 2 * 60 * 1000;
 
@@ -4683,11 +4687,11 @@
             depRunwayKm = depRwy.distFromThresholdKm;
             depStatus = a.altFt != null && a.altFt > 500 ? "Climbing" : "Departing";
           }
-        } else if (originHere && distKm <= 15 && lowAlt && climbing) {
+        } else if (originHere && distKm <= DEPARTURE_PERIMETER_KM && lowAlt && climbing) {
           shouldShow = true;
           depRunwayKm = nearestDepThresholdKm(a);
           depStatus = "Climbing";
-        } else if (distKm <= 8 && lowAlt && climbing && outboundTrack) {
+        } else if (distKm <= DEPARTURE_PERIMETER_KM && lowAlt && climbing && outboundTrack) {
           // No route info yet but geometry is strong: close, low, climbing, heading outbound.
           shouldShow = true;
           depRunwayKm = nearestDepThresholdKm(a);
