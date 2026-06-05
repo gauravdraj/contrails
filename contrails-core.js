@@ -934,13 +934,17 @@
     options = options || {};
     var aSignal = describeAirportDepartureStatus(a, options);
     var bSignal = describeAirportDepartureStatus(b, options);
-    if (aSignal.sortOrder !== bSignal.sortOrder) return aSignal.sortOrder - bSignal.sortOrder;
 
-    // Taxiing/Parked aircraft aren't rolling yet, so imminence is proximity to the
-    // runway start (threshold), NOT speed (taxi pace says nothing about who departs
-    // next). Sort these purely by distance-to-threshold, with route/airport-distance
-    // only as tiebreakers.
-    if (aSignal.sortOrder >= 3) {
+    // Taxiing AND Parked are both "staged on the ground, not yet rolling." Among
+    // these, imminence is proximity to the runway start (threshold), NOT whether
+    // the plane happens to be creeping (Taxiing) or momentarily stopped (Parked):
+    // a plane stopped at/near the threshold is more imminent than one taxiing in
+    // from a far ramp. So rank the whole staged group by distance-to-threshold,
+    // crossing the Taxiing/Parked boundary, with route/airport-distance only as
+    // tiebreakers. Departing/Climbing/Holding stay above this group.
+    var aStaged = aSignal.sortOrder >= 3;
+    var bStaged = bSignal.sortOrder >= 3;
+    if (aStaged && bStaged) {
       var aRwyDist = a && a.runwayDistKm != null ? a.runwayDistKm : Infinity;
       var bRwyDist = b && b.runwayDistKm != null ? b.runwayDistKm : Infinity;
       if (aRwyDist !== bRwyDist) return aRwyDist - bRwyDist;
@@ -950,6 +954,8 @@
       if (tpDistA !== tpDistB) return tpDistA - tpDistB;
       return ((a && a.callsign) || "").localeCompare((b && b.callsign) || "");
     }
+
+    if (aSignal.sortOrder !== bSignal.sortOrder) return aSignal.sortOrder - bSignal.sortOrder;
 
     var aRunwayPref = runwayPreferenceOrder(a, aSignal, options);
     var bRunwayPref = runwayPreferenceOrder(b, bSignal, options);

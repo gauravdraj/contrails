@@ -911,7 +911,20 @@ test("airport departure rows: climbing origin match beats parked aircraft near r
     }
   ], { activeRunways: false });
 
-  assert.deepEqual(callsigns(rows), ["CLIMB1", "TAXI1", "PARK1"]);
+  // Climbing (origin-matched) still tops the staged ground group; within that
+  // group the closer-to-threshold Parked plane (0.1) now beats the farther
+  // Taxiing one (0.2) -- staged Taxiing/Parked rank together by distance.
+  assert.deepEqual(callsigns(rows), ["CLIMB1", "PARK1", "TAXI1"]);
+});
+
+test("airport departure rows: closer parked beats farther taxiing", () => {
+  // A plane parked/stopped near the runway start is more imminent than one
+  // taxiing in from a far ramp -- distance-to-threshold crosses Taxiing/Parked.
+  var rows = core.sortAirportDepartureRows([
+    { callsign: "TAXFAR", status: "Taxiing", runwayDistKm: 1.4, speedKts: 15, distKm: 1.6 },
+    { callsign: "PARKNEAR", status: "Parked", runwayDistKm: 0.3, speedKts: 0, distKm: 0.4 }
+  ], { activeRunways: true });
+  assert.deepEqual(callsigns(rows), ["PARKNEAR", "TAXFAR"]);
 });
 
 test("airport departure rows: taxiing/parked sort by distance-to-threshold, not speed", () => {
