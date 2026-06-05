@@ -914,6 +914,22 @@ test("airport departure rows: climbing origin match beats parked aircraft near r
   assert.deepEqual(callsigns(rows), ["CLIMB1", "TAXI1", "PARK1"]);
 });
 
+test("airport departure rows: taxiing/parked sort by distance-to-threshold, not speed", () => {
+  // Closer-to-threshold but slower must beat farther-but-faster.
+  var rows = core.sortAirportDepartureRows([
+    { callsign: "TAXFAR", status: "Taxiing", runwayDistKm: 1.0, speedKts: 40, distKm: 1.1 },
+    { callsign: "TAXNEAR", status: "Taxiing", runwayDistKm: 0.3, speedKts: 5, distKm: 0.5 }
+  ], { activeRunways: true });
+  assert.deepEqual(callsigns(rows), ["TAXNEAR", "TAXFAR"]);
+
+  // On equal distance-to-threshold, speed is ignored (falls to airport distance).
+  var tied = core.sortAirportDepartureRows([
+    { callsign: "BBB", status: "Taxiing", runwayDistKm: 0.5, speedKts: 30, distKm: 0.9 },
+    { callsign: "AAA", status: "Taxiing", runwayDistKm: 0.5, speedKts: 5, distKm: 0.5 }
+  ], { activeRunways: true });
+  assert.deepEqual(callsigns(tied), ["AAA", "BBB"]);
+});
+
 test("airport panel list rows omit the highlighted next row (arrivals and departures)", () => {
   var arrLive = { arrivals: [{ callsign: "UAL100" }, { callsign: "DAL200" }] };
   assert.equal(core.getAirportNextRow(arrLive, "arrivals").callsign, "UAL100");

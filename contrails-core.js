@@ -870,6 +870,21 @@
     var bSignal = describeAirportDepartureStatus(b, options);
     if (aSignal.sortOrder !== bSignal.sortOrder) return aSignal.sortOrder - bSignal.sortOrder;
 
+    // Taxiing/Parked aircraft aren't rolling yet, so imminence is proximity to the
+    // runway start (threshold), NOT speed (taxi pace says nothing about who departs
+    // next). Sort these purely by distance-to-threshold, with route/airport-distance
+    // only as tiebreakers.
+    if (aSignal.sortOrder >= 3) {
+      var aRwyDist = a && a.runwayDistKm != null ? a.runwayDistKm : Infinity;
+      var bRwyDist = b && b.runwayDistKm != null ? b.runwayDistKm : Infinity;
+      if (aRwyDist !== bRwyDist) return aRwyDist - bRwyDist;
+      if (!!(a && a.originMatch) !== !!(b && b.originMatch)) return a && a.originMatch ? -1 : 1;
+      var tpDistA = a && a.distKm != null ? a.distKm : Infinity;
+      var tpDistB = b && b.distKm != null ? b.distKm : Infinity;
+      if (tpDistA !== tpDistB) return tpDistA - tpDistB;
+      return ((a && a.callsign) || "").localeCompare((b && b.callsign) || "");
+    }
+
     var aRunwayPref = runwayPreferenceOrder(a, aSignal, options);
     var bRunwayPref = runwayPreferenceOrder(b, bSignal, options);
     if (aRunwayPref !== bRunwayPref) return aRunwayPref - bRunwayPref;
