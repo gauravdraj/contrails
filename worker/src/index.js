@@ -12,10 +12,12 @@ const ADSB_API = "https://api.adsb.lol/v2";
 const ADSB_ROUTE_API = "https://api.adsb.lol/api/0";
 const PLANESPOTTERS_API = "https://api.planespotters.net/pub/photos";
 const FR24_API = "https://api.flightradar24.com/common/v1";
+const DATIS_API = "https://atis.info/api";
 
 const FR24_CACHE_TTL = 300;
 const PHOTO_CACHE_TTL = 86400;
 const ADSBDB_CACHE_TTL = 3600;
+const DATIS_CACHE_TTL = 60;
 
 const CONTACT_USER_AGENT = "contrails/1.0 (+https://gauravdraj.github.io/contrails/)";
 
@@ -39,6 +41,7 @@ export default {
     if (url.pathname === "/routeset") return handleRouteset(request, env, ctx);
     if (url.pathname.startsWith("/track/")) return handleTrack(url, env, ctx);
     if (url.pathname === "/geo") return handleGeo(request);
+    if (url.pathname.startsWith("/datis/")) return handleDatis(url, ctx);
     if (url.pathname.startsWith("/schedule/")) return handleSchedule(url, ctx);
     if (url.pathname.startsWith("/fr24search/")) return handleFr24Search(url, ctx);
     if (url.pathname === "/nearby") return handleNearby(url, env, ctx);
@@ -185,6 +188,47 @@ async function handleTrack(url, env, ctx) {
   const track = await fetchTrace(hex, cache, ctx);
   if (!track?.path) return json(200, null);
   return json(200, track.path);
+}
+
+function normalizeDatisAirportCode(code) {
+  const raw = String(code || "").trim().toUpperCase();
+  if (/^[A-Z]{3}$/.test(raw)) return "K" + raw;
+  if (/^[A-Z]{4}$/.test(raw)) return raw;
+  return null;
+}
+
+async function handleDatis(url, ctx) {
+  const code = normalizeDatisAirportCode(url.pathname.split("/").pop());
+  if (!code) return json(400, { error: "Invalid airport code" });
+
+  const cache = caches.default;
+  const cacheKey = new Request("https://datis-cache/" + code);
+  const cached = await cache.match(cacheKey);
+  if (cached) return cached;
+
+  try {
+    const resp = await fetch(`${DATIS_API}/${encodeURIComponent(code)}`, {
+      headers: { "User-Agent": CONTACT_USER_AGENT },
+    });
+    if (!resp.ok) throw new Error("D-ATIS HTTP " + resp.status);
+    const data = await resp.json();
+    const row = Array.isArray(data) ? data[0] : data;
+    const body = {
+      airport: code,
+      type: row?.type || null,
+      code: row?.code || null,
+      datis: row?.datis || "",
+      time: row?.time || null,
+      updatedAt: row?.updatedAt || null,
+      source: "datis",
+    };
+    const response = json(200, body);
+    response.headers.set("Cache-Control", `s-maxage=${DATIS_CACHE_TTL}`);
+    ctx.waitUntil(cache.put(cacheKey, response.clone()));
+    return response;
+  } catch (error) {
+    return json(502, { error: error.message });
+  }
 }
 
 async function handleRouteset(request, env, ctx) {

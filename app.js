@@ -20,6 +20,7 @@
   const normalizeFlightQuery = core.normalizeFlightQuery;
   const normalizeSearchText = core.normalizeSearchText;
   const parseCoordinate = core.parseCoordinate;
+  const parseDatisActiveRunways = core.parseDatisActiveRunways;
   const projectLatLng = core.projectLatLng;
   const roundTenths = core.roundTenths;
   const scoreArrivalCandidate = core.scoreArrivalCandidate;
@@ -39,7 +40,7 @@
   if (!airlineName || !angleDiffDeg || !bearingDegrees || !buildViewPolicy || !buildViewportFetchSpec || !cardinalDir ||
       !callsignVariants || !computePlaybackDelayMs || !escapeHtml || !formatDistanceMiles || !formatSpeedMph ||
       !getAirportNextRow || !haversineKm || !interpolatePlaybackPose || !interpolateTimedPose || !isLikelyPrivateCallsign ||
-      !normalizeAircraftHex || !normalizeFlightQuery || !normalizeSearchText || !parseCoordinate || !projectLatLng ||
+      !normalizeAircraftHex || !normalizeFlightQuery || !normalizeSearchText || !parseCoordinate || !parseDatisActiveRunways || !projectLatLng ||
       !scoreArrivalCandidate || !sortAirportArrivalRows || !sortAirportDepartureRows || !describeAirportDepartureStatus ||
       !classifyGroundDepartureStatus ||
       !findFlightStartIndex || !matchRunwayDesignator || !deriveActiveRunways || !greatCirclePoints || !pointOnRunway ||
@@ -47,7 +48,7 @@
     throw new Error("Contrails core helpers failed to load.");
   }
 
-  const APP_VERSION = "2.27";
+  const APP_VERSION = "2.28";
   const isLocal = location.hostname === "localhost" || location.hostname === "127.0.0.1";
   const isIOSDevice = /iP(ad|hone|od)/.test(navigator.userAgent) ||
     (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
@@ -133,6 +134,10 @@
   function adsbUrl(path) {
     if (isLocal) return "/api/adsb" + path;
     return WORKER_URL + "/adsb" + path;
+  }
+  function datisUrl(iata) {
+    if (isLocal) return "/api/datis/" + encodeURIComponent(iata);
+    return WORKER_URL + "/datis/" + encodeURIComponent(iata);
   }
   function photoUrl(hex) {
     if (isLocal) return "/api/photo/" + hex;
@@ -4261,6 +4266,7 @@
   var DEPARTURE_PERIMETER_KM = 6;
   var AIRPORT_POPUP_REFRESH_MS = 5000;
   var AIRPORT_POPUP_CACHE_TTL = 2 * 60 * 1000;
+  var DATIS_CACHE_TTL = 60 * 1000;
 
   function isAirportPanelDocked() {
     return typeof window.matchMedia === "function" &&
@@ -4557,12 +4563,21 @@
     '</div>';
   }
 
-  function buildLiveScheduleData(airportIata, airportLat, airportLng, sourceAircraft) {
+  function mergeActiveRunways(primary, fallback) {
+    if (!primary) return fallback || null;
+    fallback = fallback || {};
+    var dep = primary.departing_runways && primary.departing_runways.length ? primary.departing_runways : (fallback.departing_runways || []);
+    var arr = primary.arriving_runways && primary.arriving_runways.length ? primary.arriving_runways : (fallback.arriving_runways || []);
+    if (!dep.length && !arr.length) return null;
+    return { departing_runways: dep, arriving_runways: arr };
+  }
+
+  function buildLiveScheduleData(airportIata, airportLat, airportLng, sourceAircraft, activeRunwaysOverride) {
     var list = Array.isArray(sourceAircraft) ? sourceAircraft : aircraft;
     var arrivals = [];
     var departures = [];
     var airportRwys = runwayData && runwayData[airportIata];
-    var activeRunways = deriveActiveRunways(airportRwys, airportIata, list);
+    var activeRunways = mergeActiveRunways(activeRunwaysOverride, deriveActiveRunways(airportRwys, airportIata, list));
     var activeDepThresholds = [];
     if (activeRunways && activeRunways.departing_runways) {
       var depDesigs = activeRunways.departing_runways;
@@ -4995,6 +5010,8 @@
         error: null,
         loading: false,
         pending: null,
+        datisActiveRunways: null,
+        datisTs: 0,
         snapshot: null,
         ts: 0
       };
@@ -5004,6 +5021,34 @@
 
   function isAirportPopupCacheFresh(entry) {
     return !!(entry && entry.data && entry.ts && Date.now() - entry.ts < AIRPORT_POPUP_CACHE_TTL);
+  }
+
+  function getCachedDatisActiveRunways(entry) {
+    if (!entry || !entry.datisTs) return null;
+    return Date.now() - entry.datisTs < DATIS_CACHE_TTL ? entry.datisActiveRunways : null;
+  }
+
+  async function fetchAirportDatisActiveRunways(iata, entry) {
+    if (entry && entry.datisTs && Date.now() - entry.datisTs < DATIS_CACHE_TTL) {
+      return entry.datisActiveRunways || null;
+    }
+    try {
+      var resp = await fetch(datisUrl(iata));
+      if (!resp.ok) throw new Error("HTTP " + resp.status);
+      var payload = await resp.json();
+      var datisText = payload && (payload.datis || payload.text || payload.raw);
+      var parsed = parseDatisActiveRunways(datisText);
+      if (parsed) {
+        entry.datisActiveRunways = parsed;
+        entry.datisTs = Date.now();
+        return parsed;
+      }
+    } catch (err) {
+      console.warn("Airport D-ATIS fetch failed:", err);
+    }
+    entry.datisActiveRunways = null;
+    entry.datisTs = Date.now();
+    return null;
   }
 
   function clearActiveAirportRefreshTimer() {
@@ -5055,13 +5100,15 @@
 
     var promise = (async function() {
       try {
+        var datisPromise = fetchAirportDatisActiveRunways(iata, entry);
         var resp = await fetch(adsbUrl("/lat/" + lat.toFixed(4) + "/lon/" + lng.toFixed(4) + "/dist/" + AIRPORT_POPUP_FETCH_KM));
         if (!resp.ok) throw new Error("HTTP " + resp.status);
         var payload = await resp.json();
+        var datisActiveRunways = await datisPromise;
         var snapshot = buildAircraftSnapshot(payload.ac || [], { includeProximity: false });
         entry.snapshot = snapshot.aircraft;
 
-        entry.data = buildLiveScheduleData(iata, lat, lng, snapshot.aircraft);
+        entry.data = buildLiveScheduleData(iata, lat, lng, snapshot.aircraft, datisActiveRunways);
         entry.ts = Date.now();
         entry.error = null;
         if (_activeAirportIata === iata && _activeAirportPopup) {
@@ -5070,7 +5117,7 @@
         }
 
         await fetchRoutesForPlanes(snapshot.aircraft, { sortFn: airportRouteCandidateComparator(lat, lng) });
-        entry.data = buildLiveScheduleData(iata, lat, lng, snapshot.aircraft);
+        entry.data = buildLiveScheduleData(iata, lat, lng, snapshot.aircraft, datisActiveRunways);
         if (_activeAirportIata === iata && _activeAirportPopup) {
           _lastScheduleHtml = "";
           renderSchedulePopup(_activeScheduleDir);
@@ -5119,7 +5166,7 @@
       snap[j].reportTs = fresh.reportTs;
     }
 
-    entry.data = buildLiveScheduleData(_activeAirportIata, _activeAirportLat, _activeAirportLng, snap);
+    entry.data = buildLiveScheduleData(_activeAirportIata, _activeAirportLat, _activeAirportLng, snap, getCachedDatisActiveRunways(entry));
     renderSchedulePopup(_activeScheduleDir);
   }
 

@@ -511,6 +511,69 @@
     return { departing_runways: depList, arriving_runways: arrList };
   }
 
+  function parseDatisActiveRunways(datisText) {
+    if (!datisText) return null;
+    var text = String(datisText).toUpperCase()
+      .replace(/\s+/g, " ")
+      .replace(/\bRUNWAYS?\b/g, "RWYS")
+      .replace(/\bRWY\b/g, "RY")
+      .trim();
+    if (!text) return null;
+
+    var departing = {};
+    var arriving = {};
+
+    function addRunwayTokens(target, segment) {
+      segment = String(segment || "").split(/\b(?:CLSD|CLOSED|OTS|OUT OF SERVICE|NOTAMS?|BIRD|TAXIWAY|TWY|DEPG ACFT|ARRIVALS?|DEPARTURES?|APP|APCH|APPROACH)\b/)[0];
+      var tokenRe = /\b([0-3]?\d[CLR]?)\b/g;
+      var t;
+      while ((t = tokenRe.exec(segment))) {
+        target[t[1]] = true;
+      }
+    }
+
+    function addRunwaysAfter(target, clause, re) {
+      var m;
+      while ((m = re.exec(clause))) {
+        addRunwayTokens(target, m[1]);
+      }
+    }
+
+    function addAllRunwaysInClause(target, clause) {
+      var re = /\b(?:RY|RYS|RWYS)\s+([^.;]+)/g;
+      var m;
+      while ((m = re.exec(clause))) {
+        var segment = m[1];
+        var tokenRe = /\b([0-3]?\d[CLR]?)\b/g;
+        var t;
+        while ((t = tokenRe.exec(segment))) {
+          target[t[1]] = true;
+        }
+      }
+    }
+
+    var clauses = text.split(/\s*\.\s*/);
+    for (var i = 0; i < clauses.length; i++) {
+      var clause = clauses[i];
+      if (!clause) continue;
+
+      addRunwaysAfter(departing, clause, /\bDEPG\s+(?:RY|RYS|RWYS)\s+([^.;]+)/g);
+      addRunwaysAfter(departing, clause, /\bDEPARTURES?\s+TO\s+(?:RY|RYS|RWYS)\s+([^.;]+)/g);
+      addRunwaysAfter(departing, clause, /\bDEPARTING\s+(?:RY|RYS|RWYS)\s+([^.;]+)/g);
+
+      if (/\b(?:ILS|RNAV|GPS|VISUAL|LDA|LOC|VOR|RNP)[^.]*(?:APP|APCH|APPROACH)\s+IN\s+USE\b/.test(clause)) {
+        addAllRunwaysInClause(arriving, clause.split(/\b(?:APP|APCH|APPROACH)\b/)[0]);
+      }
+      addRunwaysAfter(arriving, clause, /\bARRIVALS?\s+TO\s+(?:RY|RYS|RWYS)\s+([^.;]+)/g);
+      addRunwaysAfter(arriving, clause, /\bLANDING\s+(?:RY|RYS|RWYS)\s+([^.;]+)/g);
+    }
+
+    var depList = Object.keys(departing);
+    var arrList = Object.keys(arriving);
+    if (!depList.length && !arrList.length) return null;
+    return { departing_runways: depList, arriving_runways: arrList };
+  }
+
   function crossTrackKm(pLat, pLon, aLat, aLon, bLat, bLon) {
     var R = 6371;
     var dAP = haversineKm(aLat, aLon, pLat, pLon);
@@ -1000,6 +1063,7 @@
     normalizeFlightQuery: normalizeFlightQuery,
     normalizeSearchText: normalizeSearchText,
     parseCoordinate: parseCoordinate,
+    parseDatisActiveRunways: parseDatisActiveRunways,
     pointOnRunway: pointOnRunway,
     projectLatLng: projectLatLng,
     roundTenths: roundTenths,

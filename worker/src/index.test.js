@@ -42,6 +42,57 @@ test("fr24search rejects invalid query with 400", async () => {
   assert.equal(body.error, "Invalid query");
 });
 
+test("datis rejects invalid airport code with 400", async () => {
+  const request = new Request("https://worker.test/datis/12!");
+  const response = await handler.fetch(request, {}, {});
+
+  assert.equal(response.status, 400);
+  const body = await response.json();
+  assert.equal(body.error, "Invalid airport code");
+});
+
+test("datis normalizes IATA to ICAO and returns ATIS JSON", async (t) => {
+  const originalCaches = globalThis.caches;
+  const originalFetch = globalThis.fetch;
+  let fetchedUrl = "";
+  let waitUntilCalled = false;
+
+  globalThis.caches = { default: { match: async () => null, put: async () => {} } };
+  globalThis.fetch = async (url) => {
+    fetchedUrl = String(url);
+    return new Response(JSON.stringify([{
+      airport: "KSFO",
+      type: "combined",
+      code: "Y",
+      datis: "DEPG RWYS 28L, 28R.",
+      time: "0656",
+      updatedAt: "2026-06-05T07:04:21Z"
+    }]), { status: 200, headers: { "Content-Type": "application/json" } });
+  };
+
+  t.after(() => {
+    globalThis.caches = originalCaches;
+    globalThis.fetch = originalFetch;
+  });
+
+  const response = await handler.fetch(new Request("https://worker.test/datis/SFO"), {}, {
+    waitUntil: () => { waitUntilCalled = true; }
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(fetchedUrl, "https://atis.info/api/KSFO");
+  assert.equal(waitUntilCalled, true);
+  assert.deepEqual(await response.json(), {
+    airport: "KSFO",
+    type: "combined",
+    code: "Y",
+    datis: "DEPG RWYS 28L, 28R.",
+    time: "0656",
+    updatedAt: "2026-06-05T07:04:21Z",
+    source: "datis"
+  });
+});
+
 test("photo rejects invalid hex with 400", async () => {
   const request = new Request("https://worker.test/photo/ZZZZZZ");
   const response = await handler.fetch(request, {}, {});

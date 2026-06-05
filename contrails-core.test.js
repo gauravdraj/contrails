@@ -1159,6 +1159,30 @@ test("deriveActiveRunways: returns null with no aircraft or no runways", () => {
   assert.equal(core.deriveActiveRunways(null, "SFO", [onRunwayAircraft("28L", { vRate: 12 })]), null);
 });
 
+test("parseDatisActiveRunways: extracts SFO departure and approach runways", () => {
+  var datis = "SFO ATIS INFO Y 0656Z. 28012KT 10SM FEW200 13/09 A2988. " +
+    "SIMUL CLSLY SPCD DPNDNT ILS RY 28R AND ILS RY 28L APP IN USE. " +
+    "DEPG RWYS 28L, 28R. RY 1L, 1R CLSD. NUMEROUS TWY CLOSURES.";
+  assert.deepEqual(core.parseDatisActiveRunways(datis), {
+    departing_runways: ["28L", "28R"],
+    arriving_runways: ["28R", "28L"]
+  });
+});
+
+test("parseDatisActiveRunways: handles SEA-style mixed approach/departure phrasing", () => {
+  var datis = "SEA ATIS INFO M 0653Z. RNAV, GPS, RY 34C, APCH IN USE. " +
+    "DEPG RWY 34R, DEPG ACFT PLAN AND BRIEF NUMBERS FOR BOTH RWYS 34R AND 34C. " +
+    "SIMUL ARRIVALS TO RWY 34L AND DEPARTURES TO RWY 34R ARE IN USE. RY 34L CLSD.";
+  assert.deepEqual(core.parseDatisActiveRunways(datis), {
+    departing_runways: ["34R"],
+    arriving_runways: ["34C", "34L"]
+  });
+});
+
+test("parseDatisActiveRunways: returns null when ATIS has no usable runway-use clauses", () => {
+  assert.equal(core.parseDatisActiveRunways("INFO A. WINDS 28012KT. RY 1L, 1R CLSD. BIRD ACTIVITY."), null);
+});
+
 test("greatCirclePoints: endpoints match the inputs", () => {
   var pts = core.greatCirclePoints(37.62, -122.38, 40.64, -73.78, 32);
   assert.equal(pts.length, 33);

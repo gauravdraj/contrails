@@ -14,6 +14,7 @@ ADSB_ROUTE_API = "https://api.adsb.lol/api/0"
 PLANESPOTTERS_API = "https://api.planespotters.net/pub/photos"
 OPENSKY_API = "https://opensky-network.org/api"
 FR24_API = "https://api.flightradar24.com/common/v1"
+DATIS_API = "https://atis.info/api"
 FR24_CACHE_TTL = 300
 CORS_HEADERS = {
     "Access-Control-Allow-Origin": "*",
@@ -43,6 +44,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._proxy_adsb(self.path[len("/api/adsb"):])
         elif self.path == "/api/geo":
             self._send_json(LOCAL_GEO)
+        elif self.path.startswith("/api/datis/"):
+            self._handle_datis()
         elif self.path.startswith("/api/fr24/schedule/"):
             self._handle_schedule()
         elif self.path.startswith("/api/fr24/search/"):
@@ -111,6 +114,33 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             with urllib.request.urlopen(req, timeout=10) as resp:
                 data = resp.read()
             self._send_bytes(data)
+        except Exception as e:
+            self._send_json({"error": str(e)}, status=502)
+
+    def _handle_datis(self):
+        raw = self.path.split("/api/datis/", 1)[-1].split("?", 1)[0].upper()
+        if re.fullmatch(r"[A-Z]{3}", raw):
+            icao = "K" + raw
+        elif re.fullmatch(r"[A-Z]{4}", raw):
+            icao = raw
+        else:
+            self._send_json({"error": "Invalid airport code"}, status=400)
+            return
+
+        try:
+            req = urllib.request.Request(f"{DATIS_API}/{icao}", headers=PROXY_HEADERS)
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read().decode())
+            row = data[0] if isinstance(data, list) and data else data
+            self._send_json({
+                "airport": icao,
+                "type": row.get("type") if isinstance(row, dict) else None,
+                "code": row.get("code") if isinstance(row, dict) else None,
+                "datis": row.get("datis", "") if isinstance(row, dict) else "",
+                "time": row.get("time") if isinstance(row, dict) else None,
+                "updatedAt": row.get("updatedAt") if isinstance(row, dict) else None,
+                "source": "datis",
+            })
         except Exception as e:
             self._send_json({"error": str(e)}, status=502)
 
