@@ -2,8 +2,8 @@ import { MAJOR_AIRPORTS } from "./airports.js";
 import { enrichRoutes } from "./enrich.js";
 import { haversineKm } from "./geo.js";
 import { json, plainText } from "./http.js";
+import { fetchAircraftResilient } from "./providers.js";
 
-const ADSB_API = "https://api.adsb.lol/v2";
 const MAP_URL = "https://gauravdraj.github.io/contrails";
 const AIRPORT_RADIUS_NM = 65;
 const MAX_RESULTS = 15;
@@ -159,12 +159,7 @@ export function resolveAirport(iata) {
 }
 
 export async function fetchAirportAircraft(lat, lng) {
-  const resp = await fetch(
-    `${ADSB_API}/lat/${lat.toFixed(4)}/lon/${lng.toFixed(4)}/dist/${AIRPORT_RADIUS_NM}`,
-    { headers: { "User-Agent": "contrails/1.0 (+https://gauravdraj.github.io/contrails/)" } },
-  );
-  if (!resp.ok) throw new Error("HTTP " + resp.status);
-  return resp.json();
+  return fetchAircraftResilient(lat, lng, AIRPORT_RADIUS_NM);
 }
 
 export function buildAirportPlane(airportLat, airportLng, snapshot) {

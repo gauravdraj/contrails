@@ -53,6 +53,51 @@ test("nearby JSON includes structured plane data for widgets", async (t) => {
   assert.match(body.text, /United 238 \(A320\)/);
 });
 
+test("nearby falls back to airplanes.live when adsb.lol fails", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const originalCaches = globalThis.caches;
+
+  globalThis.caches = undefined;
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    if (u.includes("api.adsb.lol")) return new Response("", { status: 502 });
+    if (u.includes("api.airplanes.live")) {
+      assert.match(u, /api\.airplanes\.live\/v2\/point\/37\.62\/-122\.38\/25/);
+      return new Response(JSON.stringify({
+        ac: [{
+          hex: "aabbcc",
+          flight: "UAL238 ",
+          t: "A320",
+          r: "N123UA",
+          lat: 37.63,
+          lon: -122.39,
+          alt_baro: 8700,
+          gs: 240,
+          baro_rate: -500,
+          track: 140,
+        }],
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    return new Response(JSON.stringify({ response: {} }), { status: 200 });
+  };
+
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+    globalThis.caches = originalCaches;
+  });
+
+  const response = await handler.fetch(
+    new Request("https://worker.test/nearby?lat=37.62&lng=-122.38&format=json"),
+    {},
+    { waitUntil: () => {} },
+  );
+
+  assert.equal(response.status, 200, "should recover via backup instead of 502");
+  const body = await response.json();
+  assert.equal(body.anyAircraftDetected, true);
+  assert.equal(body.planes[0].icao24, "aabbcc");
+});
+
 test("nearby JSON includes empty planes array when no aircraft are visible", async (t) => {
   const originalFetch = globalThis.fetch;
   const originalCaches = globalThis.caches;

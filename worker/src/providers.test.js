@@ -7,6 +7,7 @@ import {
   isFresh,
   normalizePayload,
   fetchTraffic,
+  fetchAircraftResilient,
   _gridState,
   HARD_FAIL_THRESHOLD,
   STALE_THRESHOLD,
@@ -104,7 +105,7 @@ test("fetchTraffic returns primary data on success", async (t) => {
   assert.equal(result.ac[0].hex, "abc123");
 });
 
-test("fetchTraffic returns null on single primary failure before backup threshold", async (t) => {
+test("fetchTraffic returns null on single primary failure when backup also down", async (t) => {
   _gridState.clear();
   const originalFetch = globalThis.fetch;
 
@@ -119,7 +120,7 @@ test("fetchTraffic returns null on single primary failure before backup threshol
   assert.equal(result, null);
 });
 
-test("fetchTraffic falls back to backup after consecutive hard failures", async (t) => {
+test("fetchTraffic serves backup on the first primary failure without going sticky", async (t) => {
   _gridState.clear();
   const originalFetch = globalThis.fetch;
   const backupPayload = { ac: [{ hex: "def456" }], now: Date.now() };
@@ -135,15 +136,39 @@ test("fetchTraffic falls back to backup after consecutive hard failures", async 
   const snapped = { lat: 37.60, lon: -122.40, dist: 200 };
   const gridPath = "/lat/37.60/lon/-122.40/dist/200";
 
-  for (let i = 0; i < HARD_FAIL_THRESHOLD - 1; i++) {
-    const r = await fetchTraffic(gridPath, snapped, {});
-    assert.equal(r, null, `attempt ${i + 1} before threshold should be null`);
+  // A single primary blip must immediately serve the backup, not a 502.
+  const first = await fetchTraffic(gridPath, snapped, {});
+  assert.ok(first);
+  assert.equal(first.source, "backup");
+  assert.equal(first.ac[0].hex, "def456");
+  assert.equal(_gridState.get("37.60/-122.40/200").usingBackup, false);
+});
+
+test("fetchTraffic switches to sticky backup after consecutive hard failures", async (t) => {
+  _gridState.clear();
+  const originalFetch = globalThis.fetch;
+  const backupPayload = { ac: [{ hex: "def456" }], now: Date.now() };
+
+  globalThis.fetch = async (url) => {
+    if (typeof url === "string" && url.includes("api.airplanes.live")) {
+      return new Response(JSON.stringify(backupPayload), { status: 200 });
+    }
+    throw new Error("primary down");
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const snapped = { lat: 37.60, lon: -122.40, dist: 200 };
+  const gridPath = "/lat/37.60/lon/-122.40/dist/200";
+
+  let result;
+  for (let i = 0; i < HARD_FAIL_THRESHOLD; i++) {
+    result = await fetchTraffic(gridPath, snapped, {});
+    assert.ok(result, `attempt ${i + 1} should still serve backup data`);
+    assert.equal(result.source, "backup");
   }
 
-  const result = await fetchTraffic(gridPath, snapped, {});
-  assert.ok(result);
-  assert.equal(result.source, "backup");
-  assert.equal(result.ac[0].hex, "def456");
+  // After crossing the threshold the grid flips to sticky backup mode.
+  assert.equal(_gridState.get("37.60/-122.40/200").usingBackup, true);
 });
 
 test("fetchTraffic falls back to backup after invalid payloads", async (t) => {
@@ -454,4 +479,72 @@ test("fetchTraffic returns null when both providers fail and keeps probing prima
   assert.equal(result, null);
   const state = _gridState.get("37.60/-122.40/200");
   assert.equal(state.usingBackup, false);
+});
+
+test("fetchAircraftResilient returns primary data on success", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const payload = { ac: [{ hex: "prim01" }], now: Date.now() };
+  let primaryUrl = null;
+
+  globalThis.fetch = async (url) => {
+    const u = typeof url === "string" ? url : url.toString();
+    if (u.includes("api.adsb.lol")) {
+      primaryUrl = u;
+      return new Response(JSON.stringify(payload), { status: 200 });
+    }
+    throw new Error("backup should not be called on primary success");
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const result = await fetchAircraftResilient(37.62, -122.38, 65);
+  assert.equal(result.source, "primary");
+  assert.equal(result.ac[0].hex, "prim01");
+  assert.ok(primaryUrl.includes("/lat/37.6200/lon/-122.3800/dist/65"));
+});
+
+test("fetchAircraftResilient falls back to airplanes.live when primary fails", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const backupPayload = { ac: [{ hex: "bkp01" }], now: Date.now() };
+  let backupUrl = null;
+
+  globalThis.fetch = async (url) => {
+    const u = typeof url === "string" ? url : url.toString();
+    if (u.includes("api.airplanes.live")) {
+      backupUrl = u;
+      return new Response(JSON.stringify(backupPayload), { status: 200 });
+    }
+    return new Response("", { status: 502 });
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const result = await fetchAircraftResilient(51.47, -0.45, 25);
+  assert.equal(result.source, "backup");
+  assert.equal(result.ac[0].hex, "bkp01");
+  assert.ok(backupUrl.includes("/point/51.47/-0.45/25"));
+});
+
+test("fetchAircraftResilient caps the backup radius at 250 NM", async (t) => {
+  const originalFetch = globalThis.fetch;
+  let backupUrl = null;
+
+  globalThis.fetch = async (url) => {
+    const u = typeof url === "string" ? url : url.toString();
+    if (u.includes("api.airplanes.live")) {
+      backupUrl = u;
+      return new Response(JSON.stringify({ ac: [] }), { status: 200 });
+    }
+    throw new Error("primary down");
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  await fetchAircraftResilient(40, -74, 9000);
+  assert.ok(backupUrl.endsWith("/250"));
+});
+
+test("fetchAircraftResilient throws when both providers fail", async (t) => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response("", { status: 500 });
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  await assert.rejects(() => fetchAircraftResilient(37.62, -122.38, 65));
 });

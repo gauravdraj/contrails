@@ -49,14 +49,18 @@ export function buildBackupPath(snapped) {
   return "/point/" + snapped.lat.toFixed(2) + "/" + snapped.lon.toFixed(2) + "/" + radiusNm;
 }
 
-async function fetchFromBackup(snapped) {
-  const resp = await fetch(BACKUP_API + buildBackupPath(snapped), {
+async function fetchFromBackupPath(path) {
+  const resp = await fetch(BACKUP_API + path, {
     method: "GET",
     headers: PROXY_HEADERS,
     signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
   });
   if (!resp.ok) throw new Error("Backup HTTP " + resp.status);
   return resp.json();
+}
+
+async function fetchFromBackup(snapped) {
+  return fetchFromBackupPath(buildBackupPath(snapped));
 }
 
 export function isValidPayload(data) {
@@ -91,6 +95,37 @@ async function tryBackup(snapped, state) {
   return null;
 }
 
+// Serve the backup for a single request without flipping the grid into the
+// sticky "usingBackup" state. Used to absorb a transient primary blip so a
+// single upstream hiccup doesn't surface as a 502.
+async function backupOnce(snapped) {
+  try {
+    const data = await fetchFromBackup(snapped);
+    if (isValidPayload(data)) return normalizePayload(data, "backup");
+  } catch (_) {}
+  return null;
+}
+
+// Resilient point lookup for callers that don't need the grid's sticky failover
+// (airport / nearby snapshots). Tries adsb.lol, then airplanes.live on any
+// failure, and throws only when both providers are unusable. radiusNm is passed
+// straight through to both providers' radius parameter.
+export async function fetchAircraftResilient(lat, lon, radiusNm) {
+  const primaryPath = "/lat/" + lat.toFixed(4) + "/lon/" + lon.toFixed(4) + "/dist/" + radiusNm;
+  try {
+    const data = await fetchFromPrimary(primaryPath);
+    if (isValidPayload(data)) return normalizePayload(data, "primary");
+  } catch (_) {
+    // fall through to the backup provider
+  }
+
+  const radius = Math.max(1, Math.min(BACKUP_MAX_RADIUS_NM, Math.ceil(radiusNm)));
+  const backupPath = "/point/" + lat.toFixed(2) + "/" + lon.toFixed(2) + "/" + radius;
+  const data = await fetchFromBackupPath(backupPath);
+  if (isValidPayload(data)) return normalizePayload(data, "backup");
+  throw new Error("Traffic data unavailable");
+}
+
 export async function fetchTraffic(gridPath, snapped, env) {
   const key = gridKey(snapped.lat, snapped.lon, snapped.dist);
   const state = getGridState(key);
@@ -121,22 +156,27 @@ export async function fetchTraffic(gridPath, snapped, env) {
     return null;
   }
 
-  let data;
+  let data = null;
+  let primaryOk = false;
   try {
     data = await fetchFromPrimary(gridPath);
+    primaryOk = isValidPayload(data);
   } catch (_) {
-    state.failCount++;
-    if (state.failCount >= HARD_FAIL_THRESHOLD && hasBackup) {
-      return tryBackup(snapped, state);
-    }
-    return null;
+    primaryOk = false;
   }
 
-  if (!isValidPayload(data)) {
+  if (!primaryOk) {
     state.failCount++;
+    // Once the primary has hard-failed enough times, switch to the backup
+    // stickily so we stop paying the primary timeout on every request.
     if (state.failCount >= HARD_FAIL_THRESHOLD && hasBackup) {
-      return tryBackup(snapped, state);
+      const sticky = await tryBackup(snapped, state);
+      if (sticky) return sticky;
+      return null;
     }
+    // Transient blip: serve the backup for this one request without going
+    // sticky, so a single primary failure never becomes a user-visible 502.
+    if (hasBackup) return backupOnce(snapped);
     return null;
   }
 

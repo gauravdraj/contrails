@@ -3,8 +3,8 @@ import { enrichRoutes } from "./enrich.js";
 import { bearingDeg, cardinalFromBearing, haversineKm } from "./geo.js";
 import { json, plainText } from "./http.js";
 import { formatRouteLabel } from "./opensky.js";
+import { fetchAircraftResilient } from "./providers.js";
 
-const ADSB_API = "https://api.adsb.lol/v2";
 const MAP_URL = "https://gauravdraj.github.io/contrails";
 const NEARBY_RADIUS_NM = 25;
 const MAX_SLANT_KM = 35;
@@ -101,12 +101,7 @@ function distanceDependentMinElevationDeg(groundKm) {
 }
 
 async function fetchNearbyAircraft(lat, lng) {
-  const resp = await fetch(
-    `${ADSB_API}/lat/${lat.toFixed(4)}/lon/${lng.toFixed(4)}/dist/${NEARBY_RADIUS_NM}`,
-    { headers: { "User-Agent": "contrails/1.0 (+https://gauravdraj.github.io/contrails/)" } },
-  );
-  if (!resp.ok) throw new Error("HTTP " + resp.status);
-  return resp.json();
+  return fetchAircraftResilient(lat, lng, NEARBY_RADIUS_NM);
 }
 
 function buildNearbyPlane(lat, lng, snapshot) {

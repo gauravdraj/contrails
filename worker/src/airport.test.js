@@ -226,19 +226,44 @@ test("handleAirport accepts 4-letter IATA codes", async (t) => {
   assert.equal(resp.status, 404);
 });
 
-test("handleAirport fetches with dist/65 (NM)", async (t) => {
+test("handleAirport fetches primary with dist/65 (NM)", async (t) => {
   const originalFetch = globalThis.fetch;
-  let capturedUrl = null;
+  let primaryUrl = null;
   globalThis.fetch = async (url) => {
-    capturedUrl = typeof url === "string" ? url : url.toString();
+    const u = typeof url === "string" ? url : url.toString();
+    if (u.includes("api.adsb.lol")) primaryUrl = u;
     return new Response("", { status: 500 });
   };
   t.after(() => { globalThis.fetch = originalFetch; });
 
   const url = new URL("https://worker.test/airport/LAX");
   await handleAirport(url, {}, {});
-  assert.ok(capturedUrl);
-  assert.ok(capturedUrl.includes("/dist/65"), `Expected dist/65 in URL but got: ${capturedUrl}`);
+  assert.ok(primaryUrl, "primary adsb.lol should have been queried");
+  assert.ok(primaryUrl.includes("/dist/65"), `Expected dist/65 in URL but got: ${primaryUrl}`);
+});
+
+test("handleAirport falls back to airplanes.live when adsb.lol fails", async (t) => {
+  const originalCaches = globalThis.caches;
+  const originalFetch = globalThis.fetch;
+  globalThis.caches = { default: { match: async () => null, put: async () => {} } };
+  globalThis.fetch = async (url) => {
+    const u = typeof url === "string" ? url : url.toString();
+    if (u.includes("api.adsb.lol")) return new Response("", { status: 502 });
+    if (u.includes("api.airplanes.live")) {
+      return new Response(JSON.stringify({
+        ac: [{ hex: "a12345", flight: "UAL123  ", t: "B738", lat: 33.95, lon: -118.40, alt_baro: 3500, gs: 180, baro_rate: -800 }],
+      }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ response: {} }), { status: 200 });
+  };
+  t.after(() => { globalThis.caches = originalCaches; globalThis.fetch = originalFetch; });
+
+  const url = new URL("https://worker.test/airport/LAX?format=json");
+  const resp = await handleAirport(url, {}, { waitUntil: () => {} });
+  assert.equal(resp.status, 200, "should recover via backup instead of 502");
+  const body = await resp.json();
+  assert.equal(body.airport.iata, "LAX");
+  assert.ok(Array.isArray(body.arrivals));
 });
 
 test("handleAirport dir=both&format=json returns arrivals and departures", async (t) => {
