@@ -60,7 +60,7 @@ The app stays GitHub Pages-friendly. The static frontend lives at the repo root,
 | `GET /adsb/*` | adsb.lol (primary) / airplanes.live (backup) | Live aircraft positions with per-grid failover |
 | `GET,POST /route/*` | api.adsb.lol/api/0 | Route lookups |
 | `POST /routeset` | ADSBDB + OpenSky | Batch route + track lookup for up to 20 planes |
-| `GET /track/<hex>` | OpenSky Network | Full flight track path |
+| `GET /track/<hex>` | globe.airplanes.live / globe.adsb.lol traces (failover) | Full flight track path |
 | `GET /aircraft/<hex>` | ADSBDB | Airframe identity: registration, type, manufacturer, operator, country (cached 30 d) |
 | `GET /schedule/<IATA>` | FlightRadar24 API | Airport schedule boards (cached 5 min) |
 | `GET /fr24search/<query>` | FlightRadar24 API | Flight search by callsign |
@@ -162,18 +162,15 @@ npx wrangler deploy
 
 Then set the `WORKER_URL` constant in `app.js` to your worker's URL.
 
-## OpenSky Track Proxy (optional)
+## OpenSky Track Proxy (deprecated)
 
-Track data comes from [OpenSky Network](https://opensky-network.org/), which rate-limits aggressively and blocks many cloud IPs. The Worker tries OpenSky directly for batch route lookups, but for reliable individual track fetches the app supports an optional self-hosted proxy.
-
-The `local-proxy/` directory contains a small Node.js server and a setup script for deploying it on a Raspberry Pi (or any always-on box) behind a Cloudflare Tunnel:
-
-```bash
-cd local-proxy
-# Follow setup-pi.sh to install the proxy, create a tunnel, and get a public URL
-```
-
-Once running, set `OPENSKY_PROXY` in `app.js` to your proxy's URL. The proxy handles its own rate-limit backoff and serves stale-while-revalidate cached tracks.
+> **No longer needed.** Track paths now come from the [airplanes.live](https://airplanes.live)
+> and [adsb.lol](https://adsb.lol) `trace_full` feeds with automatic failover between the two
+> (see `worker/src/traces.js`), which are keyless and reachable from the Worker — so the OpenSky
+> rate-limiting problem that motivated a self-hosted proxy is gone. The `local-proxy/` directory
+> (an OpenSky Basic-auth proxy behind a Cloudflare Tunnel) is retained only for historical
+> reference and is safe to delete; OpenSky also migrated to OAuth2, so that proxy would need a
+> rewrite to run at all. There is no `OPENSKY_PROXY` hook in `app.js` anymore.
 
 ## Files
 

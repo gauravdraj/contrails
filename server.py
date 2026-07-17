@@ -13,7 +13,10 @@ ADSB_API = "https://api.adsb.lol/v2"
 ADSB_ROUTE_API = "https://api.adsb.lol/api/0"
 PLANESPOTTERS_API = "https://api.planespotters.net/pub/photos"
 ADSBDB_API = "https://api.adsbdb.com/v0"
-OPENSKY_API = "https://opensky-network.org/api"
+TRACE_PROVIDERS = [
+    "https://globe.airplanes.live/data/traces",
+    "https://globe.adsb.lol/data/traces",
+]
 FR24_API = "https://api.flightradar24.com/common/v1"
 DATIS_API = "https://atis.info/api"
 FR24_CACHE_TTL = 300
@@ -55,8 +58,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             hex_id = self.path[len("/api/photo/"):]
             self._proxy(f"{PLANESPOTTERS_API}/hex/{hex_id}")
         elif self.path.startswith("/api/track/"):
-            hex_id = self.path[len("/api/track/"):]
-            self._proxy(f"{OPENSKY_API}/tracks/all?icao24={hex_id}&time=0")
+            self._handle_track()
         elif self.path.startswith("/api/aircraft/"):
             self._handle_aircraft()
         else:
@@ -81,6 +83,39 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         for key, value in CORS_HEADERS.items():
             self.send_header(key, value)
         self.end_headers()
+
+    def _handle_track(self):
+        """Match the Worker: normalize readsb trace_full into a [ts,lat,lon,altM,hdg,ground]
+        path, trying airplanes.live then adsb.lol (OpenSky is retired)."""
+        hex_id = self.path[len("/api/track/"):].split("?", 1)[0].lower()
+        if not re.fullmatch(r"[0-9a-f]{6}", hex_id):
+            self._send_json({"error": "invalid hex"}, status=400)
+            return
+        for base in TRACE_PROVIDERS:
+            url = f"{base}/{hex_id[-2:]}/trace_full_{hex_id}.json"
+            try:
+                req = urllib.request.Request(
+                    url, method="GET", headers={"User-Agent": PROXY_HEADERS["User-Agent"]},
+                )
+                with urllib.request.urlopen(req, timeout=8) as resp:
+                    raw = json.loads(resp.read())
+            except Exception:
+                continue
+            trace = raw.get("trace")
+            base_time = raw.get("timestamp")
+            if not trace or base_time is None:
+                continue
+            path = []
+            for pt in trace:
+                alt_ft = pt[3] if len(pt) > 3 else None
+                alt_m = alt_ft * 0.3048 if isinstance(alt_ft, (int, float)) else None
+                on_ground = isinstance(alt_ft, (int, float)) and alt_ft <= 0
+                heading = pt[5] if len(pt) > 5 and pt[5] is not None else 0
+                path.append([base_time + pt[0], pt[1], pt[2], alt_m, heading, on_ground])
+            if path:
+                self._send_json({"icao24": raw.get("icao"), "path": path})
+                return
+        self._send_json(None)
 
     def _handle_aircraft(self):
         hex_id = self.path[len("/api/aircraft/"):].split("?", 1)[0].lower()
