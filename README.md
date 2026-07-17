@@ -162,15 +162,14 @@ npx wrangler deploy
 
 Then set the `WORKER_URL` constant in `app.js` to your worker's URL.
 
-## OpenSky Track Proxy (deprecated)
+## OpenSky Track Proxy (removed)
 
-> **No longer needed.** Track paths now come from the [airplanes.live](https://airplanes.live)
-> and [adsb.lol](https://adsb.lol) `trace_full` feeds with automatic failover between the two
-> (see `worker/src/traces.js`), which are keyless and reachable from the Worker — so the OpenSky
-> rate-limiting problem that motivated a self-hosted proxy is gone. The `local-proxy/` directory
-> (an OpenSky Basic-auth proxy behind a Cloudflare Tunnel) is retained only for historical
-> reference and is safe to delete; OpenSky also migrated to OAuth2, so that proxy would need a
-> rewrite to run at all. There is no `OPENSKY_PROXY` hook in `app.js` anymore.
+> Track paths come from the [airplanes.live](https://airplanes.live) and [adsb.lol](https://adsb.lol)
+> `trace_full` feeds with automatic failover between the two (see `worker/src/traces.js`), which are
+> keyless and reachable from the Worker — so the OpenSky rate-limiting problem that once motivated a
+> self-hosted proxy is gone. The old `local-proxy/` OpenSky Basic-auth proxy has been removed
+> (OpenSky also migrated to OAuth2, so it no longer worked); there is no `OPENSKY_PROXY` hook in
+> `app.js`.
 
 ## Files
 
@@ -198,13 +197,11 @@ Then set the `WORKER_URL` constant in `app.js` to your worker's URL.
 | `worker/src/http.js` | Shared Worker response/CORS helpers |
 | `worker/src/geo.js` | Haversine, bearing, and cardinal helpers for the worker |
 | `worker/src/airports.js` | Major airport list for landing heuristics in `/nearby` |
-| `local-proxy/server.js` | Self-hosted OpenSky track proxy with rate-limit backoff |
-| `local-proxy/setup-pi.sh` | Raspberry Pi deployment script (systemd + Cloudflare Tunnel) |
 
 ## Credits
 
 - Aircraft silhouettes adapted from [tar1090](https://github.com/wiedehopf/tar1090) (GPL-3.0)
 - Live data from [adsb.lol](https://adsb.lol), backup feed from [airplanes.live](https://airplanes.live)
-- Track data from [OpenSky Network](https://opensky-network.org/)
+- Flight-track paths from the [adsb.lol](https://adsb.lol) / [airplanes.live](https://airplanes.live) trace feeds
 - Map tiles from [CARTO](https://carto.com/)
 - Built with [Leaflet](https://leafletjs.com/)

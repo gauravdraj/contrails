@@ -5,6 +5,10 @@ name: Healthcheck
 # which surfaces as a 502) that unit tests can't see. A persistent failure
 # stays red and emails the repo owner; transient upstream flakes are absorbed
 # by a single retry. Run manually anytime via the "Run workflow" button.
+#
+# On failure it also pings Discord if a DISCORD_WEBHOOK repo secret is set
+# (Settings -> Secrets and variables -> Actions), so breakage is noticed even
+# when nobody is watching email. The step no-ops cleanly if the secret is absent.
 
 on:
   schedule:
@@ -21,3 +25,16 @@ jobs:
           node-version: 22
       - name: Probe live Worker endpoints
         run: node scripts/healthcheck.mjs || (sleep 30 && node scripts/healthcheck.mjs)
+      - name: Alert Discord on failure
+        if: failure()
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: |
+          if [ -z "$DISCORD_WEBHOOK" ]; then
+            echo "No DISCORD_WEBHOOK secret set; skipping Discord alert."
+            exit 0
+          fi
+          RUN_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          curl -sf -H "Content-Type: application/json" \
+            -d "{\"content\": \":airplane: Contrails healthcheck FAILED — a Worker endpoint or upstream feed is down. $RUN_URL\"}" \
+            "$DISCORD_WEBHOOK" >/dev/null || echo "Discord alert failed to send"
