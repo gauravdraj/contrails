@@ -12,6 +12,7 @@ PORT = 8766
 ADSB_API = "https://api.adsb.lol/v2"
 ADSB_ROUTE_API = "https://api.adsb.lol/api/0"
 PLANESPOTTERS_API = "https://api.planespotters.net/pub/photos"
+ADSBDB_API = "https://api.adsbdb.com/v0"
 OPENSKY_API = "https://opensky-network.org/api"
 FR24_API = "https://api.flightradar24.com/common/v1"
 DATIS_API = "https://atis.info/api"
@@ -56,6 +57,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         elif self.path.startswith("/api/track/"):
             hex_id = self.path[len("/api/track/"):]
             self._proxy(f"{OPENSKY_API}/tracks/all?icao24={hex_id}&time=0")
+        elif self.path.startswith("/api/aircraft/"):
+            self._handle_aircraft()
         else:
             super().do_GET()
 
@@ -78,6 +81,36 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         for key, value in CORS_HEADERS.items():
             self.send_header(key, value)
         self.end_headers()
+
+    def _handle_aircraft(self):
+        hex_id = self.path[len("/api/aircraft/"):].split("?", 1)[0].lower()
+        if not re.fullmatch(r"[0-9a-f]{6}", hex_id):
+            self._send_json({"error": "Invalid hex"}, status=400)
+            return
+        try:
+            req = urllib.request.Request(
+                f"{ADSBDB_API}/aircraft/{hex_id}", method="GET", headers=PROXY_HEADERS,
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read())
+        except Exception:
+            self._send_json(None)
+            return
+        ac = (data or {}).get("response")
+        ac = ac.get("aircraft") if isinstance(ac, dict) else None
+        if not isinstance(ac, dict):
+            self._send_json(None)
+            return
+        self._send_json({
+            "hex": hex_id,
+            "registration": ac.get("registration") or None,
+            "type": ac.get("type") or None,
+            "typeCode": ac.get("icao_type") or None,
+            "manufacturer": ac.get("manufacturer") or None,
+            "operator": ac.get("registered_owner") or None,
+            "countryIso": ac.get("registered_owner_country_iso_name") or None,
+            "countryName": ac.get("registered_owner_country_name") or None,
+        })
 
     def _proxy_adsb(self, path):
         """Proxy ADS-B requests, normalizing grid responses to match

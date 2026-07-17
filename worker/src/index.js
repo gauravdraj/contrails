@@ -1,4 +1,4 @@
-import { fetchCachedRouteEntry } from "./adsbdb.js";
+import { fetchCachedRouteEntry, fetchCachedAircraft } from "./adsbdb.js";
 import { buildSchedulePayload } from "./fr24.js";
 import { CORS_HEADERS, json } from "./http.js";
 import { handleAirport } from "./airport.js";
@@ -17,6 +17,7 @@ const DATIS_API = "https://atis.info/api";
 const FR24_CACHE_TTL = 300;
 const PHOTO_CACHE_TTL = 86400;
 const ADSBDB_CACHE_TTL = 3600;
+const AIRCRAFT_CACHE_TTL = 2592000;
 const DATIS_CACHE_TTL = 60;
 
 const CONTACT_USER_AGENT = "contrails/1.0 (+https://gauravdraj.github.io/contrails/)";
@@ -40,6 +41,7 @@ export default {
     if (url.pathname.startsWith("/photo/")) return handlePhoto(url, ctx);
     if (url.pathname === "/routeset") return handleRouteset(request, env, ctx);
     if (url.pathname.startsWith("/track/")) return handleTrack(url, env, ctx);
+    if (url.pathname.startsWith("/aircraft/")) return handleAircraft(url, ctx);
     if (url.pathname === "/geo") return handleGeo(request);
     if (url.pathname.startsWith("/datis/")) return handleDatis(url, ctx);
     if (url.pathname.startsWith("/schedule/")) return handleSchedule(url, ctx);
@@ -188,6 +190,21 @@ async function handleTrack(url, env, ctx) {
   const track = await fetchTrace(hex, cache, ctx);
   if (!track?.path) return json(200, null);
   return json(200, track.path);
+}
+
+async function handleAircraft(url, ctx) {
+  const hex = url.pathname.split("/").pop().toLowerCase();
+  if (!/^[0-9a-f]{6}$/.test(hex)) return json(400, { error: "Invalid hex" });
+
+  const cache = caches.default;
+  try {
+    const entry = await fetchCachedAircraft(hex, cache, ctx, AIRCRAFT_CACHE_TTL);
+    const response = json(200, entry || null);
+    response.headers.set("Cache-Control", `s-maxage=${AIRCRAFT_CACHE_TTL}`);
+    return response;
+  } catch (error) {
+    return json(502, { error: error.message });
+  }
 }
 
 function normalizeDatisAirportCode(code) {

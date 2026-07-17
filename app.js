@@ -48,7 +48,7 @@
     throw new Error("Contrails core helpers failed to load.");
   }
 
-  const APP_VERSION = "2.29";
+  const APP_VERSION = "2.30";
   const isLocal = location.hostname === "localhost" || location.hostname === "127.0.0.1";
   const isIOSDevice = /iP(ad|hone|od)/.test(navigator.userAgent) ||
     (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
@@ -155,6 +155,10 @@
     if (isLocal) return "/api/geo";
     return WORKER_URL + "/geo";
   }
+  function aircraftUrl(hex) {
+    if (isLocal) return "/api/aircraft/" + hex;
+    return WORKER_URL + "/aircraft/" + hex;
+  }
   const REFRESH_MS = 5000;
   const DEFAULT_MAP_ZOOM = 11;
   const MIN_MAP_ZOOM = 5;
@@ -201,6 +205,8 @@
   const routeCache = {};
   const photoCache = {};
   const photoPending = {};
+  const aircraftInfoCache = {};
+  const aircraftInfoPending = {};
   const dormantHistory = {};
   const trackExtended = {};
   const scheduleDataCache = {};
@@ -550,6 +556,8 @@
       if (photoEl) {
         var hex = photoEl.getAttribute("data-hex");
         loadPopupPhoto(photoEl);
+        var acInfoEl = el.querySelector(".popup-aircraft");
+        if (acInfoEl) loadPopupAircraftInfo(acInfoEl);
         loadPopupTrack(hex);
         matchScheduleRoute(hex);
         var clickedPlane = findAircraftById(hex);
@@ -2686,6 +2694,8 @@
     var regStr = a.registration && a.registration !== titleSource ? escapeHtml(a.registration) : "";
     var typeLine = [typeStr, regStr].filter(Boolean).join(" &middot; ");
     if (typeLine) typeLine += "<br>";
+    var aircraftInfoHtml = '<div class="popup-aircraft" data-hex="' + escapeHtml(a.icao24) + '">' +
+      buildAircraftInfoHtml(aircraftInfoCache[a.icao24]) + "</div>";
 
     var machStr = a.mach ? "M" + a.mach.toFixed(2) : "";
     var iasStr = a.ias ? "IAS " + a.ias : "";
@@ -2732,7 +2742,7 @@
 
     return photoHtml +
       '<div class="popup-header"><div class="popup-title"><strong>' + title + "</strong>" + subheaderHtml + "</div>" + shareButton + "</div>" +
-      emergLine + typeLine + alt + " &middot; " + spd + " &middot; " + vert + "<br>" +
+      emergLine + typeLine + aircraftInfoHtml + alt + " &middot; " + spd + " &middot; " + vert + "<br>" +
       detail2 + windLine +
       distanceHtml;
   }
@@ -2779,6 +2789,51 @@
   function renderPhoto(container, photo) {
     container.innerHTML =
       '<img src="' + escapeHtml(photo.src) + '" style="width:100%;border-radius:6px;display:block;margin-bottom:6px" alt="Aircraft photo">';
+  }
+
+  function flagEmoji(iso) {
+    if (!iso || !/^[A-Za-z]{2}$/.test(iso)) return "";
+    var base = 0x1F1E6;
+    var up = iso.toUpperCase();
+    return String.fromCodePoint(base + up.charCodeAt(0) - 65) +
+      String.fromCodePoint(base + up.charCodeAt(1) - 65);
+  }
+
+  function buildAircraftInfoHtml(info) {
+    if (!info) return "";
+    var typeName = info.manufacturer && info.type
+      ? info.manufacturer + " " + info.type
+      : (info.type || info.manufacturer || "");
+    var bits = [];
+    if (typeName) bits.push(escapeHtml(typeName));
+    if (info.operator) bits.push(escapeHtml(info.operator));
+    if (!bits.length) return "";
+    var flag = flagEmoji(info.countryIso);
+    var prefix = flag ? flag + " " : "";
+    return '<span style="color:#8fa6bd">' + prefix + bits.join(" &middot; ") + "</span><br>";
+  }
+
+  function renderAircraftInfo(container, info) {
+    container.innerHTML = buildAircraftInfoHtml(info);
+  }
+
+  function loadPopupAircraftInfo(container) {
+    var hex = container.getAttribute("data-hex");
+    if (!hex) return;
+    if (aircraftInfoCache[hex] !== undefined) {
+      renderAircraftInfo(container, aircraftInfoCache[hex]);
+      return;
+    }
+    if (aircraftInfoPending[hex]) return;
+    aircraftInfoPending[hex] = true;
+    fetch(aircraftUrl(hex))
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        aircraftInfoCache[hex] = data || null;
+        renderAircraftInfo(container, aircraftInfoCache[hex]);
+      })
+      .catch(function() { aircraftInfoCache[hex] = null; })
+      .finally(function() { delete aircraftInfoPending[hex]; });
   }
 
   function ingestTrackPath(hex, data) {

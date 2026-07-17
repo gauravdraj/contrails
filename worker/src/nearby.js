@@ -205,6 +205,7 @@ function buildNearbyDisplay(num, plane, routeData) {
   const name = nearbyDisplayName(plane);
   let identifier = (alert ? "   " : `${num}. `) + name;
   if (plane.type) identifier += ` (${plane.type})`;
+  if (plane.registration && !plane.priv) identifier += ` [${plane.registration}]`;
   if (plane.priv) identifier += " [PRIVATE]";
   parts.push(identifier);
 

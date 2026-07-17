@@ -50,7 +50,7 @@ test("nearby JSON includes structured plane data for widgets", async (t) => {
   assert.equal(body.planes[0].altitude, "8.7k ft");
   assert.equal(body.planes[0].vertical, "descending");
   assert.match(body.planes[0].detail, /8\.7k ft/);
-  assert.match(body.text, /United 238 \(A320\)/);
+  assert.match(body.text, /United 238 \(A320\) \[N123UA\]/);
 });
 
 test("nearby falls back to airplanes.live when adsb.lol fails", async (t) => {
@@ -153,5 +153,5 @@ test("nearby display exposes photo-friendly identifiers", () => {
   assert.equal(summary.plane.registration, "G-YMMN");
   assert.equal(summary.plane.contrailLikely, true);
   assert.equal(summary.plane.routeLine, "London Heathrow -> New York JFK");
-  assert.match(summary.text, /British Airways 456 \(B772\)/);
+  assert.match(summary.text, /British Airways 456 \(B772\) \[G-YMMN\]/);
 });

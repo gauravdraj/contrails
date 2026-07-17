@@ -83,6 +83,9 @@ async function run() {
     r.data?.airport?.iata ? `${r.data.airport.iata} snapshot` : false
   );
   await check("track", `/track/${hex}`, () => `hex ${hex}`);
+  await check("aircraft", `/aircraft/${hex}`, (r) =>
+    r.data === null ? `no airframe for ${hex} (ok)` : r.data?.registration || r.data?.type ? "airframe returned" : false
+  );
   await check(
     "routeset",
     "/routeset",

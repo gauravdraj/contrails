@@ -78,3 +78,60 @@ export async function fetchRouteAirports(callsign) {
   const route = await fetchFlightroute(callsign);
   return buildRouteAirports(route);
 }
+
+// Airframe identity (registration, type, manufacturer, operator, country) keyed
+// by the live ADS-B mode-s hex. ADSBDB has no built-year, so age is omitted; the
+// record is effectively static, so it is cached for a long TTL.
+export function buildAircraftEntry(hex, aircraft) {
+  if (!aircraft || typeof aircraft !== "object") return null;
+  const registration = aircraft.registration || null;
+  const type = aircraft.type || null;
+  const typeCode = aircraft.icao_type || null;
+  const manufacturer = aircraft.manufacturer || null;
+  const operator = aircraft.registered_owner || null;
+  const countryIso = aircraft.registered_owner_country_iso_name || null;
+  const countryName = aircraft.registered_owner_country_name || null;
+  if (!registration && !type && !operator && !manufacturer) return null;
+  return {
+    hex: (hex || "").toLowerCase(),
+    registration,
+    type,
+    typeCode,
+    manufacturer,
+    operator,
+    countryIso,
+    countryName,
+  };
+}
+
+async function fetchAircraftRecord(hex) {
+  const normalized = String(hex || "").trim().toLowerCase();
+  if (!/^[0-9a-f]{6}$/.test(normalized)) return null;
+
+  const resp = await fetch(`${ADSBDB_API}/aircraft/${normalized}`, {
+    headers: ADSBDB_HEADERS,
+  });
+  if (!resp.ok) return null;
+
+  const data = await resp.json();
+  // On a miss ADSBDB returns { response: "unknown aircraft" } (a string).
+  return data?.response?.aircraft || null;
+}
+
+export async function fetchCachedAircraft(hex, cache, ctx, ttlSeconds) {
+  const normalized = String(hex || "").trim().toLowerCase();
+  if (!/^[0-9a-f]{6}$/.test(normalized)) return null;
+
+  const cacheKey = new Request(`https://adsbdb-aircraft/${normalized}`);
+  const cached = await cache.match(cacheKey);
+  if (cached) return cached.json();
+
+  const aircraft = await fetchAircraftRecord(normalized);
+  const entry = buildAircraftEntry(normalized, aircraft);
+  if (!entry) return null;
+
+  const cacheResp = json(200, entry);
+  cacheResp.headers.set("Cache-Control", `s-maxage=${ttlSeconds}`);
+  ctx.waitUntil(cache.put(cacheKey, cacheResp.clone()));
+  return entry;
+}

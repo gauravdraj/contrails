@@ -61,6 +61,7 @@ The app stays GitHub Pages-friendly. The static frontend lives at the repo root,
 | `GET,POST /route/*` | api.adsb.lol/api/0 | Route lookups |
 | `POST /routeset` | ADSBDB + OpenSky | Batch route + track lookup for up to 20 planes |
 | `GET /track/<hex>` | OpenSky Network | Full flight track path |
+| `GET /aircraft/<hex>` | ADSBDB | Airframe identity: registration, type, manufacturer, operator, country (cached 30 d) |
 | `GET /schedule/<IATA>` | FlightRadar24 API | Airport schedule boards (cached 5 min) |
 | `GET /fr24search/<query>` | FlightRadar24 API | Flight search by callsign |
 | `GET /airport/<IATA>` | api.adsb.lol/v2 | Airport-centered traffic snapshot |
