@@ -16,6 +16,50 @@ test("cardinalDir rounds to the nearest compass label", () => {
   assert.equal(core.cardinalDir(225), "SW");
 });
 
+test("sizeClass classifies aircraft types into silhouette buckets", () => {
+  assert.equal(core.sizeClass("A388", null), "quadjet");
+  assert.equal(core.sizeClass("B744", null), "quadjet");
+  assert.equal(core.sizeClass("B77W", null), "widebody");
+  assert.equal(core.sizeClass("A333", null), "widebody");
+  assert.equal(core.sizeClass("B738", null), "narrowbody");
+  assert.equal(core.sizeClass("A21N", null), "narrowbody");
+  assert.equal(core.sizeClass("CRJ9", null), "bizjet");
+  assert.equal(core.sizeClass("GLF6", null), "bizjet");
+  assert.equal(core.sizeClass("C172", null), "light");
+  assert.equal(core.sizeClass("DH8D", null), "turboprop");
+  assert.equal(core.sizeClass("EC35", null), "heli");
+});
+
+test("sizeClass falls back to category, then light, when type is unknown", () => {
+  assert.equal(core.sizeClass(null, "A5"), "widebody");
+  assert.equal(core.sizeClass(null, "A3"), "narrowbody");
+  assert.equal(core.sizeClass(null, null), "light");
+  assert.equal(core.sizeClass("ZZZZ", "A5"), "widebody");
+  assert.equal(core.sizeClass("ZZZZ", null), "light");
+});
+
+test("sizeFromCategory maps ADS-B emitter categories", () => {
+  assert.equal(core.sizeFromCategory("A1"), "light");
+  assert.equal(core.sizeFromCategory("A3"), "narrowbody");
+  assert.equal(core.sizeFromCategory("A5"), "widebody");
+  assert.equal(core.sizeFromCategory("A7"), "heli");
+  assert.equal(core.sizeFromCategory("Z9"), null);
+  assert.equal(core.sizeFromCategory(null), null);
+});
+
+test("isLikelyPrivateClass flags small airframes as likely private", () => {
+  assert.equal(core.isLikelyPrivateClass("C172", null), true);
+  assert.equal(core.isLikelyPrivateClass("GLF6", null), true);
+  assert.equal(core.isLikelyPrivateClass("DH8D", null), true);
+  assert.equal(core.isLikelyPrivateClass("B738", null), false);
+  assert.equal(core.isLikelyPrivateClass("A388", null), false);
+});
+
+test("dimColor desaturates and lightens an HSL string, ignoring malformed input", () => {
+  assert.equal(core.dimColor("hsl(120,100%,50%)"), "hsl(120,40%,55%)");
+  assert.equal(core.dimColor("not-a-color"), "not-a-color");
+});
+
 test("parseCoordinate accepts valid values and rejects invalid ones", () => {
   assert.equal(core.parseCoordinate("37.7749", -90, 90), 37.7749);
   assert.equal(core.parseCoordinate("-122.4194", -180, 180), -122.4194);

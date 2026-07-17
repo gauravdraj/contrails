@@ -30,6 +30,10 @@
   const classifyGroundDepartureStatus = core.classifyGroundDepartureStatus;
   const slantKm = core.slantKm;
   const elevationDeg = core.elevationDeg;
+  const sizeFromCategory = core.sizeFromCategory;
+  const sizeClass = core.sizeClass;
+  const isLikelyPrivateClass = core.isLikelyPrivateClass;
+  const dimColor = core.dimColor;
   const findFlightStartIndex = core.findFlightStartIndex;
   const matchRunwayDesignator = core.matchRunwayDesignator;
   const deriveActiveRunways = core.deriveActiveRunways;
@@ -44,11 +48,12 @@
       !scoreArrivalCandidate || !sortAirportArrivalRows || !sortAirportDepartureRows || !describeAirportDepartureStatus ||
       !classifyGroundDepartureStatus ||
       !findFlightStartIndex || !matchRunwayDesignator || !deriveActiveRunways || !greatCirclePoints || !pointOnRunway ||
-      !roundTenths || !slantKm || !elevationDeg || !SQUAWK_ALERT) {
+      !roundTenths || !slantKm || !elevationDeg || !SQUAWK_ALERT ||
+      !sizeFromCategory || !sizeClass || !isLikelyPrivateClass || !dimColor) {
     throw new Error("Contrails core helpers failed to load.");
   }
 
-  const APP_VERSION = "2.31";
+  const APP_VERSION = "2.32";
   const isLocal = location.hostname === "localhost" || location.hostname === "127.0.0.1";
   const isIOSDevice = /iP(ad|hone|od)/.test(navigator.userAgent) ||
     (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
@@ -340,10 +345,6 @@
     reason: "shared-link"
   } : null;
 
-  function isLikelyPrivateClass(type, category) {
-    var cls = sizeClass(type, category);
-    return cls === "bizjet" || cls === "light" || cls === "turboprop";
-  }
   function isPrivate(callsign, type, category) {
     if (isLikelyPrivateCallsign(callsign)) return true;
     if (!callsign) return isLikelyPrivateClass(type, category);
@@ -362,37 +363,6 @@
     quadjet: ["0 0 64 64", 32, 32, 0.7, "m 30.764,3.957 c -1.030,1.995 -1.438,5.650 -1.600,7.687 -0.248,3.120 -0.114,5.478 -0.156,7.568 -0.016,0.798 -0.737,1.483 -1.435,2.163 l -4.630,4.207 c 0.136,-0.609 0.313,-2.735 0.011,-3.413 l -2.147,-0.067 c -0.337,0.636 -0.227,2.516 -0.102,3.486 l 0.414,0.033 0.179,1.447 -5.794,5.342 c 0.077,-0.914 0.114,-2.161 -0.105,-2.633 l -2.172,-0.078 c -0.367,0.716 -0.185,2.323 -0.053,3.475 h 0.394 l 0.138,0.949 -7.991,6.563 C 5.411,40.937 5.586,41.437 5.564,41.830 l -0.694,2.353 0.005,0.991 0.715,-1.236 10.464,-6.218 c 0.012,0.663 0.110,1.051 0.231,1.010 0.135,-0.045 0.328,-0.852 0.361,-1.290 l 2.274,-1.389 c -0.003,0.493 0.054,1.174 0.196,1.088 0.126,-0.076 0.384,-0.807 0.362,-1.370 l 1.528,-0.943 2.988,-1.018 c 0.073,0.381 0.122,0.929 0.292,0.896 0.159,-0.031 0.257,-0.491 0.355,-1.065 l 1.704,-0.597 c 0.025,0.437 0.163,0.976 0.297,0.914 0.149,-0.070 0.339,-0.647 0.356,-1.118 l 1.935,-0.666 0.054,10.106 c 0.183,3.800 0.173,5.797 0.919,9.127 -0.072,0.573 -0.374,0.766 -0.640,1.020 l -6.724,6.317 -0.007,2.046 8.553,-2.312 c 0.019,0.586 0.061,1.045 0.432,1.368 l 0.146,1.817 0.146,-1.817 c 0.371,-0.323 0.413,-0.782 0.432,-1.368 l 8.553,2.312 -0.007,-2.046 -6.724,-6.317 c -0.266,-0.253 -0.569,-0.446 -0.640,-1.020 0.747,-3.331 0.736,-5.327 0.919,-9.127 l 0.054,-10.106 1.935,0.666 c 0.017,0.470 0.207,1.048 0.356,1.118 0.134,0.062 0.272,-0.477 0.297,-0.914 l 1.704,0.597 c 0.098,0.574 0.196,1.034 0.355,1.065 0.170,0.033 0.219,-0.515 0.292,-0.896 l 2.988,1.018 1.528,0.943 c -0.021,0.563 0.237,1.294 0.362,1.370 0.141,0.086 0.198,-0.595 0.196,-1.088 l 2.274,1.389 c 0.033,0.439 0.227,1.245 0.361,1.290 0.121,0.041 0.219,-0.347 0.231,-1.010 l 10.464,6.218 0.715,1.236 0.005,-0.991 -0.694,-2.353 c -0.021,-0.393 0.153,-0.893 -0.151,-1.143 l -7.991,-6.563 0.138,-0.949 h 0.394 c 0.132,-1.152 0.314,-2.760 -0.053,-3.475 l -2.172,0.078 c -0.218,0.472 -0.182,1.719 -0.105,2.633 l -5.794,-5.342 0.179,-1.447 0.414,-0.033 c 0.125,-0.970 0.236,-2.850 -0.102,-3.486 l -2.147,0.067 c -0.302,0.678 -0.125,2.804 0.011,3.413 l -4.630,-4.207 c -0.698,-0.680 -1.419,-1.365 -1.435,-2.163 -0.042,-2.090 0.092,-4.448 -0.156,-7.568 -0.162,-2.037 -0.600,-5.677 -1.600,-7.687 -0.592,-1.190 -1.211,-1.157 -1.809,0 z"]
   };
   const ICON_SZ = { light: 24, turboprop: 26, bizjet: 24, narrowbody: 30, widebody: 40, quadjet: 44 };
-
-  function sizeFromCategory(cat) {
-    if (!cat) return null;
-    switch (cat) {
-      case "A1": case "A2": case "B1": case "B2": case "B4": case "B6": return "light";
-      case "A3": return "narrowbody";
-      case "A4": case "A5": case "A6": return "widebody";
-      case "A7": return "heli";
-      default: return null;
-    }
-  }
-
-  function sizeClass(type, category) {
-    if (!type) return sizeFromCategory(category) || "light";
-    var t = type.toUpperCase();
-    if (/^(EC\d|H1[2-9]\d|H60|R22|R44|R66|S76|S92|A1[0-9]\d|AS\d|B[024]\d\d|MD[5-9]\d|BK|K[A-Z]\d|MI\d|NH90)/.test(t)) return "heli";
-    if (/^(C1[2-9]\d|C2[0-1]\d|P28|PA\d|SR2[02]|DA[24]\d|BE[23]\d|M20|TB[12]\d|DR4|RV\d|COL[34]|TRIN|P46T|PC12|GLST)/.test(t)) return "light";
-    if (/^(AT[4-7]\d|DH8[A-D]|DHC[6-8]|SF34|SB20|B190|C208|PC[0-9]|TBM[0-9]|JS[2-4]\d|AN[2-3]\d|L410|DO[0-9]|J328|E120|BE[9A][0-9]|SW[34]|M28)/.test(t)) return "turboprop";
-    if (/^(CRJ|E[1-2][0-9]\d|ERJ|GLF[2-7]|GL\dT|GLEX|G[2-7]\d\d|GA[5-7].|LJ\d|CL[0-9]|C[5-7]\d\d|C25|C56|C68|F[29][0-9]\d|FA[57]|H25|HA4|PRM|ASTR|GALX|E35L|E55P|EA50|SF50|PC24|P180)/.test(t)) return "bizjet";
-    if (/^(A38\d|B74[0-9]|A34[0-9]|IL96|C5M?|A400|AN12)/.test(t)) return "quadjet";
-    if (/^(B7[6-8].|A3[03].|A35.|MD1[01]|DC10|L101|IL[89]\d|C17|KC46|A310)/.test(t)) return "widebody";
-    if (/^(A3[12]\d|A2[02]\d|A[12]\dN|B73[0-9]|B3[89]M|BCS[1-3]|B75[0-9]|MD[89]\d|B712|E295|MC21)/.test(t)) return "narrowbody";
-    return sizeFromCategory(category) || "light";
-  }
-
-  function dimColor(hslStr) {
-    var m = hslStr.match(/[\d.]+/g);
-    if (!m || m.length < 3) return hslStr;
-    var h = +m[0], s = +m[1], l = +m[2];
-    return "hsl(" + h + "," + Math.round(s * 0.4) + "%," + Math.round(l * 0.7 + 20) + "%)";
-  }
 
   const GROUND_COLOR = "hsl(210,15%,42%)";
 

@@ -1033,6 +1033,42 @@
     return pts;
   }
 
+  function sizeFromCategory(cat) {
+    if (!cat) return null;
+    switch (cat) {
+      case "A1": case "A2": case "B1": case "B2": case "B4": case "B6": return "light";
+      case "A3": return "narrowbody";
+      case "A4": case "A5": case "A6": return "widebody";
+      case "A7": return "heli";
+      default: return null;
+    }
+  }
+
+  function sizeClass(type, category) {
+    if (!type) return sizeFromCategory(category) || "light";
+    var t = type.toUpperCase();
+    if (/^(EC\d|H1[2-9]\d|H60|R22|R44|R66|S76|S92|A1[0-9]\d|AS\d|B[024]\d\d|MD[5-9]\d|BK|K[A-Z]\d|MI\d|NH90)/.test(t)) return "heli";
+    if (/^(C1[2-9]\d|C2[0-1]\d|P28|PA\d|SR2[02]|DA[24]\d|BE[23]\d|M20|TB[12]\d|DR4|RV\d|COL[34]|TRIN|P46T|PC12|GLST)/.test(t)) return "light";
+    if (/^(AT[4-7]\d|DH8[A-D]|DHC[6-8]|SF34|SB20|B190|C208|PC[0-9]|TBM[0-9]|JS[2-4]\d|AN[2-3]\d|L410|DO[0-9]|J328|E120|BE[9A][0-9]|SW[34]|M28)/.test(t)) return "turboprop";
+    if (/^(CRJ|E[1-2][0-9]\d|ERJ|GLF[2-7]|GL\dT|GLEX|G[2-7]\d\d|GA[5-7].|LJ\d|CL[0-9]|C[5-7]\d\d|C25|C56|C68|F[29][0-9]\d|FA[57]|H25|HA4|PRM|ASTR|GALX|E35L|E55P|EA50|SF50|PC24|P180)/.test(t)) return "bizjet";
+    if (/^(A38\d|B74[0-9]|A34[0-9]|IL96|C5M?|A400|AN12)/.test(t)) return "quadjet";
+    if (/^(B7[6-8].|A3[03].|A35.|MD1[01]|DC10|L101|IL[89]\d|C17|KC46|A310)/.test(t)) return "widebody";
+    if (/^(A3[12]\d|A2[02]\d|A[12]\dN|B73[0-9]|B3[89]M|BCS[1-3]|B75[0-9]|MD[89]\d|B712|E295|MC21)/.test(t)) return "narrowbody";
+    return sizeFromCategory(category) || "light";
+  }
+
+  function isLikelyPrivateClass(type, category) {
+    var cls = sizeClass(type, category);
+    return cls === "bizjet" || cls === "light" || cls === "turboprop";
+  }
+
+  function dimColor(hslStr) {
+    var m = hslStr.match(/[\d.]+/g);
+    if (!m || m.length < 3) return hslStr;
+    var h = +m[0], s = +m[1], l = +m[2];
+    return "hsl(" + h + "," + Math.round(s * 0.4) + "%," + Math.round(l * 0.7 + 20) + "%)";
+  }
+
   return {
     AIRLINES: AIRLINES,
     AIRLINE_IATA_ALIASES: AIRLINE_IATA_ALIASES,
@@ -1076,6 +1112,10 @@
     scoreArrivalCandidate: scoreArrivalCandidate,
     sortAirportArrivalRows: sortAirportArrivalRows,
     sortAirportDepartureRows: sortAirportDepartureRows,
-    slantKm: slantKm
+    slantKm: slantKm,
+    sizeFromCategory: sizeFromCategory,
+    sizeClass: sizeClass,
+    isLikelyPrivateClass: isLikelyPrivateClass,
+    dimColor: dimColor
   };
 });
