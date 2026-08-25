@@ -1,8 +1,12 @@
-// Live traffic provider failover: primary (adsb.lol) with backup (airplanes.live).
-// Both use readsb-compatible payloads so the ac[] shape is identical.
+// Live traffic provider failover: primary (adsb.lol) with backup (adsb.fi).
+// Both use readsb-compatible payloads so the ac[] shape is identical, and both
+// take the same /lat/<lat>/lon/<lon>/dist/<nm> path with a nautical-mile radius.
+//
+// airplanes.live was the backup until Aug 2026, when it began returning 403 to
+// unregistered clients; adsb.fi's open-data v3 API replaced it.
 
 const PRIMARY_API = "https://api.adsb.lol/v2";
-const BACKUP_API = "https://api.airplanes.live/v2";
+const BACKUP_API = "https://opendata.adsb.fi/api/v3";
 
 const FETCH_TIMEOUT_MS = 6000;
 const HARD_FAIL_THRESHOLD = 2;
@@ -10,7 +14,7 @@ const STALE_THRESHOLD = 3;
 const RECOVERY_PROBE_MS = 30000;
 const STALE_ADVANCE_MS = 2000;
 const MAX_GRID_ENTRIES = 200;
-const KM_PER_NM = 1.852;
+// adsb.fi rejects a dist above 250 NM with a 400.
 const BACKUP_MAX_RADIUS_NM = 250;
 
 const PROXY_HEADERS = { "User-Agent": "contrails/1.0 (+https://gauravdraj.github.io/contrails/)" };
@@ -45,8 +49,12 @@ async function fetchFromPrimary(gridPath) {
 }
 
 export function buildBackupPath(snapped) {
-  const radiusNm = Math.max(1, Math.min(BACKUP_MAX_RADIUS_NM, Math.ceil(snapped.dist / KM_PER_NM)));
-  return "/point/" + snapped.lat.toFixed(2) + "/" + snapped.lon.toFixed(2) + "/" + radiusNm;
+  return buildTrafficPath(snapped.lat, snapped.lon, snapped.dist, 2);
+}
+
+function buildTrafficPath(lat, lon, radiusNm, precision) {
+  const radius = Math.max(1, Math.min(BACKUP_MAX_RADIUS_NM, Math.ceil(radiusNm)));
+  return "/lat/" + lat.toFixed(precision) + "/lon/" + lon.toFixed(precision) + "/dist/" + radius;
 }
 
 async function fetchFromBackupPath(path) {
@@ -107,9 +115,9 @@ async function backupOnce(snapped) {
 }
 
 // Resilient point lookup for callers that don't need the grid's sticky failover
-// (airport / nearby snapshots). Tries adsb.lol, then airplanes.live on any
-// failure, and throws only when both providers are unusable. radiusNm is passed
-// straight through to both providers' radius parameter.
+// (airport / nearby snapshots). Tries adsb.lol, then adsb.fi on any failure, and
+// throws only when both providers are unusable. radiusNm is passed straight
+// through to both providers' radius parameter.
 export async function fetchAircraftResilient(lat, lon, radiusNm) {
   const primaryPath = "/lat/" + lat.toFixed(4) + "/lon/" + lon.toFixed(4) + "/dist/" + radiusNm;
   try {
@@ -119,9 +127,7 @@ export async function fetchAircraftResilient(lat, lon, radiusNm) {
     // fall through to the backup provider
   }
 
-  const radius = Math.max(1, Math.min(BACKUP_MAX_RADIUS_NM, Math.ceil(radiusNm)));
-  const backupPath = "/point/" + lat.toFixed(2) + "/" + lon.toFixed(2) + "/" + radius;
-  const data = await fetchFromBackupPath(backupPath);
+  const data = await fetchFromBackupPath(buildTrafficPath(lat, lon, radiusNm, 2));
   if (isValidPayload(data)) return normalizePayload(data, "backup");
   throw new Error("Traffic data unavailable");
 }

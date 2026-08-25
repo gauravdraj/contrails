@@ -57,7 +57,7 @@ The app stays GitHub Pages-friendly. The static frontend lives at the repo root,
 
 | Worker endpoint | Proxies to | Purpose |
 |---|---|---|
-| `GET /adsb/*` | adsb.lol (primary) / airplanes.live (backup) | Live aircraft positions with per-grid failover |
+| `GET /adsb/*` | adsb.lol (primary) / adsb.fi (backup) | Live aircraft positions with per-grid failover |
 | `GET,POST /route/*` | api.adsb.lol/api/0 | Route lookups |
 | `POST /routeset` | ADSBDB + OpenSky | Batch route + track lookup for up to 20 planes |
 | `GET /track/<hex>` | globe.airplanes.live / globe.adsb.lol traces (failover) | Full flight track path |
@@ -162,6 +162,12 @@ npx wrangler deploy
 
 Then set the `WORKER_URL` constant in `app.js` to your worker's URL.
 
+Deploys can also run from CI (`.github/workflows/deploy.yml`) on any push that
+touches `worker/`, or via the "Run workflow" button. That path needs a
+`CLOUDFLARE_API_TOKEN` repo secret created from Cloudflare's "Edit Cloudflare
+Workers" API-token template; without it the job skips the deploy (and stays
+green) rather than failing every push.
+
 ## OpenSky Track Proxy (removed)
 
 > Track paths come from the [airplanes.live](https://airplanes.live) and [adsb.lol](https://adsb.lol)
@@ -185,7 +191,7 @@ Then set the `WORKER_URL` constant in `app.js` to your worker's URL.
 | `airports.json` | Airport positions (IATA, lat, lng, name) |
 | `runways.json` | Runway endpoints for overlay lines |
 | `worker/src/index.js` | Cloudflare Worker entrypoint and route wiring |
-| `worker/src/providers.js` | Traffic failover: adsb.lol primary, airplanes.live backup |
+| `worker/src/providers.js` | Traffic failover: adsb.lol primary, adsb.fi open-data backup |
 | `worker/src/opensky.js` | OpenSky track fetching, route merging, phase detection |
 | `worker/src/enrich.js` | Route enrichment from track + ADSBDB data |
 | `worker/src/nearby.js` | Siri nearby-aircraft endpoint and formatting |
@@ -201,7 +207,7 @@ Then set the `WORKER_URL` constant in `app.js` to your worker's URL.
 ## Credits
 
 - Aircraft silhouettes adapted from [tar1090](https://github.com/wiedehopf/tar1090) (GPL-3.0)
-- Live data from [adsb.lol](https://adsb.lol), backup feed from [airplanes.live](https://airplanes.live)
+- Live data from [adsb.lol](https://adsb.lol), backup feed from [adsb.fi](https://adsb.fi) open data (personal, non-commercial use)
 - Flight-track paths from the [adsb.lol](https://adsb.lol) / [airplanes.live](https://airplanes.live) trace feeds
 - Map tiles from [CARTO](https://carto.com/)
 - Built with [Leaflet](https://leafletjs.com/)

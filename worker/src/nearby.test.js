@@ -53,7 +53,7 @@ test("nearby JSON includes structured plane data for widgets", async (t) => {
   assert.match(body.text, /United 238 \(A320\) \[N123UA\]/);
 });
 
-test("nearby falls back to airplanes.live when adsb.lol fails", async (t) => {
+test("nearby falls back to adsb.fi when adsb.lol fails", async (t) => {
   const originalFetch = globalThis.fetch;
   const originalCaches = globalThis.caches;
 
@@ -61,8 +61,8 @@ test("nearby falls back to airplanes.live when adsb.lol fails", async (t) => {
   globalThis.fetch = async (url) => {
     const u = String(url);
     if (u.includes("api.adsb.lol")) return new Response("", { status: 502 });
-    if (u.includes("api.airplanes.live")) {
-      assert.match(u, /api\.airplanes\.live\/v2\/point\/37\.62\/-122\.38\/25/);
+    if (u.includes("opendata.adsb.fi")) {
+      assert.match(u, /opendata\.adsb\.fi\/api\/v3\/lat\/37\.62\/lon\/-122\.38\/dist\/25/);
       return new Response(JSON.stringify({
         ac: [{
           hex: "aabbcc",

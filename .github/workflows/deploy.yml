@@ -1,0 +1,51 @@
+name: Deploy Worker
+
+# Deploys worker/ to Cloudflare. This exists because the Worker can no longer be
+# deployed from a local machine with wrangler login — deploys run here using a
+# CLOUDFLARE_API_TOKEN repo secret (Settings -> Secrets and variables ->
+# Actions) created from Cloudflare's "Edit Cloudflare Workers" token template.
+#
+# When the secret is absent the job skips the deploy and still succeeds, so an
+# unconfigured repo doesn't email a failure on every push. A manual run
+# (workflow_dispatch) still reports the skip in its annotations.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "worker/**"
+      - ".github/workflows/deploy.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - name: Check for Cloudflare credentials
+        id: creds
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
+            echo "::warning::CLOUDFLARE_API_TOKEN secret is not set; skipping deploy."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Unit tests
+        if: steps.creds.outputs.ready == 'true'
+        working-directory: worker
+        run: npm test
+      - name: Deploy
+        if: steps.creds.outputs.ready == 'true'
+        working-directory: worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: npx --yes wrangler@4 deploy
+      - name: Probe deployed endpoints
+        if: steps.creds.outputs.ready == 'true'
+        run: node scripts/healthcheck.mjs || (sleep 30 && node scripts/healthcheck.mjs)

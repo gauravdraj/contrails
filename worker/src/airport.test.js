@@ -242,14 +242,14 @@ test("handleAirport fetches primary with dist/65 (NM)", async (t) => {
   assert.ok(primaryUrl.includes("/dist/65"), `Expected dist/65 in URL but got: ${primaryUrl}`);
 });
 
-test("handleAirport falls back to airplanes.live when adsb.lol fails", async (t) => {
+test("handleAirport falls back to adsb.fi when adsb.lol fails", async (t) => {
   const originalCaches = globalThis.caches;
   const originalFetch = globalThis.fetch;
   globalThis.caches = { default: { match: async () => null, put: async () => {} } };
   globalThis.fetch = async (url) => {
     const u = typeof url === "string" ? url : url.toString();
     if (u.includes("api.adsb.lol")) return new Response("", { status: 502 });
-    if (u.includes("api.airplanes.live")) {
+    if (u.includes("opendata.adsb.fi")) {
       return new Response(JSON.stringify({
         ac: [{ hex: "a12345", flight: "UAL123  ", t: "B738", lat: 33.95, lon: -118.40, alt_baro: 3500, gs: 180, baro_rate: -800 }],
       }), { status: 200 });

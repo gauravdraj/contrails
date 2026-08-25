@@ -73,14 +73,14 @@ test("normalizePayload defaults now and ctime when both are missing", () => {
   assert.equal(result.source, "primary");
 });
 
-test("buildBackupPath converts kilometers to capped nautical miles", () => {
+test("buildBackupPath mirrors the primary path and caps the radius", () => {
   assert.equal(
     buildBackupPath({ lat: 37.6, lon: -122.4, dist: 200 }),
-    "/point/37.60/-122.40/108",
+    "/lat/37.60/lon/-122.40/dist/200",
   );
   assert.equal(
     buildBackupPath({ lat: 37.6, lon: -122.4, dist: 500 }),
-    "/point/37.60/-122.40/250",
+    "/lat/37.60/lon/-122.40/dist/250",
   );
 });
 
@@ -126,7 +126,7 @@ test("fetchTraffic serves backup on the first primary failure without going stic
   const backupPayload = { ac: [{ hex: "def456" }], now: Date.now() };
 
   globalThis.fetch = async (url) => {
-    if (typeof url === "string" && url.includes("api.airplanes.live")) {
+    if (typeof url === "string" && url.includes("opendata.adsb.fi")) {
       return new Response(JSON.stringify(backupPayload), { status: 200 });
     }
     throw new Error("primary down");
@@ -150,7 +150,7 @@ test("fetchTraffic switches to sticky backup after consecutive hard failures", a
   const backupPayload = { ac: [{ hex: "def456" }], now: Date.now() };
 
   globalThis.fetch = async (url) => {
-    if (typeof url === "string" && url.includes("api.airplanes.live")) {
+    if (typeof url === "string" && url.includes("opendata.adsb.fi")) {
       return new Response(JSON.stringify(backupPayload), { status: 200 });
     }
     throw new Error("primary down");
@@ -177,7 +177,7 @@ test("fetchTraffic falls back to backup after invalid payloads", async (t) => {
   const backupPayload = { ac: [{ hex: "bbb111" }], now: Date.now() };
 
   globalThis.fetch = async (url) => {
-    if (typeof url === "string" && url.includes("api.airplanes.live")) {
+    if (typeof url === "string" && url.includes("opendata.adsb.fi")) {
       return new Response(JSON.stringify(backupPayload), { status: 200 });
     }
     return new Response(JSON.stringify({ error: "bad" }), { status: 200 });
@@ -203,7 +203,7 @@ test("fetchTraffic falls back to backup after stale primary data", async (t) => 
   const backupPayload = { ac: [{ hex: "ccc222" }], now: 200000 };
 
   globalThis.fetch = async (url) => {
-    if (typeof url === "string" && url.includes("api.airplanes.live")) {
+    if (typeof url === "string" && url.includes("opendata.adsb.fi")) {
       return new Response(JSON.stringify(backupPayload), { status: 200 });
     }
     return new Response(JSON.stringify({ ac: [{ hex: "aaa111" }], now: staleNow }), { status: 200 });
@@ -232,7 +232,7 @@ test("fetchTraffic keeps stale primary data when backup is unavailable", async (
   const staleNow = 100000;
 
   globalThis.fetch = async (url) => {
-    if (typeof url === "string" && url.includes("api.airplanes.live")) {
+    if (typeof url === "string" && url.includes("opendata.adsb.fi")) {
       throw new Error("backup down");
     }
     return new Response(JSON.stringify({ ac: [{ hex: "aaa" }], now: staleNow }), { status: 200 });
@@ -386,7 +386,7 @@ test("fetchTraffic primary HTTP error counts as hard failure", async (t) => {
   const backupPayload = { ac: [{ hex: "http-err-backup" }], now: Date.now() };
 
   globalThis.fetch = async (url) => {
-    if (typeof url === "string" && url.includes("api.airplanes.live")) {
+    if (typeof url === "string" && url.includes("opendata.adsb.fi")) {
       return new Response(JSON.stringify(backupPayload), { status: 200 });
     }
     return new Response("rate limited", { status: 429 });
@@ -502,14 +502,14 @@ test("fetchAircraftResilient returns primary data on success", async (t) => {
   assert.ok(primaryUrl.includes("/lat/37.6200/lon/-122.3800/dist/65"));
 });
 
-test("fetchAircraftResilient falls back to airplanes.live when primary fails", async (t) => {
+test("fetchAircraftResilient falls back to adsb.fi when primary fails", async (t) => {
   const originalFetch = globalThis.fetch;
   const backupPayload = { ac: [{ hex: "bkp01" }], now: Date.now() };
   let backupUrl = null;
 
   globalThis.fetch = async (url) => {
     const u = typeof url === "string" ? url : url.toString();
-    if (u.includes("api.airplanes.live")) {
+    if (u.includes("opendata.adsb.fi")) {
       backupUrl = u;
       return new Response(JSON.stringify(backupPayload), { status: 200 });
     }
@@ -520,7 +520,7 @@ test("fetchAircraftResilient falls back to airplanes.live when primary fails", a
   const result = await fetchAircraftResilient(51.47, -0.45, 25);
   assert.equal(result.source, "backup");
   assert.equal(result.ac[0].hex, "bkp01");
-  assert.ok(backupUrl.includes("/point/51.47/-0.45/25"));
+  assert.ok(backupUrl.includes("/lat/51.47/lon/-0.45/dist/25"));
 });
 
 test("fetchAircraftResilient caps the backup radius at 250 NM", async (t) => {
@@ -529,7 +529,7 @@ test("fetchAircraftResilient caps the backup radius at 250 NM", async (t) => {
 
   globalThis.fetch = async (url) => {
     const u = typeof url === "string" ? url : url.toString();
-    if (u.includes("api.airplanes.live")) {
+    if (u.includes("opendata.adsb.fi")) {
       backupUrl = u;
       return new Response(JSON.stringify({ ac: [] }), { status: 200 });
     }
