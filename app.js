@@ -53,7 +53,7 @@
     throw new Error("Contrails core helpers failed to load.");
   }
 
-  const APP_VERSION = "2.32";
+  const APP_VERSION = "2.33";
   const isLocal = location.hostname === "localhost" || location.hostname === "127.0.0.1";
   const isIOSDevice = /iP(ad|hone|od)/.test(navigator.userAgent) ||
     (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
@@ -172,7 +172,8 @@
   const REFRESH_MS = 5000;
   const DEFAULT_MAP_ZOOM = 11;
   const MIN_MAP_ZOOM = 5;
-  const TILE_LAYER_URL = "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png";
+  // CARTO basemap keys are client-side by design; keyless tiles carry a watermark.
+  const TILE_LAYER_URL = "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png?key=cb1_3umv_1_aa4684ea4fce195778be2673";
   const TILE_LAYER_OPTIONS = {
     maxZoom: 18,
     keepBuffer: 6,

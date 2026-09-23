@@ -9,7 +9,7 @@
 // Bump VERSION in lockstep with APP_VERSION in app.js so a new deploy supersedes
 // the cached shell within one launch.
 
-const VERSION = "2.32";
+const VERSION = "2.33";
 const CACHE = "contrails-" + VERSION;
 
 const CORE_ASSETS = [
