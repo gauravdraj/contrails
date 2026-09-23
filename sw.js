@@ -6,16 +6,25 @@
 //   - Never cache live data, tiles, or weather radar — those always hit the network.
 //   - Cache name is version-scoped; a bumped VERSION invalidates the old shell.
 //
-// Bump VERSION in lockstep with APP_VERSION in app.js so a new deploy supersedes
+// Bump VERSION in lockstep with APP_VERSION in js/app-core.js so a new deploy supersedes
 // the cached shell within one launch.
 
-const VERSION = "2.33";
+const VERSION = "2.34";
 const CACHE = "contrails-" + VERSION;
 
 const CORE_ASSETS = [
   "./",
   "./index.html",
-  "./app.js",
+  "./styles.css",
+  "./js/app-core.js",
+  "./js/map.js",
+  "./js/features.js",
+  "./js/data.js",
+  "./js/render.js",
+  "./js/geolocation.js",
+  "./js/airport-board.js",
+  "./js/controls.js",
+  "./js/boot.js",
   "./contrails-core.js",
   "./manifest.json",
   "./airports.json",
@@ -31,6 +40,9 @@ const CDN_ASSETS = [
   "https://unpkg.com/leaflet-doubletapdrag@0.1.2/Leaflet.DoubleTapDrag.js",
   "https://unpkg.com/leaflet-doubletapdragzoom@0.3.2/Leaflet.DoubleTapDragZoom.js",
   "https://unpkg.com/@luomus/leaflet-smooth-wheel-zoom@1.0.0/SmoothWheelZoom.js",
+  "https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.css",
+  "https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js",
+  "https://unpkg.com/@maplibre/maplibre-gl-leaflet@0.1.4/leaflet-maplibre-gl.js",
 ];
 
 // Live data / heavy tile sets — always straight to network, never cached here.

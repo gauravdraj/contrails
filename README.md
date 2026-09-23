@@ -50,15 +50,15 @@ The normal Safari tab keeps browser chrome visible, so the Home Screen launch is
 
 The app stays GitHub Pages-friendly. The static frontend lives at the repo root, while a small Cloudflare Worker handles API proxying, caching, and third-party lookups that should not happen directly in the browser:
 
-- `index.html` handles the UI shell, styles, and HTML structure.
-- `app.js` contains all browser-side application logic (map setup, data fetching, rendering).
+- `index.html` is the HTML shell; `styles.css` holds the styles.
+- `js/*.js` contains the browser-side application logic as plain scripts loaded in order (they share one global scope; no build step).
 - `contrails-core.js` contains shared pure helpers for viewport policy, geometry, airline lookups, and HTML escaping.
 - A [Cloudflare Worker](worker/) handles API proxying, with the nearby, FR24, ADSBDB, and HTTP response helpers split into focused modules under `worker/src/`.
 
 | Worker endpoint | Proxies to | Purpose |
 |---|---|---|
-| `GET /adsb/*` | adsb.lol (primary) / adsb.fi (backup) | Live aircraft positions with per-grid failover |
-| `GET,POST /route/*` | api.adsb.lol/api/0 | Route lookups |
+| `GET /adsb/lat/<lat>/lon/<lon>/dist/<nm>` | adsb.lol (primary) / adsb.fi (backup) / relay | Live aircraft positions with per-grid failover |
+| `GET /adsb/hex/<hex>`, `/adsb/callsign/<cs>` | adsb.lol / adsb.fi v2 / relay | Search lookups; any other `/adsb/*` path is rejected |
 | `POST /routeset` | ADSBDB + OpenSky | Batch route + track lookup for up to 20 planes |
 | `GET /track/<hex>` | globe.airplanes.live / globe.adsb.lol traces (failover) | Full flight track path |
 | `GET /aircraft/<hex>` | ADSBDB | Airframe identity: registration, type, manufacturer, operator, country (cached 30 d) |
@@ -75,10 +75,10 @@ adsb.lol rate-limits (429) and adsb.fi rejects (403) Cloudflare's shared egress 
 
 ## Local Development
 
-The local dev server serves the app and proxies live ADS-B, route, and schedule lookups. It also returns a fixed default browse area for `/api/geo` so the non-location fallback path can be exercised locally:
+`scripts/dev-server.mjs` serves the frontend on `:8766` and runs the real Worker module (`worker/src/index.js`) under Node on `:8791`, which the app targets when served from localhost. `/geo` returns a fixed London area so the non-location fallback path can be exercised locally. (`wrangler dev` would be the usual tool, but workerd doesn't run on the Pi.)
 
 ```bash
-python3 server.py
+node scripts/dev-server.mjs
 # Open http://localhost:8766/?lat=51.5074&lng=-0.1278
 ```
 
@@ -164,10 +164,10 @@ npm install
 npx wrangler deploy
 ```
 
-Then set the `WORKER_URL` constant in `app.js` to your worker's URL.
+Then set the `WORKER_URL` constant in `js/app-core.js` to your worker's URL.
 
 Deploys can also run from CI (`.github/workflows/deploy.yml`) on any push that
-touches `worker/`, or via the "Run workflow" button. That path needs a
+touches `worker/` or `airports.json`, or via the "Run workflow" button. That path needs a
 `CLOUDFLARE_API_TOKEN` repo secret created from Cloudflare's "Edit Cloudflare
 Workers" API-token template; without it the job skips the deploy (and stays
 green) rather than failing every push.
@@ -179,24 +179,25 @@ green) rather than failing every push.
 > keyless and reachable from the Worker — so the OpenSky rate-limiting problem that once motivated a
 > self-hosted proxy is gone. The old `local-proxy/` OpenSky Basic-auth proxy has been removed
 > (OpenSky also migrated to OAuth2, so it no longer worked); there is no `OPENSKY_PROXY` hook in
-> `app.js`.
+> the app.
 
 ## Files
 
 | File | Purpose |
 |------|---------|
-| `index.html` | App shell, styles, and HTML structure |
-| `app.js` | Browser application logic (map, rendering, data fetching) |
+| `index.html` | App shell and HTML structure |
+| `styles.css` | App styles |
+| `js/*.js` | Browser application logic, split by subsystem (see `.cursor/rules/architecture.mdc`) |
 | `contrails-core.js` | Shared pure helpers (geometry, policy, airlines, escaping) used by the app and tests |
 | `contrails-core.test.js` | Unit tests for shared helper logic |
 | `smoke-boot.mjs` | Local smoke check for page boot with fixed coordinates |
 | `scripts/healthcheck.mjs` | Live Worker endpoint health check (catches silent upstream breakage) |
-| `server.py` | Local dev server with ADS-B, route, and schedule proxying |
-| `airports.json` | Airport positions (IATA, lat, lng, name) |
+| `scripts/dev-server.mjs` | Local dev: static server + the real Worker under Node |
+| `airports.json` | Airport positions (IATA, lat, lng, name, city), shared by the app and the Worker |
 | `runways.json` | Runway endpoints for overlay lines |
 | `worker/src/index.js` | Cloudflare Worker entrypoint and route wiring |
 | `worker/src/providers.js` | Traffic failover: adsb.lol primary, adsb.fi open-data backup |
-| `worker/src/opensky.js` | OpenSky track fetching, route merging, phase detection |
+| `worker/src/routes.js` | Route merging, track-based route inference, phase detection |
 | `worker/src/enrich.js` | Route enrichment from track + ADSBDB data |
 | `worker/src/nearby.js` | Siri nearby-aircraft endpoint and formatting |
 | `worker/src/airport.js` | Airport-centered traffic endpoint |

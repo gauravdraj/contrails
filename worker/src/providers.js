@@ -7,6 +7,8 @@
 
 const PRIMARY_API = "https://api.adsb.lol/v2";
 const BACKUP_API = "https://opendata.adsb.fi/api/v3";
+// adsb.fi only serves hex/callsign lookups on its v2 API (v3 returns 400).
+const BACKUP_LOOKUP_API = "https://opendata.adsb.fi/api/v2";
 
 const FETCH_TIMEOUT_MS = 6000;
 const HARD_FAIL_THRESHOLD = 2;
@@ -171,6 +173,40 @@ export async function fetchAircraftResilient(lat, lon, radiusNm) {
   const data = await fetchFromBackupPath(buildTrafficPath(lat, lon, radiusNm, 2));
   if (isValidPayload(data)) return normalizePayload(data, "backup");
   throw new Error("Traffic data unavailable");
+}
+
+async function fetchJsonFrom(url, headers, label) {
+  const resp = await fetch(url, {
+    method: "GET",
+    headers,
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+  });
+  if (!resp.ok) throw new Error(label + " HTTP " + resp.status);
+  return resp.json();
+}
+
+// Hex / callsign lookup with the same provider chain as traffic:
+// adsb.lol, then adsb.fi, then the relay. kind is "hex" or "callsign".
+export async function fetchLookupResilient(kind, value) {
+  const path = "/" + kind + "/" + encodeURIComponent(value);
+  const attempts = [
+    () => fetchJsonFrom(PRIMARY_API + path, PROXY_HEADERS, "Primary").then((d) => [d, "primary"]),
+    () => fetchJsonFrom(BACKUP_LOOKUP_API + path, PROXY_HEADERS, "Backup").then((d) => [d, "backup"]),
+  ];
+  if (relay) {
+    attempts.push(() => fetchJsonFrom(relay.url + "/adsb" + path, { ...PROXY_HEADERS, "X-Relay-Key": relay.key }, "Relay")
+      .then((d) => [d, "relay"]));
+  }
+  let lastError = null;
+  for (const attempt of attempts) {
+    try {
+      const [data, source] = await attempt();
+      if (isValidPayload(data)) return normalizePayload(data, source);
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  throw new Error("Lookup unavailable" + (lastError ? ": " + lastError.message : ""));
 }
 
 export async function fetchTraffic(gridPath, snapped, env) {

@@ -73,6 +73,8 @@ async function run() {
   // Pull a live hex so track / photo / routeset probe a real aircraft.
   const hex = adsb?.data?.ac?.find((a) => a.hex)?.hex?.toLowerCase() || "4ca9cc";
 
+  await check("search", `/adsb/hex/${hex}`, (r) => (Array.isArray(r.data?.ac) ? `hex ${hex} via ${r.data.source}` : false));
+
   await check("nearby", `/nearby?lat=${PROBE.lat}&lng=${PROBE.lng}&format=json`, (r) =>
     typeof r.data?.text === "string" ? "text returned" : false
   );
@@ -102,6 +104,19 @@ async function run() {
   await check("photo", `/photo/${hex}`, (r) =>
     r.data === null ? `no photo for ${hex} (ok)` : r.data?.src ? "image returned" : false
   );
+
+  // The residential relay is the Worker's last-resort egress; probe it directly
+  // so a dead Pi shows up before both direct feeds happen to fail at once.
+  if (process.env.ADSB_RELAY_URL) {
+    try {
+      const resp = await fetch(process.env.ADSB_RELAY_URL.replace(/\/+$/, "") + "/healthz", {
+        signal: AbortSignal.timeout(10000),
+      });
+      record("relay", resp.ok, resp.ok ? "healthz ok" : `HTTP ${resp.status}`);
+    } catch (err) {
+      record("relay", false, err.name === "TimeoutError" ? "timeout" : err.message);
+    }
+  }
 
   const failed = results.filter((r) => !r.ok);
   console.log(`\n${results.length - failed.length}/${results.length} checks passed.`);

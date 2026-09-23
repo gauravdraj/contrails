@@ -2,7 +2,7 @@ import { MAJOR_AIRPORTS } from "./airports.js";
 import { enrichRoutes } from "./enrich.js";
 import { bearingDeg, cardinalFromBearing, haversineKm } from "./geo.js";
 import { json, plainText } from "./http.js";
-import { formatRouteLabel } from "./opensky.js";
+import { formatRouteLabel } from "./routes.js";
 import { fetchAircraftResilient } from "./providers.js";
 
 const MAP_URL = "https://gauravdraj.github.io/contrails";

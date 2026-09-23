@@ -8,7 +8,7 @@ import {
   detectPhase,
   mergeRoutes,
   formatRouteLabel,
-} from "./opensky.js";
+} from "./routes.js";
 
 // --- nearestAirport ---
 

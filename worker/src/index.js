@@ -3,13 +3,11 @@ import { buildSchedulePayload } from "./fr24.js";
 import { CORS_HEADERS, json } from "./http.js";
 import { handleAirport } from "./airport.js";
 import { handleNearby } from "./nearby.js";
-import { mergeRoutes, detectPhase, formatRouteLabel } from "./opensky.js";
+import { mergeRoutes, detectPhase, formatRouteLabel } from "./routes.js";
 import { fetchTrace } from "./traces.js";
-import { configureRelay, fetchTraffic } from "./providers.js";
+import { configureRelay, fetchLookupResilient, fetchTraffic } from "./providers.js";
 import { fr24CheckBackoff, fr24TriggerBackoff, fr24ResetBackoff, fr24CachedSearch, fr24Fetch } from "./fr24-backoff.js";
 
-const ADSB_API = "https://api.adsb.lol/v2";
-const ADSB_ROUTE_API = "https://api.adsb.lol/api/0";
 const PLANESPOTTERS_API = "https://api.planespotters.net/pub/photos";
 const FR24_API = "https://api.flightradar24.com/common/v1";
 const DATIS_API = "https://atis.info/api";
@@ -22,10 +20,6 @@ const DATIS_CACHE_TTL = 60;
 
 const CONTACT_USER_AGENT = "contrails/1.0 (+https://gauravdraj.github.io/contrails/)";
 
-const JSON_PROXY_HEADERS = {
-  "User-Agent": CONTACT_USER_AGENT,
-  "Content-Type": "application/json",
-};
 
 
 export default {
@@ -38,7 +32,6 @@ export default {
     }
 
     if (url.pathname.startsWith("/adsb/")) return proxyAdsb(url, env);
-    if (url.pathname.startsWith("/route/")) return proxyRoute(url, request);
     if (url.pathname.startsWith("/photo/")) return handlePhoto(url, ctx);
     if (url.pathname === "/routeset") return handleRouteset(request, env, ctx);
     if (url.pathname.startsWith("/track/")) return handleTrack(url, env, ctx);
@@ -88,7 +81,7 @@ async function proxyAdsb(url, env) {
   const distIdx = parts.indexOf("dist");
 
   if (latIdx === -1 || lonIdx === -1 || distIdx === -1) {
-    return proxy(ADSB_API + url.pathname.slice("/adsb".length) + url.search, "GET");
+    return proxyAdsbLookup(url);
   }
 
   const lat = parseFloat(parts[latIdx + 1]);
@@ -96,7 +89,7 @@ async function proxyAdsb(url, env) {
   const dist = parseFloat(parts[distIdx + 1]);
 
   if (!isFinite(lat) || !isFinite(lon) || !isFinite(dist)) {
-    return proxy(ADSB_API + url.pathname.slice("/adsb".length) + url.search, "GET");
+    return json(400, { error: "Invalid coordinates" });
   }
 
   const snapped = snapAdsbGrid(lat, lon, dist);
@@ -124,24 +117,34 @@ async function proxyAdsb(url, env) {
   return response;
 }
 
-async function proxyRoute(url, request) {
-  const path = url.pathname.slice("/route".length);
-  const body = request.method === "POST" ? await request.text() : null;
-  return proxy(ADSB_ROUTE_API + path + url.search, request.method, body);
-}
+// Only the lookups the app uses (search by hex or callsign) are proxied, so the
+// Worker can't be used as a general-purpose adsb.lol proxy.
+const ADSB_LOOKUP_PATTERNS = {
+  hex: /^[0-9a-f]{6}$/,
+  callsign: /^[A-Z0-9]{2,8}$/,
+};
 
-async function proxy(target, method, body) {
+async function proxyAdsbLookup(url) {
+  const match = url.pathname.match(/^\/adsb\/(hex|callsign)\/([^/]+)$/);
+  if (!match) return json(404, { error: "Not found" });
+  const kind = match[1];
+  const raw = decodeURIComponent(match[2]).trim();
+  const value = kind === "hex" ? raw.toLowerCase() : raw.toUpperCase();
+  if (!ADSB_LOOKUP_PATTERNS[kind].test(value)) return json(400, { error: "Invalid " + kind });
+
+  const cacheKey = new Request("https://adsb-lookup/" + kind + "/" + value);
+  const cache = caches.default;
+  const cached = await cache.match(cacheKey);
+  if (cached) return cached;
+
   try {
-    const resp = await fetch(target, {
-      method,
-      headers: JSON_PROXY_HEADERS,
-      body,
+    const result = await fetchLookupResilient(kind, value);
+    const response = new Response(JSON.stringify(result), {
+      status: 200,
+      headers: { "Content-Type": "application/json", "Cache-Control": "s-maxage=5", ...CORS_HEADERS },
     });
-    const data = await resp.arrayBuffer();
-    return new Response(data, {
-      status: resp.status,
-      headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
-    });
+    cache.put(cacheKey, response.clone());
+    return response;
   } catch (error) {
     return json(502, { error: error.message });
   }

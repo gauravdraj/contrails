@@ -3,8 +3,9 @@
 
 adsb.lol and adsb.fi throttle/deny Cloudflare's shared egress IPs, so the Worker
 falls back to this relay, which runs on a residential connection and fetches the
-same readsb-style payload. Serves GET /adsb/lat/<lat>/lon/<lon>/dist/<nm> and
-/fr24?u=<url> for the two allowlisted FlightRadar24 endpoints.
+same readsb-style payload. Serves GET /adsb/lat/<lat>/lon/<lon>/dist/<nm>,
+/adsb/hex/<hex>, /adsb/callsign/<callsign>, and /fr24?u=<url> for the two
+allowlisted FlightRadar24 endpoints.
 
 Env: RELAY_KEY (required), RELAY_PORT (default 8089).
 """
@@ -20,9 +21,12 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-UPSTREAMS = ("https://api.adsb.lol/v2", "https://opendata.adsb.fi/api/v3")
+TRAFFIC_UPSTREAMS = ("https://api.adsb.lol/v2", "https://opendata.adsb.fi/api/v3")
+# adsb.fi only serves hex/callsign lookups on v2.
+LOOKUP_UPSTREAMS = ("https://api.adsb.lol/v2", "https://opendata.adsb.fi/api/v2")
 USER_AGENT = "contrails/1.0 (+https://gauravdraj.github.io/contrails/)"
 PATH_RE = re.compile(r"^/adsb(/lat/-?\d{1,3}(?:\.\d+)?/lon/-?\d{1,3}(?:\.\d+)?/dist/\d{1,3})$")
+LOOKUP_RE = re.compile(r"^/adsb(/hex/[0-9a-f]{6}|/callsign/[A-Z0-9]{2,8})$")
 FR24_RE = re.compile(
     r"^https://(?:api\.flightradar24\.com/common/v1/airport\.json"
     r"|www\.flightradar24\.com/v1/search/web/find)\?[A-Za-z0-9_.,%&=\[\]-]{1,400}$"
@@ -39,9 +43,9 @@ _cache: dict[str, tuple[float, bytes]] = {}
 _cache_lock = threading.Lock()
 
 
-def fetch_upstream(path: str) -> bytes:
+def fetch_upstream(path: str, upstreams: tuple[str, ...]) -> bytes:
     last_err = None
-    for base in UPSTREAMS:
+    for base in upstreams:
         req = urllib.request.Request(base + path, headers={"User-Agent": USER_AGENT})
         try:
             with urllib.request.urlopen(req, timeout=TIMEOUT_S) as resp:
@@ -70,6 +74,10 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.startswith("/fr24?"):
             return self._relay_fr24()
         m = PATH_RE.match(self.path)
+        upstreams = TRAFFIC_UPSTREAMS
+        if not m:
+            m = LOOKUP_RE.match(self.path)
+            upstreams = LOOKUP_UPSTREAMS
         if not m:
             return self._send(404, b'{"error":"not found"}')
         path = m.group(1)
@@ -79,7 +87,7 @@ class Handler(BaseHTTPRequestHandler):
         if hit and now - hit[0] < CACHE_TTL_S:
             return self._send(200, hit[1])
         try:
-            body = fetch_upstream(path)
+            body = fetch_upstream(path, upstreams)
         except RuntimeError as err:
             return self._send(502, json.dumps({"error": str(err)}).encode())
         with _cache_lock:

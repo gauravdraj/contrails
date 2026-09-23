@@ -1,5 +1,5 @@
 import { fetchCachedRouteEntry } from "./adsbdb.js";
-import { detectPhase, formatRouteLabel } from "./opensky.js";
+import { detectPhase, formatRouteLabel } from "./routes.js";
 import { fr24CachedSearch } from "./fr24-backoff.js";
 
 export const ICAO_TO_IATA = {

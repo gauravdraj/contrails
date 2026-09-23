@@ -9,6 +9,7 @@ import {
   fetchTraffic,
   fetchAircraftResilient,
   configureRelay,
+  fetchLookupResilient,
   _gridState,
   HARD_FAIL_THRESHOLD,
   STALE_THRESHOLD,
@@ -584,4 +585,41 @@ test("configureRelay stays off unless both URL and key are set", async (t) => {
 
   await assert.rejects(() => fetchAircraftResilient(37.62, -122.38, 65));
   assert.ok(seen.every((u) => !u.startsWith("https://relay.test")));
+});
+
+test("fetchLookupResilient walks adsb.lol, adsb.fi v2, then the relay", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const seen = [];
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    seen.push(u);
+    if (u.startsWith("https://relay.test/")) {
+      return new Response(JSON.stringify({ ac: [{ hex: "a1b2c3" }], now: 1 }), { status: 200 });
+    }
+    return new Response("", { status: 429 });
+  };
+  configureRelay({ ADSB_RELAY_URL: "https://relay.test", ADSB_RELAY_KEY: "k" });
+  t.after(() => { globalThis.fetch = originalFetch; configureRelay({}); });
+
+  const result = await fetchLookupResilient("hex", "a1b2c3");
+  assert.equal(result.source, "relay");
+  assert.deepEqual(seen, [
+    "https://api.adsb.lol/v2/hex/a1b2c3",
+    "https://opendata.adsb.fi/api/v2/hex/a1b2c3",
+    "https://relay.test/adsb/hex/a1b2c3",
+  ]);
+});
+
+test("fetchLookupResilient returns primary data without touching fallbacks", async (t) => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls++;
+    return new Response(JSON.stringify({ ac: [], now: 1 }), { status: 200 });
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const result = await fetchLookupResilient("callsign", "UAL1");
+  assert.equal(result.source, "primary");
+  assert.equal(calls, 1);
 });

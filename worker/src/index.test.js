@@ -170,3 +170,23 @@ test("schedule page-2 rate limit triggers backoff", async (t) => {
   const body2 = await response2.json();
   assert.equal(body2.error, "FR24 temporarily unavailable");
 });
+
+test("adsb proxy rejects paths outside the lookup allowlist", async (t) => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => { throw new Error("upstream must not be called"); };
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  for (const path of ["/adsb/v2/mil", "/adsb/point/37/-122/25", "/adsb/hex/a1b2c3/extra"]) {
+    const response = await handler.fetch(new Request("https://worker.test" + path), {}, {});
+    assert.equal(response.status, 404, path);
+  }
+  const badHex = await handler.fetch(new Request("https://worker.test/adsb/hex/zzzzzz"), {}, {});
+  assert.equal(badHex.status, 400);
+  const badCallsign = await handler.fetch(new Request("https://worker.test/adsb/callsign/UAL-1"), {}, {});
+  assert.equal(badCallsign.status, 400);
+});
+
+test("route passthrough is gone", async () => {
+  const response = await handler.fetch(new Request("https://worker.test/route/callsign/UAL1"), {}, {});
+  assert.equal(response.status, 404);
+});
