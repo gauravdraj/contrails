@@ -46,6 +46,22 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: npx --yes wrangler@4 deploy
+      # Optional residential ADS-B relay (see relay/). Synced from the
+      # ADSB_RELAY_URL / ADSB_RELAY_KEY repo secrets; skipped when unset.
+      - name: Sync relay secrets
+        if: steps.creds.outputs.ready == 'true'
+        working-directory: worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          ADSB_RELAY_URL: ${{ secrets.ADSB_RELAY_URL }}
+          ADSB_RELAY_KEY: ${{ secrets.ADSB_RELAY_KEY }}
+        run: |
+          if [ -z "$ADSB_RELAY_URL" ] || [ -z "$ADSB_RELAY_KEY" ]; then
+            echo "Relay secrets not set; skipping."
+            exit 0
+          fi
+          printf '%s' "$ADSB_RELAY_URL" | npx --yes wrangler@4 secret put ADSB_RELAY_URL
+          printf '%s' "$ADSB_RELAY_KEY" | npx --yes wrangler@4 secret put ADSB_RELAY_KEY
       - name: Probe deployed endpoints
         if: steps.creds.outputs.ready == 'true'
         run: node scripts/healthcheck.mjs || (sleep 30 && node scripts/healthcheck.mjs)

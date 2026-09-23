@@ -57,14 +57,40 @@ function buildTrafficPath(lat, lon, radiusNm, precision) {
   return "/lat/" + lat.toFixed(precision) + "/lon/" + lon.toFixed(precision) + "/dist/" + radius;
 }
 
-async function fetchFromBackupPath(path) {
-  const resp = await fetch(BACKUP_API + path, {
+// Optional last-resort relay on a residential IP. adsb.lol rate-limits (429) and
+// adsb.fi rejects (403) Cloudflare's shared egress, so when both direct feeds
+// fail the same path is fetched through the relay instead.
+let relay = null;
+
+export function configureRelay(env) {
+  relay = env && env.ADSB_RELAY_URL && env.ADSB_RELAY_KEY
+    ? { url: env.ADSB_RELAY_URL.replace(/\/+$/, ""), key: env.ADSB_RELAY_KEY }
+    : null;
+}
+
+async function fetchFromRelay(path) {
+  const resp = await fetch(relay.url + "/adsb" + path, {
     method: "GET",
-    headers: PROXY_HEADERS,
+    headers: { ...PROXY_HEADERS, "X-Relay-Key": relay.key },
     signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
   });
-  if (!resp.ok) throw new Error("Backup HTTP " + resp.status);
+  if (!resp.ok) throw new Error("Relay HTTP " + resp.status);
   return resp.json();
+}
+
+async function fetchFromBackupPath(path) {
+  try {
+    const resp = await fetch(BACKUP_API + path, {
+      method: "GET",
+      headers: PROXY_HEADERS,
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
+    if (!resp.ok) throw new Error("Backup HTTP " + resp.status);
+    return await resp.json();
+  } catch (err) {
+    if (!relay) throw err;
+    return fetchFromRelay(path);
+  }
 }
 
 async function fetchFromBackup(snapped) {

@@ -1,0 +1,12 @@
+[Unit]
+Description=Contrails ADS-B relay (Worker fallback on a residential IP)
+After=network-online.target
+
+[Service]
+EnvironmentFile=%h/.config/contrails-relay/env
+ExecStart=/usr/bin/python3 %h/CursorLocal/contrails/relay/adsb_relay.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

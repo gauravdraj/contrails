@@ -8,6 +8,7 @@ import {
   normalizePayload,
   fetchTraffic,
   fetchAircraftResilient,
+  configureRelay,
   _gridState,
   HARD_FAIL_THRESHOLD,
   STALE_THRESHOLD,
@@ -547,4 +548,40 @@ test("fetchAircraftResilient throws when both providers fail", async (t) => {
   t.after(() => { globalThis.fetch = originalFetch; });
 
   await assert.rejects(() => fetchAircraftResilient(37.62, -122.38, 65));
+});
+
+test("fetchAircraftResilient uses the relay when both direct providers fail", async (t) => {
+  const originalFetch = globalThis.fetch;
+  let relayUrl = null;
+  let relayKey = null;
+  globalThis.fetch = async (url, init) => {
+    const u = typeof url === "string" ? url : url.toString();
+    if (u.startsWith("https://relay.test/")) {
+      relayUrl = u;
+      relayKey = init.headers["X-Relay-Key"];
+      return new Response(JSON.stringify({ ac: [{ hex: "rly01" }], now: Date.now() }), { status: 200 });
+    }
+    return new Response("", { status: u.includes("adsb.fi") ? 403 : 429 });
+  };
+  configureRelay({ ADSB_RELAY_URL: "https://relay.test/", ADSB_RELAY_KEY: "k1" });
+  t.after(() => { globalThis.fetch = originalFetch; configureRelay({}); });
+
+  const result = await fetchAircraftResilient(37.62, -122.38, 65);
+  assert.equal(result.ac[0].hex, "rly01");
+  assert.equal(relayUrl, "https://relay.test/adsb/lat/37.62/lon/-122.38/dist/65");
+  assert.equal(relayKey, "k1");
+});
+
+test("configureRelay stays off unless both URL and key are set", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const seen = [];
+  globalThis.fetch = async (url) => {
+    seen.push(String(url));
+    return new Response("", { status: 500 });
+  };
+  configureRelay({ ADSB_RELAY_URL: "https://relay.test" });
+  t.after(() => { globalThis.fetch = originalFetch; configureRelay({}); });
+
+  await assert.rejects(() => fetchAircraftResilient(37.62, -122.38, 65));
+  assert.ok(seen.every((u) => !u.startsWith("https://relay.test")));
 });

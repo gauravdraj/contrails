@@ -5,7 +5,7 @@ import { handleAirport } from "./airport.js";
 import { handleNearby } from "./nearby.js";
 import { mergeRoutes, detectPhase, formatRouteLabel } from "./opensky.js";
 import { fetchTrace } from "./traces.js";
-import { fetchTraffic } from "./providers.js";
+import { configureRelay, fetchTraffic } from "./providers.js";
 import { fr24CheckBackoff, fr24TriggerBackoff, fr24ResetBackoff, fr24CachedSearch, FR24_HEADERS } from "./fr24-backoff.js";
 
 const ADSB_API = "https://api.adsb.lol/v2";
@@ -31,6 +31,7 @@ const JSON_PROXY_HEADERS = {
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
+    configureRelay(env);
 
     if (request.method === "OPTIONS") {
       return new Response(null, { headers: CORS_HEADERS });
