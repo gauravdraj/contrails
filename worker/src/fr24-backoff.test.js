@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { fr24CheckBackoff, fr24TriggerBackoff, fr24ResetBackoff, fr24CachedSearch } from "./fr24-backoff.js";
+import { fr24CheckBackoff, fr24TriggerBackoff, fr24ResetBackoff, fr24CachedSearch, fr24Fetch } from "./fr24-backoff.js";
+import { configureRelay } from "./providers.js";
 
 function makeMockCache() {
   const store = new Map();
@@ -230,4 +231,34 @@ test("fr24CachedSearch triggers backoff on 429", async () => {
   assert.equal(await fr24CheckBackoff(), true, "backoff should be active after 429");
 
   globalThis.fetch = origFetch;
+});
+
+test("fr24Fetch retries a 403 through the relay", async (t) => {
+  const originalFetch = globalThis.fetch;
+  let relayed = null;
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    if (u.startsWith("https://relay.test/fr24?u=")) {
+      relayed = decodeURIComponent(u.slice("https://relay.test/fr24?u=".length));
+      return new Response("{\"ok\":1}", { status: 200 });
+    }
+    return new Response("", { status: 403 });
+  };
+  configureRelay({ ADSB_RELAY_URL: "https://relay.test", ADSB_RELAY_KEY: "k" });
+  t.after(() => { globalThis.fetch = originalFetch; configureRelay({}); });
+
+  const target = "https://api.flightradar24.com/common/v1/airport.json?code=SFO&page=1";
+  const resp = await fr24Fetch(target);
+  assert.equal(resp.status, 200);
+  assert.equal(relayed, target);
+});
+
+test("fr24Fetch returns the direct 403 when no relay is configured", async (t) => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response("", { status: 403 });
+  configureRelay({});
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const resp = await fr24Fetch("https://api.flightradar24.com/common/v1/airport.json?code=SFO");
+  assert.equal(resp.status, 403);
 });

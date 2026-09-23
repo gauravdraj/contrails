@@ -6,7 +6,7 @@ import { handleNearby } from "./nearby.js";
 import { mergeRoutes, detectPhase, formatRouteLabel } from "./opensky.js";
 import { fetchTrace } from "./traces.js";
 import { configureRelay, fetchTraffic } from "./providers.js";
-import { fr24CheckBackoff, fr24TriggerBackoff, fr24ResetBackoff, fr24CachedSearch, FR24_HEADERS } from "./fr24-backoff.js";
+import { fr24CheckBackoff, fr24TriggerBackoff, fr24ResetBackoff, fr24CachedSearch, fr24Fetch } from "./fr24-backoff.js";
 
 const ADSB_API = "https://api.adsb.lol/v2";
 const ADSB_ROUTE_API = "https://api.adsb.lol/api/0";
@@ -315,8 +315,8 @@ async function handleSchedule(url, ctx) {
     const lookback = Math.floor(Date.now() / 1000) - 2 * 3600;
     const base = `${FR24_API}/airport.json?code=${encodeURIComponent(iata)}&plugin[]=schedule&plugin[]=details&limit=100&plugin-setting[schedule][timestamp]=${lookback}`;
     const [r1, r2] = await Promise.all([
-      fetch(base + "&page=1", { headers: FR24_HEADERS }),
-      fetch(base + "&page=2", { headers: FR24_HEADERS }),
+      fr24Fetch(base + "&page=1"),
+      fr24Fetch(base + "&page=2"),
     ]);
     if (r1.status === 429 || r1.status === 403) {
       fr24TriggerBackoff(ctx);

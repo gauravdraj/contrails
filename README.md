@@ -71,7 +71,7 @@ The app stays GitHub Pages-friendly. The static frontend lives at the repo root,
 
 ### Residential ADS-B relay
 
-adsb.lol rate-limits (429) and adsb.fi rejects (403) Cloudflare's shared egress IPs. When both direct feeds fail, the Worker retries the same `/lat/<lat>/lon/<lon>/dist/<nm>` path through [`relay/adsb_relay.py`](relay/adsb_relay.py), a stdlib Python relay on a residential connection (the Pi, as the `contrails-relay` systemd user service behind Tailscale Funnel). Requests must carry an `X-Relay-Key` header. The Worker reads `ADSB_RELAY_URL` / `ADSB_RELAY_KEY` secrets, which the deploy workflow syncs from repo secrets of the same names; with them unset, the relay tier is off.
+adsb.lol rate-limits (429) and adsb.fi rejects (403) Cloudflare's shared egress IPs. When both direct feeds fail, the Worker retries the same `/lat/<lat>/lon/<lon>/dist/<nm>` path through [`relay/adsb_relay.py`](relay/adsb_relay.py), a stdlib Python relay on a residential connection (the Pi, as the `contrails-relay` systemd user service behind Tailscale Funnel). FlightRadar24 schedule/search calls that come back 403/429 are retried through its `/fr24` route, which only forwards the two FR24 endpoints the Worker uses. Requests must carry an `X-Relay-Key` header. The Worker reads `ADSB_RELAY_URL` / `ADSB_RELAY_KEY` secrets, which the deploy workflow syncs from repo secrets of the same names; with them unset, the relay tier is off.
 
 ## Local Development
 

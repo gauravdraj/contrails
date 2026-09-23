@@ -1,3 +1,5 @@
+import { fetchFr24ViaRelay } from "./providers.js";
+
 let backoffUntil = 0;
 let backoffDelay = 10000;
 
@@ -5,6 +7,14 @@ const BACKOFF_CACHE_KEY = new Request('https://fr24-backoff-state/global');
 const SEARCH_CACHE_TTL = 300;
 
 export const FR24_HEADERS = { "User-Agent": "Mozilla/5.0 (compatible; contrails/1.0; +https://gauravdraj.github.io/contrails/)" };
+
+// FR24 intermittently 403s/429s Cloudflare egress; retry those through the relay.
+export async function fr24Fetch(url) {
+  const resp = await fetch(url, { headers: FR24_HEADERS });
+  if (resp.status !== 429 && resp.status !== 403) return resp;
+  const relayed = await fetchFr24ViaRelay(url);
+  return relayed && relayed.ok ? relayed : resp;
+}
 
 export async function fr24CheckBackoff() {
   if (Date.now() < backoffUntil) return true;
@@ -62,7 +72,7 @@ export async function fr24CachedSearch(callsign, ctx) {
 
   try {
     const searchUrl = `https://www.flightradar24.com/v1/search/web/find?query=${encodeURIComponent(normalized)}&limit=8`;
-    const resp = await fetch(searchUrl, { headers: FR24_HEADERS });
+    const resp = await fr24Fetch(searchUrl);
 
     if (resp.status === 429 || resp.status === 403) {
       fr24TriggerBackoff(ctx);

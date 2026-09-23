@@ -3,7 +3,8 @@
 
 adsb.lol and adsb.fi throttle/deny Cloudflare's shared egress IPs, so the Worker
 falls back to this relay, which runs on a residential connection and fetches the
-same readsb-style payload. Only GET /adsb/lat/<lat>/lon/<lon>/dist/<nm> is served.
+same readsb-style payload. Serves GET /adsb/lat/<lat>/lon/<lon>/dist/<nm> and
+/fr24?u=<url> for the two allowlisted FlightRadar24 endpoints.
 
 Env: RELAY_KEY (required), RELAY_PORT (default 8089).
 """
@@ -15,12 +16,21 @@ import re
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 UPSTREAMS = ("https://api.adsb.lol/v2", "https://opendata.adsb.fi/api/v3")
 USER_AGENT = "contrails/1.0 (+https://gauravdraj.github.io/contrails/)"
 PATH_RE = re.compile(r"^/adsb(/lat/-?\d{1,3}(?:\.\d+)?/lon/-?\d{1,3}(?:\.\d+)?/dist/\d{1,3})$")
+FR24_RE = re.compile(
+    r"^https://(?:api\.flightradar24\.com/common/v1/airport\.json"
+    r"|www\.flightradar24\.com/v1/search/web/find)\?[A-Za-z0-9_.,%&=\[\]-]{1,400}$"
+)
+FR24_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/140.0 Safari/537.36"
+)
 CACHE_TTL_S = 3
 TIMEOUT_S = 5
 
@@ -57,6 +67,8 @@ class Handler(BaseHTTPRequestHandler):
         key = self.headers.get("X-Relay-Key", "")
         if not RELAY_KEY or not hmac.compare_digest(key, RELAY_KEY):
             return self._send(403, b'{"error":"forbidden"}')
+        if self.path.startswith("/fr24?"):
+            return self._relay_fr24()
         m = PATH_RE.match(self.path)
         if not m:
             return self._send(404, b'{"error":"not found"}')
@@ -74,6 +86,20 @@ class Handler(BaseHTTPRequestHandler):
             if len(_cache) > 500:
                 _cache.clear()
             _cache[path] = (now, body)
+        self._send(200, body)
+
+    def _relay_fr24(self) -> None:
+        target = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).get("u", [""])[0]
+        if not FR24_RE.match(target):
+            return self._send(404, b'{"error":"not found"}')
+        req = urllib.request.Request(target, headers={"User-Agent": FR24_USER_AGENT})
+        try:
+            with urllib.request.urlopen(req, timeout=TIMEOUT_S) as resp:
+                body = resp.read()
+        except urllib.error.HTTPError as err:
+            return self._send(err.code, json.dumps({"error": f"upstream {err.code}"}).encode())
+        except (urllib.error.URLError, TimeoutError) as err:
+            return self._send(502, json.dumps({"error": str(err)}).encode())
         self._send(200, body)
 
     def log_message(self, fmt, *args) -> None:

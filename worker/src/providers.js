@@ -78,6 +78,21 @@ async function fetchFromRelay(path) {
   return resp.json();
 }
 
+// Fetch an allowlisted FR24 URL through the relay. Returns null when the relay
+// is off or unreachable so callers keep their direct-response handling.
+export async function fetchFr24ViaRelay(targetUrl) {
+  if (!relay) return null;
+  try {
+    return await fetch(relay.url + "/fr24?u=" + encodeURIComponent(targetUrl), {
+      method: "GET",
+      headers: { ...PROXY_HEADERS, "X-Relay-Key": relay.key },
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
+  } catch (_) {
+    return null;
+  }
+}
+
 async function fetchFromBackupPath(path) {
   try {
     const resp = await fetch(BACKUP_API + path, {
