@@ -10,6 +10,7 @@ allowlisted FlightRadar24 endpoints.
 Env: RELAY_KEY (required), RELAY_PORT (default 8089).
 """
 
+import gzip
 import hmac
 import json
 import os
@@ -37,6 +38,7 @@ FR24_USER_AGENT = (
 )
 CACHE_TTL_S = 3
 TIMEOUT_S = 5
+GZIP_MIN_BYTES = 1024
 
 RELAY_KEY = os.environ.get("RELAY_KEY", "")
 _cache: dict[str, tuple[float, bytes]] = {}
@@ -59,8 +61,18 @@ class Handler(BaseHTTPRequestHandler):
     server_version = "contrails-relay"
 
     def _send(self, status: int, body: bytes, ctype: str = "application/json") -> None:
+        # Funnel egress is slow enough that an uncompressed FR24 airport board
+        # (~800 KB) can blow past the Worker's relay timeout.
+        gzip_ok = "gzip" in self.headers.get("Accept-Encoding", "")
+        if gzip_ok and len(body) > GZIP_MIN_BYTES:
+            body = gzip.compress(body, compresslevel=5)
+        else:
+            gzip_ok = False
         self.send_response(status)
         self.send_header("Content-Type", ctype)
+        if gzip_ok:
+            self.send_header("Content-Encoding", "gzip")
+        self.send_header("Vary", "Accept-Encoding")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)

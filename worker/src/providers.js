@@ -11,6 +11,8 @@ const BACKUP_API = "https://opendata.adsb.fi/api/v3";
 const BACKUP_LOOKUP_API = "https://opendata.adsb.fi/api/v2";
 
 const FETCH_TIMEOUT_MS = 6000;
+// FR24 board payloads through the Funnel relay regularly take 3-6s.
+const FR24_RELAY_TIMEOUT_MS = 12000;
 const HARD_FAIL_THRESHOLD = 2;
 const STALE_THRESHOLD = 3;
 const RECOVERY_PROBE_MS = 30000;
@@ -88,7 +90,7 @@ export async function fetchFr24ViaRelay(targetUrl) {
     return await fetch(relay.url + "/fr24?u=" + encodeURIComponent(targetUrl), {
       method: "GET",
       headers: { ...PROXY_HEADERS, "X-Relay-Key": relay.key },
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      signal: AbortSignal.timeout(FR24_RELAY_TIMEOUT_MS),
     });
   } catch (_) {
     return null;
