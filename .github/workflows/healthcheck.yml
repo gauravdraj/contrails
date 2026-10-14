@@ -4,8 +4,8 @@ name: Healthcheck
 # Catches silent upstream breakage (e.g. a data provider tightening its
 # User-Agent policy and returning 403, which surfaces as a 502) that unit tests
 # can't see. A persistent failure stays red and emails the repo owner;
-# transient upstream flakes are absorbed
-# by a single retry. Run manually anytime via the "Run workflow" button.
+# transient upstream flakes are absorbed by a per-check retry inside the script
+# plus one whole-suite retry. Run manually anytime via the "Run workflow" button.
 #
 # On failure it also pings Discord if a DISCORD_WEBHOOK repo secret is set
 # (Settings -> Secrets and variables -> Actions), so breakage is noticed even

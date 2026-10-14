@@ -43,20 +43,31 @@ async function fetchJson(path, init) {
   }
 }
 
-async function check(name, path, validate, init) {
+// Upstream feeds throw sporadic one-off 502s/timeouts, so a failing check is
+// retried once after a pause; only a repeat failure is recorded.
+const RETRY_DELAY_MS = 10000;
+
+async function attempt(path, validate, init) {
   try {
     const res = await fetchJson(path, init);
-    if (res.status !== 200) {
-      record(name, false, `HTTP ${res.status}`);
-      return null;
-    }
+    if (res.status !== 200) return { ok: false, detail: `HTTP ${res.status}` };
     const detail = validate ? validate(res) : "";
-    record(name, detail !== false, detail === false ? "unexpected payload" : detail || "ok");
-    return res;
+    if (detail === false) return { ok: false, detail: "unexpected payload" };
+    return { ok: true, detail: detail || "ok", res };
   } catch (err) {
-    record(name, false, err.name === "AbortError" ? "timeout" : err.message);
-    return null;
+    return { ok: false, detail: err.name === "AbortError" ? "timeout" : err.message };
   }
+}
+
+async function check(name, path, validate, init) {
+  let result = await attempt(path, validate, init);
+  if (!result.ok) {
+    console.log(`[RETRY] ${name} — ${result.detail}`);
+    await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+    result = await attempt(path, validate, init);
+  }
+  record(name, result.ok, result.detail);
+  return result.res || null;
 }
 
 async function run() {

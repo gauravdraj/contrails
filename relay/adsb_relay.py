@@ -14,6 +14,7 @@ import gzip
 import hmac
 import json
 import os
+import queue
 import re
 import threading
 import time
@@ -45,15 +46,31 @@ _cache: dict[str, tuple[float, bytes]] = {}
 _cache_lock = threading.Lock()
 
 
+def _fetch_one(url: str) -> bytes:
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    with urllib.request.urlopen(req, timeout=TIMEOUT_S) as resp:
+        return resp.read()
+
+
 def fetch_upstream(path: str, upstreams: tuple[str, ...]) -> bytes:
-    last_err = None
-    for base in upstreams:
-        req = urllib.request.Request(base + path, headers={"User-Agent": USER_AGENT})
+    # adsb.lol swings between ~0.8s and 5s+, so trying upstreams one after
+    # another can outlast the Worker's 6s relay timeout. Race them instead.
+    results: queue.Queue = queue.Queue()
+
+    def worker(base: str) -> None:
         try:
-            with urllib.request.urlopen(req, timeout=TIMEOUT_S) as resp:
-                return resp.read()
-        except (urllib.error.URLError, TimeoutError) as err:
-            last_err = err
+            results.put((True, _fetch_one(base + path)))
+        except Exception as err:  # noqa: BLE001 - any failure just loses the race
+            results.put((False, err))
+
+    for base in upstreams:
+        threading.Thread(target=worker, args=(base,), daemon=True).start()
+    last_err = None
+    for _ in upstreams:
+        ok, value = results.get()
+        if ok:
+            return value
+        last_err = value
     raise RuntimeError(f"all upstreams failed: {last_err}")
 
 
