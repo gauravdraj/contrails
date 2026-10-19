@@ -2,11 +2,10 @@
 
 // --- Rendering ---
 const GROUND_TRAIL_MS = 15000;
-const trailLines = {};
 
 function trailWindowMs(a) {
   if (a.ground) return GROUND_TRAIL_MS;
-  var zoom = map ? map.getZoom() : 11;
+  var zoom = map ? viewZoom() : 11;
   if (zoom <= 5) return 8000;
   if (zoom <= 6) return 10000;
   if (zoom <= 7) return 12000;
@@ -30,57 +29,36 @@ function trailStyle(ageNorm, isSelected, isSynthetic) {
   };
 }
 
+var _trailsShown = false;
 function renderTrails(now, displayPoses) {
-  if (_isZooming) return;
-  if (_isPanning) return;
+  if (!mapReady) return;
   now = now || Date.now();
-  var zoom = map ? map.getZoom() : 11;
   var markerCount = Object.keys(markerMap).length;
-  var trailsOff = !filters.trails || (zoom < 7 && markerCount > 120);
+  var trailsOff = !filters.trails || (viewZoom() < 7 && markerCount > 120);
   if (trailsOff) {
-    if (trailLayer.getLayers().length) trailLayer.clearLayers();
-    for (var id in trailLines) delete trailLines[id];
+    if (_trailsShown) map.getSource("trails").setData(EMPTY_COLLECTION);
+    _trailsShown = false;
     return;
   }
 
   var displayTime = currentDisplayTime(now);
-  var activeIds = {};
-
+  var features = [];
   for (var i = 0; i < aircraft.length; i++) {
     var a = aircraft[i];
     if (isFiltered(a)) continue;
     var pose = displayPoses && displayPoses[a.icao24] ? displayPoses[a.icao24] : getDisplayPoseForAircraft(a.icao24, displayTime);
     var segments = buildDisplayTrailSegments(posHistory[a.icao24], a, pose, displayTime);
-    if (!segments.length) continue;
-
-    activeIds[a.icao24] = true;
-    var segs = trailLines[a.icao24] || (trailLines[a.icao24] = []);
-    while (segs.length > segments.length) {
-      trailLayer.removeLayer(segs.shift());
-    }
-
     for (var si = 0; si < segments.length; si++) {
       var seg = segments[si];
-      if (si < segs.length) {
-        segs[si].setLatLngs(seg.latlngs);
-        segs[si].setStyle({ color: seg.color, opacity: seg.opacity, weight: seg.weight });
-      } else {
-        var line = L.polyline(seg.latlngs, {
-          color: seg.color, weight: seg.weight, opacity: seg.opacity,
-          lineCap: "round", lineJoin: "round"
-        }).addTo(trailLayer);
-        segs.push(line);
-      }
+      features.push({
+        type: "Feature",
+        properties: { color: seg.color, opacity: seg.opacity, width: seg.weight },
+        geometry: { type: "LineString", coordinates: [[seg.latlngs[0][1], seg.latlngs[0][0]], [seg.latlngs[1][1], seg.latlngs[1][0]]] }
+      });
     }
   }
-
-  for (var tid in trailLines) {
-    if (!activeIds[tid]) {
-      var old = trailLines[tid];
-      for (var r = 0; r < old.length; r++) trailLayer.removeLayer(old[r]);
-      delete trailLines[tid];
-    }
-  }
+  map.getSource("trails").setData({ type: "FeatureCollection", features: features });
+  _trailsShown = true;
 }
 
 function buildPopup(a, policy) {
@@ -446,7 +424,7 @@ function proactiveScheduleSweep() {
   var visible = [];
   for (var i = 0; i < airportData.length; i++) {
     var ap = airportData[i];
-    if (bounds.contains([ap[1], ap[2]])) visible.push(ap[0]);
+    if (bounds.contains(ap[1], ap[2])) visible.push(ap[0]);
   }
   if (!visible.length) return;
   if (visible.length > 3) visible.length = 3;
@@ -588,10 +566,7 @@ async function tryFr24Search(a, options) {
       fetchedAt: Date.now()
     };
 
-    var marker = markerMap[a.icao24];
-    if (marker && marker.getPopup() && marker.getPopup().isOpen()) {
-      marker.getPopup().setContent(buildPopup(a));
-    }
+    refreshPlanePopup(a.icao24);
   } catch (err) {
     console.warn("FR24 search failed for", a.callsign, err);
   }
@@ -653,167 +628,52 @@ function matchScheduleRoute(hex) {
 
     cascadeScheduleMatches();
 
-    var marker = markerMap[hex];
-    if (marker && marker.getPopup() && marker.getPopup().isOpen()) {
-      var updatedA = findAircraftById(hex);
-      if (updatedA) marker.getPopup().setContent(buildPopup(updatedA));
-    }
+    refreshPlanePopup(hex);
   });
 }
 
-function collectOccupiedScreenPoints() {
-  if (!map) return [];
-  var points = [];
-  var bounds = map.getBounds();
-  if (airportData) {
-    for (var i = 0; i < airportData.length; i++) {
-      var ap = airportData[i];
-      if (bounds.contains([ap[1], ap[2]])) {
-        var pt = map.latLngToContainerPoint([ap[1], ap[2]]);
-        points.push({ x: pt.x, y: pt.y, w: 50, h: 22 });
-      }
-    }
-  }
-  for (var id in markerMap) {
-    var m = markerMap[id];
-    var ll = m.getLatLng();
-    if (ll && bounds.contains(ll)) {
-      var pt = map.latLngToContainerPoint(ll);
-      points.push({ x: pt.x, y: pt.y, w: 30, h: 30 });
-    }
-  }
-  var popup = map._popup;
-  if (popup && popup._latlng && bounds.contains(popup._latlng)) {
-    var pt = map.latLngToContainerPoint(popup._latlng);
-    points.push({ x: pt.x, y: pt.y - 80, w: 220, h: 160 });
-  }
-  return points;
+// --- Plane layer ---
+// markerMap holds one record per drawn plane: its display position plus the feature properties the plane
+// and label layers read. The map draws them; this side only pushes positions.
+function planeRecordProps(a, isSelected) {
+  var style = planeStyle(a);
+  return {
+    hex: a.icao24,
+    icon: style.icon,
+    size: style.size,
+    color: style.color,
+    radiusPx: style.radiusPx,
+    track: a.track || 0,
+    selected: isSelected,
+    label: a.callsign || a.icao24,
+    // In ems of the 10px label text: clear of the silhouette, plus the chip's 2px padding.
+    labelOffset: (style.radiusPx + 6) / 10
+  };
 }
 
-var LABEL_DIRS = ["top", "right", "bottom", "left"];
-var LABEL_W = 56, LABEL_H = 18;
-
-function chooseLabelDirection(markerLatLng, occupiedPoints) {
-  if (!map || !occupiedPoints || occupiedPoints.length < 2) return "top";
-  var mp = map.latLngToContainerPoint(markerLatLng);
-  var bestDir = "top";
-  var bestScore = -Infinity;
-  for (var d = 0; d < LABEL_DIRS.length; d++) {
-    var dir = LABEL_DIRS[d];
-    var lx, ly;
-    if (dir === "top") { lx = mp.x; ly = mp.y - 26; }
-    else if (dir === "bottom") { lx = mp.x; ly = mp.y + 26; }
-    else if (dir === "right") { lx = mp.x + 34; ly = mp.y; }
-    else { lx = mp.x - 34; ly = mp.y; }
-
-    var hw = LABEL_W / 2, hh = LABEL_H / 2;
-    var minDist = Infinity;
-    for (var i = 0; i < occupiedPoints.length; i++) {
-      var op = occupiedPoints[i];
-      if (Math.abs(op.x - mp.x) < 4 && Math.abs(op.y - mp.y) < 4) continue;
-      var ox = Math.max(0, Math.abs(lx - op.x) - (hw + op.w / 2));
-      var oy = Math.max(0, Math.abs(ly - op.y) - (hh + op.h / 2));
-      var gap = ox * ox + oy * oy;
-      if (gap < minDist) minDist = gap;
-    }
-    if (minDist > bestScore) {
-      bestScore = minDist;
-      bestDir = dir;
-    }
+function pushPlaneLayer() {
+  if (!mapReady) return;
+  var features = [];
+  for (var hex in markerMap) {
+    var rec = markerMap[hex];
+    features.push({ type: "Feature", properties: rec.props, geometry: { type: "Point", coordinates: [rec.lng, rec.lat] } });
   }
-  return bestDir;
-}
-
-function bindPlaneLabel(marker, text, yOffset, direction) {
-  direction = direction || "top";
-  var offset = direction === "top" ? [0, -yOffset] :
-               direction === "bottom" ? [0, yOffset] :
-               direction === "right" ? [yOffset, 0] : [-yOffset, 0];
-  marker.bindTooltip(new PlaneLabel({ permanent: true, direction: direction, offset: offset, className: "plane-label", pane: "planeLabelPane" }).setContent(text));
-  if (marker.getTooltip() && marker.getLatLng()) {
-    marker.getTooltip().setLatLng(marker.getLatLng());
-    marker.getTooltip().update();
+  map.getSource("planes").setData({ type: "FeatureCollection", features: features });
+  if (planePopupHex && markerMap[planePopupHex]) {
+    activeMapPopup.setLngLat([markerMap[planePopupHex].lng, markerMap[planePopupHex].lat]);
   }
 }
 
-function markerIconKey(a) {
-  return [
-    a.track == null ? "" : Math.round(a.track * 10) / 10,
-    a.aircraftType || "",
-    a.private ? 1 : 0,
-    a.category || "",
-    a.altFt == null ? "" : a.altFt,
-    a.ground ? 1 : 0
-  ].join("|");
+var _labelsShown = false;
+function setPlaneLabelsShown(show) {
+  if (!mapReady || show === _labelsShown) return;
+  _labelsShown = show;
+  map.setLayoutProperty("plane-labels", "visibility", show ? "visible" : "none");
 }
 
-function currentMarkerLabelOffset(marker) {
-  var icon = marker && marker.options ? marker.options.icon : null;
-  var iconSize = icon && icon.options ? icon.options.iconSize : null;
-  return iconSize && iconSize[1] ? iconSize[1] / 2 : 15;
-}
-
-function syncMarkerVisualState(marker, a, markerState, policy, isSelected, popupHtml, label, labelDir) {
-  var iconKey = markerIconKey(a);
-  if (markerState.iconKey !== iconKey) {
-    marker.setIcon(planeIcon(a.track, a.aircraftType, a.private, a.category, a.altFt, a.ground));
-    markerState.iconKey = iconKey;
-  }
-  if (popupHtml !== null && markerState.popupHtml !== popupHtml) {
-    marker.setPopupContent(popupHtml);
-    markerState.popupHtml = popupHtml;
-  }
-  if (markerState.selected !== isSelected) {
-    marker.setZIndexOffset(isSelected ? 1000 : 0);
-    markerState.selected = isSelected;
-  }
-  var showLabels = !!policy.showLabels;
-  var labelOffset = currentMarkerLabelOffset(marker);
-  labelDir = labelDir || "top";
-  if (showLabels) {
-    if (!marker.getTooltip() || markerState.labelText !== label || markerState.labelOffset !== labelOffset || markerState.showLabels !== showLabels || markerState.labelDir !== labelDir) {
-      if (marker.getTooltip()) marker.unbindTooltip();
-      bindPlaneLabel(marker, label, labelOffset, labelDir);
-    }
-  } else if (marker.getTooltip()) {
-    marker.unbindTooltip();
-  }
-  markerState.showLabels = showLabels;
-  markerState.labelText = showLabels ? label : "";
-  markerState.labelOffset = showLabels ? labelOffset : 0;
-  markerState.labelDir = showLabels ? labelDir : "";
-}
-
-// Leaflet rounds marker positions to whole pixels, so a slow-moving plane steps a pixel at a time. Plane
-// markers keep the fractional position (the icon is already on its own compositing layer via translate3d)
-// and only touch z-index when the rounded row changes.
-var PlaneMarker = L.Marker.extend({
-  update: function() {
-    if (this._icon && this._map) this._setPos(this._map.project(this._latlng)._subtract(this._map.getPixelOrigin()));
-    return this;
-  },
-  _setPos: function(pos) {
-    L.DomUtil.setPosition(this._icon, pos);
-    var z = Math.round(pos.y) + this.options.zIndexOffset;
-    if (z !== this._zIndex) {
-      this._zIndex = z;
-      this._resetZIndex();
-    }
-  }
-});
-
-var PlaneLabel = L.Tooltip.extend({
-  _updatePosition: function() {
-    this._setPosition(this._map.project(this._latlng)._subtract(this._map.getPixelOrigin()));
-  }
-});
-
-function syncMarkerPose(marker, pose) {
-  if (!marker || !pose) return;
-  var cur = marker.getLatLng();
-  if (!cur || Math.abs(pose.lat - cur.lat) > 5e-6 || Math.abs(pose.lng - cur.lng) > 5e-6) {
-    marker.setLatLng([pose.lat, pose.lng]);
-  }
+function syncMarkerPose(rec, pose) {
+  rec.lat = pose.lat;
+  rec.lng = pose.lng;
 }
 
 function scheduleMarkerAnimation(delayMs) {
@@ -856,8 +716,6 @@ function isFiltered(a) {
   return false;
 }
 
-var _markerDrainTimer = 0;
-
 function markerAnimationIntervalMs(markerCount) {
   if (!markerCount) return 250;
   if (markerCount > 320) return 50;
@@ -869,34 +727,15 @@ function renderMarkers(now, displayPoses) {
   now = now || Date.now();
   var displayTime = currentDisplayTime(now);
   var seen = {};
-  var openPopupHex = null;
-  var _p = map._popup;
-  if (_p) {
-    for (var hx in markerMap) {
-      if (markerMap[hx].getPopup() === _p) { openPopupHex = hx; break; }
-    }
-  }
   var visibleCount = 0;
   for (var vc = 0; vc < aircraft.length; vc++) {
     if (!isFiltered(aircraft[vc])) visibleCount++;
   }
   var policy = currentViewPolicy(visibleCount);
-  var occupiedPts = policy.showLabels ? collectOccupiedScreenPoints() : null;
-  var newThisFrame = 0;
-  var deferredNew = false;
   for (var i = 0; i < aircraft.length; i++) {
     var a = aircraft[i];
     if (isFiltered(a)) continue;
     seen[a.icao24] = true;
-
-    var existing = markerMap[a.icao24];
-    if (!existing && newThisFrame >= NEW_MARKER_BATCH) {
-      deferredNew = true;
-      continue;
-    }
-
-    var isSelected = selectedAircraftId === a.icao24;
-    var label = a.callsign || a.icao24;
 
     var state = extraState[a.icao24] || {};
     var samples = state.samples ? state.samples.slice() : [];
@@ -929,40 +768,22 @@ function renderMarkers(now, displayPoses) {
     state.samples = samples;
     state.displayPose = displayPose;
     extraState[a.icao24] = state;
-    var popupHtml = (a.icao24 === openPopupHex) ? buildPopup(a, policy) : null;
 
-    var labelDir = policy.showLabels ? chooseLabelDirection([displayPose.lat, displayPose.lng], occupiedPts) : "top";
+    var rec = markerMap[a.icao24] || (markerMap[a.icao24] = { lat: displayPose.lat, lng: displayPose.lng });
+    syncMarkerPose(rec, displayPose);
+    rec.props = planeRecordProps(a, selectedAircraftId === a.icao24);
 
-    if (existing) {
-      syncMarkerPose(existing, displayPose);
-      syncMarkerVisualState(existing, a, state, policy, isSelected, popupHtml, label, labelDir);
-    } else {
-      newThisFrame++;
-      var icon = planeIcon(a.track, a.aircraftType, a.private, a.category, a.altFt, a.ground);
-      var marker = new PlaneMarker([displayPose.lat, displayPose.lng], { icon: icon }).bindPopup("", {
-        closeButton: false, autoPan: false
-      });
-      marker.on("click", (function(id, m) {
-        return function() { setSelectedAircraft(id); m.openPopup(); };
-      })(a.icao24, marker));
-      marker.setZIndexOffset(isSelected ? 1000 : 0);
-      marker.addTo(aircraftLayer);
-      if (policy.showLabels) {
-        bindPlaneLabel(marker, label, icon.options.iconSize[1] / 2, labelDir);
+    if (planePopupHex === a.icao24) {
+      var popupHtml = buildPopup(a, policy);
+      if (state.popupHtml !== popupHtml) {
+        setPlanePopupHtml(a.icao24, popupHtml);
+        state.popupHtml = popupHtml;
       }
-      markerMap[a.icao24] = marker;
-      state.iconKey = markerIconKey(a);
-      state.popupHtml = "";
-      state.selected = isSelected;
-      state.showLabels = !!policy.showLabels;
-      state.labelText = policy.showLabels ? label : "";
-      state.labelOffset = policy.showLabels ? icon.options.iconSize[1] / 2 : 0;
-      state.labelDir = policy.showLabels ? labelDir : "";
     }
   }
   for (var id in markerMap) {
     if (!seen[id]) {
-      aircraftLayer.removeLayer(markerMap[id]);
+      if (planePopupHex === id) closeMapPopup();
       delete markerMap[id];
       delete extraState[id];
     }
@@ -971,12 +792,8 @@ function renderMarkers(now, displayPoses) {
     selectedAircraftId = null;
     syncUrlState();
   }
-  if (deferredNew && !_markerDrainTimer) {
-    _markerDrainTimer = setTimeout(function() {
-      _markerDrainTimer = 0;
-      renderMap();
-    }, MARKER_DRAIN_DELAY_MS);
-  }
+  setPlaneLabelsShown(!!policy.showLabels);
+  pushPlaneLayer();
 }
 
 var _lastAnimateTs = 0;
@@ -992,28 +809,23 @@ function animateMarkers() {
     return;
   }
   _lastAnimateTs = now;
-  // During an animated zoom Leaflet eases every marker to its new spot; moving them here would cancel that.
-  if (!_isPanning && !map._animatingZoom) {
-    var displayTime = currentDisplayTime(now);
-    var displayPoses = {};
-    for (var id in extraState) {
-      var marker = markerMap[id];
-      if (!marker) continue;
-      var st = extraState[id];
-      var samples = st.samples;
-      if (!samples || !samples.length) continue;
-      var pose = getDisplayPoseForSamples(samples, displayTime);
-      if (!pose) continue;
-      st.displayPose = pose;
-      displayPoses[id] = pose;
-      syncMarkerPose(marker, pose);
-    }
-    // Trail tips trail the plane by at most one trail frame, which isn't visible, and trails cost far more
-    // to redraw than markers do to move.
-    if (now - _lastTrailFrameTs >= TRAIL_FRAME_MS) {
-      _lastTrailFrameTs = now;
-      renderTrails(now, displayPoses);
-    }
+  var displayTime = currentDisplayTime(now);
+  var displayPoses = {};
+  for (var id in markerMap) {
+    var st = extraState[id];
+    if (!st || !st.samples || !st.samples.length) continue;
+    var pose = getDisplayPoseForSamples(st.samples, displayTime);
+    if (!pose) continue;
+    st.displayPose = pose;
+    displayPoses[id] = pose;
+    syncMarkerPose(markerMap[id], pose);
+  }
+  if (markerCount) pushPlaneLayer();
+  // Trail tips trail the plane by at most one trail frame, which isn't visible, and trails cost far more
+  // to rebuild than plane positions.
+  if (now - _lastTrailFrameTs >= TRAIL_FRAME_MS) {
+    _lastTrailFrameTs = now;
+    renderTrails(now, displayPoses);
   }
   scheduleMarkerAnimation(minInterval);
 }

@@ -998,8 +998,8 @@
   function greatCirclePoints(lat1, lng1, lat2, lng2, segments) {
     // Sample the shortest-path great circle between two points as [lat, lng]
     // pairs for drawing a curved route line. Longitude is kept continuous
-    // across the antimeridian (values may exceed +/-180) so Leaflet draws one
-    // unbroken polyline instead of wrapping it across the whole map.
+    // across the antimeridian (values may exceed +/-180) so the map draws one
+    // unbroken line instead of wrapping it across the whole map.
     if (lat1 == null || lng1 == null || lat2 == null || lng2 == null) return [];
     if (!isFinite(lat1) || !isFinite(lng1) || !isFinite(lat2) || !isFinite(lng2)) return [];
     segments = segments && segments > 1 ? Math.floor(segments) : 64;
@@ -1088,6 +1088,90 @@
     return Math.min(observed, prevOffsetMs + (creepMs == null ? 50 : creepMs));
   }
 
+  // Axis-aligned view box in degrees. `pad` grows every side by that fraction of the span. Longitudes may run
+  // past ±180 when the view crosses the antimeridian, so a point is also tested one world over.
+  function viewBounds(north, south, east, west) {
+    return {
+      north: north, south: south, east: east, west: west,
+      northEast: { lat: north, lng: east },
+      northWest: { lat: north, lng: west },
+      southEast: { lat: south, lng: east },
+      southWest: { lat: south, lng: west },
+      pad: function(ratio) {
+        var dLat = (north - south) * ratio;
+        var dLng = (east - west) * ratio;
+        return viewBounds(north + dLat, south - dLat, east + dLng, west - dLng);
+      },
+      contains: function(lat, lng) {
+        if (lat < south || lat > north) return false;
+        return (lng >= west && lng <= east) || (lng + 360 >= west && lng + 360 <= east) ||
+          (lng - 360 >= west && lng - 360 <= east);
+      }
+    };
+  }
+
+  // Finite stand-in for "no edge yet": Infinity would turn the parabola intersections below into NaN.
+  var SDF_FAR = 1e20;
+
+  // Squared Euclidean distance transform along one row or column (Felzenszwalb & Huttenlocher), in place.
+  function edt1d(grid, offset, stride, length, f, v, z) {
+    v[0] = 0;
+    z[0] = -Infinity;
+    z[1] = Infinity;
+    f[0] = grid[offset];
+    for (var q = 1, k = 0, s = 0; q < length; q++) {
+      f[q] = grid[offset + q * stride];
+      var q2 = q * q;
+      do {
+        var r = v[k];
+        s = (f[q] - f[r] + q2 - r * r) / (q - r) / 2;
+      } while (s <= z[k] && --k > -1);
+      k++;
+      v[k] = q;
+      z[k] = s;
+      z[k + 1] = Infinity;
+    }
+    for (var q3 = 0, k2 = 0; q3 < length; q3++) {
+      while (z[k2 + 1] < q3) k2++;
+      var r2 = v[k2];
+      var qr = q3 - r2;
+      grid[offset + q3 * stride] = f[r2] + qr * qr;
+    }
+  }
+
+  function edt2d(grid, width, height) {
+    var n = Math.max(width, height);
+    var f = new Float64Array(n), v = new Uint16Array(n), z = new Float64Array(n + 1);
+    for (var x = 0; x < width; x++) edt1d(grid, x, width, height, f, v, z);
+    for (var y = 0; y < height; y++) edt1d(grid, y * width, 1, width, f, v, z);
+  }
+
+  // Signed distance field from an alpha mask (0-255, row-major), in the encoding MapLibre reads for
+  // `sdf: true` images: the shape edge sits at 255 * (1 - cutoff) and each pixel of distance moves the value
+  // by 255 / radius, up inside the shape and down outside it.
+  function alphaToSdf(alpha, width, height, radius, cutoff) {
+    var size = width * height;
+    var outer = new Float64Array(size), inner = new Float64Array(size);
+    for (var i = 0; i < size; i++) {
+      var a = alpha[i] / 255;
+      if (a >= 1) { outer[i] = 0; inner[i] = SDF_FAR; }
+      else if (a <= 0) { outer[i] = SDF_FAR; inner[i] = 0; }
+      else {
+        var d = 0.5 - a;
+        outer[i] = d > 0 ? d * d : 0;
+        inner[i] = d < 0 ? d * d : 0;
+      }
+    }
+    edt2d(outer, width, height);
+    edt2d(inner, width, height);
+    var out = new Uint8ClampedArray(size);
+    for (var j = 0; j < size; j++) {
+      var dist = Math.sqrt(outer[j]) - Math.sqrt(inner[j]);
+      out[j] = Math.round(255 - 255 * (dist / radius + cutoff));
+    }
+    return out;
+  }
+
   function dimColor(hslStr) {
     var m = hslStr.match(/[\d.]+/g);
     if (!m || m.length < 3) return hslStr;
@@ -1144,6 +1228,8 @@
     isLikelyPrivateClass: isLikelyPrivateClass,
     dimColor: dimColor,
     declutterLabels: declutterLabels,
-    updateClockOffset: updateClockOffset
+    updateClockOffset: updateClockOffset,
+    viewBounds: viewBounds,
+    alphaToSdf: alphaToSdf
   };
 });

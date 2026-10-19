@@ -44,6 +44,8 @@ const SQUAWK_ALERT = core.SQUAWK_ALERTS;
 const AIRLINE_ICAO_TO_IATA = core.AIRLINE_ICAO_TO_IATA;
 const declutterLabels = core.declutterLabels;
 const updateClockOffset = core.updateClockOffset;
+const viewBounds = core.viewBounds;
+const alphaToSdf = core.alphaToSdf;
 if (!airlineName || !angleDiffDeg || !bearingDegrees || !buildViewPolicy || !buildViewportFetchSpec || !cardinalDir ||
     !callsignVariants || !computePlaybackDelayMs || !escapeHtml || !formatDistanceMiles || !formatSpeedMph ||
     !getAirportNextRow || !haversineKm || !interpolatePlaybackPose || !interpolateTimedPose || !isLikelyPrivateCallsign ||
@@ -52,11 +54,12 @@ if (!airlineName || !angleDiffDeg || !bearingDegrees || !buildViewPolicy || !bui
     !classifyGroundDepartureStatus ||
     !findFlightStartIndex || !matchRunwayDesignator || !deriveActiveRunways || !greatCirclePoints || !pointOnRunway ||
     !roundTenths || !slantKm || !elevationDeg || !SQUAWK_ALERT ||
-    !sizeFromCategory || !sizeClass || !isLikelyPrivateClass || !dimColor || !declutterLabels || !updateClockOffset) {
+    !sizeFromCategory || !sizeClass || !isLikelyPrivateClass || !dimColor || !declutterLabels || !updateClockOffset ||
+    !viewBounds || !alphaToSdf) {
   throw new Error("Contrails core helpers failed to load.");
 }
 
-const APP_VERSION = "2.35";
+const APP_VERSION = "2.36";
 const isLocal = location.hostname === "localhost" || location.hostname === "127.0.0.1";
 const isIOSDevice = /iP(ad|hone|od)/.test(navigator.userAgent) ||
   (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
@@ -165,8 +168,11 @@ function aircraftUrl(hex) {
   return WORKER_URL + "/aircraft/" + hex;
 }
 const REFRESH_MS = 5000;
+// App zoom levels (URL ?zoom=, saved views, every threshold below) use the 256-px tile scale the app was
+// built on. MapLibre counts 512-px tiles, so its zoom is one lower; viewZoom()/toMapZoom() convert.
 const DEFAULT_MAP_ZOOM = 11;
 const MIN_MAP_ZOOM = 5;
+const MAX_MAP_ZOOM = 18;
 // IP geolocation is city-level at best, so it opens on the wider region.
 const APPROX_AREA_ZOOM = 9;
 const GEO_QUICK_BOOT_MS = 1500;
@@ -174,15 +180,6 @@ const GEO_QUICK_BOOT_MS = 1500;
 // site's referrer, so localhost requests go keyless (raster tiles watermark).
 const CARTO_KEY = "cb1_3umv_1_aa4684ea4fce195778be2673";
 const VECTOR_STYLE_URL = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json";
-const TILE_LAYER_URL = "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png";
-const BASEMAP_ATTRIBUTION = '\u00a9 <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> \u00a9 <a href="https://carto.com/attributions">CARTO</a>';
-const TILE_LAYER_OPTIONS = {
-  maxZoom: 18,
-  keepBuffer: 6,
-  updateWhenIdle: true,
-  updateInterval: 100,
-  updateWhenZooming: false
-};
 const DEFAULT_BROWSE_LAT = 51.5074;
 const DEFAULT_BROWSE_LNG = -0.1278;
 const VIEW_FILTER_PAD = 0.08;
@@ -211,8 +208,6 @@ const STALE_HISTORY_MS = 6 * 60 * 1000;
 const SEEDED_TRAIL_WINDOW_MS = 30000;
 const SEEDED_TRAIL_POINTS = 8;
 const SEEDED_MIN_DISPLAY_SPEED_KTS = 35;
-const NEW_MARKER_BATCH = 25;
-const MARKER_DRAIN_DELAY_MS = 80;
 const PLAYBACK_EXTRAPOLATION_MAX_MS = 2200;
 const SEARCH_MIN_ZOOM = 13;
 const SEARCH_SUGGESTION_LIMIT = 7;
@@ -229,7 +224,9 @@ const trackExtended = {};
 const scheduleDataCache = {};
 const SCHEDULE_CACHE_TTL = 5 * 60 * 1000;
 
-let map, userMarker, aircraftLayer, trailLayer, airportLayer, runwayLayer, routeLayer;
+let map, userMarker;
+// True once the basemap style has loaded and the app's sources and layers exist.
+let mapReady = false;
 let airportData = null;
 let runwayData = null;
 let airportLatLngIndex = null;
@@ -325,11 +322,9 @@ let controlsFeedbackTimer = 0;
 const markerMap = {};
 const extraState = {};
 const airportMarkers = {};
-var runwayLines = {};
 var refreshSearchUi = null;
 let markerAnimationFrame = 0;
 let markerAnimationTimer = 0;
-let _isZooming = false;
 var _isPanning = false;
 var lastFetchTs = 0;
 var fetchInterval = REFRESH_MS;
@@ -376,19 +371,77 @@ const ICON_SZ = { light: 24, turboprop: 26, bizjet: 24, narrowbody: 30, widebody
 
 const GROUND_COLOR = "hsl(210,15%,42%)";
 
-function planeIcon(track, aircraftType, priv, category, altFt, ground) {
-  var color = ground ? GROUND_COLOR : altColor(altFt);
-  if (priv) color = dimColor(color);
-  var cls = sizeClass(aircraftType, category);
-  var shape = SHAPES[cls] || SHAPES.narrowbody;
-  var sz = ICON_SZ[cls] || 30;
-  if (priv) sz = Math.round(sz * 0.8);
-  var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + sz + '" height="' + sz + '" viewBox="' + shape[0] + '">' +
-    '<g transform="rotate(' + (track || 0) + ',' + shape[1] + ',' + shape[2] + ')">' +
-    '<path d="' + shape[4] + '" fill="' + color + '" stroke="#0a0e17" stroke-width="' + shape[3] + '"/>' +
-    '</g></svg>';
-  var half = sz / 2;
-  return L.divIcon({ html: svg, iconSize: [sz, sz], iconAnchor: [half, half], className: "plane-marker-icon" });
+// Planes are drawn by the map as SDF images: one silhouette per shape class, tinted per plane with
+// icon-color and outlined with icon-halo, so altitude colors don't need an image each.
+const PLANE_IMAGE_RATIO = 2;
+const PLANE_SDF_RADIUS = 8;
+
+function planeShapeImage(cls) {
+  var shape = SHAPES[cls];
+  var sz = ICON_SZ[cls];
+  var vb = shape[0].split(/\s+/).map(Number);
+  var px = sz * PLANE_IMAGE_RATIO;
+  var pad = PLANE_SDF_RADIUS;
+  var dim = px + pad * 2;
+  var canvas = document.createElement("canvas");
+  canvas.width = dim;
+  canvas.height = dim;
+  var ctx = canvas.getContext("2d");
+  var scale = px / Math.max(vb[2], vb[3]);
+  ctx.translate(pad + (px - vb[2] * scale) / 2, pad + (px - vb[3] * scale) / 2);
+  ctx.scale(scale, scale);
+  ctx.translate(-vb[0], -vb[1]);
+  ctx.fill(new Path2D(shape[4]));
+  var rgba = ctx.getImageData(0, 0, dim, dim).data;
+  var alpha = new Uint8ClampedArray(dim * dim);
+  for (var i = 0; i < alpha.length; i++) alpha[i] = rgba[i * 4 + 3];
+  var sdf = alphaToSdf(alpha, dim, dim, PLANE_SDF_RADIUS, 0.25);
+  var data = new Uint8ClampedArray(dim * dim * 4);
+  for (var j = 0; j < sdf.length; j++) {
+    data[j * 4] = data[j * 4 + 1] = data[j * 4 + 2] = 255;
+    data[j * 4 + 3] = sdf[j];
+  }
+  return { width: dim, height: dim, data: data };
+}
+
+// Stretchable rounded box behind plane labels (icon-text-fit), matching the old tooltip chip.
+function labelChipImage() {
+  var r = PLANE_IMAGE_RATIO;
+  var dim = 16 * r;
+  var canvas = document.createElement("canvas");
+  canvas.width = dim;
+  canvas.height = dim;
+  var ctx = canvas.getContext("2d");
+  ctx.fillStyle = "rgba(8, 15, 26, 0.88)";
+  ctx.beginPath();
+  ctx.roundRect(0, 0, dim, dim, 3 * r);
+  ctx.fill();
+  return {
+    image: { width: dim, height: dim, data: ctx.getImageData(0, 0, dim, dim).data },
+    options: { pixelRatio: r, stretchX: [[4 * r, 12 * r]], stretchY: [[4 * r, 12 * r]], content: [4 * r, 4 * r, 12 * r, 12 * r] }
+  };
+}
+
+function addPlaneImages() {
+  for (var cls in SHAPES) {
+    map.addImage("plane-" + cls, planeShapeImage(cls), { sdf: true, pixelRatio: PLANE_IMAGE_RATIO });
+  }
+  var chip = labelChipImage();
+  map.addImage("label-chip", chip.image, chip.options);
+}
+
+// Size is relative to the shape's own ICON_SZ, which its image is drawn at.
+function planeStyle(a) {
+  var color = a.ground ? GROUND_COLOR : altColor(a.altFt);
+  if (a.private) color = dimColor(color);
+  var cls = sizeClass(a.aircraftType, a.category);
+  if (!SHAPES[cls]) cls = "narrowbody";
+  return {
+    icon: "plane-" + cls,
+    size: a.private ? 0.8 : 1,
+    color: color,
+    radiusPx: ICON_SZ[cls] * (a.private ? 0.8 : 1) / 2
+  };
 }
 
 function focusWithoutScroll(el) {
@@ -419,34 +472,4 @@ function restoreFocusIfConnected(el) {
 function withCartoKey(url) {
   if (isLocal || url.indexOf("key=") !== -1) return url;
   return url + (url.indexOf("?") === -1 ? "?" : "&") + "key=" + CARTO_KEY;
-}
-
-function supportsWebGL() {
-  try {
-    var canvas = document.createElement("canvas");
-    return !!(window.WebGL2RenderingContext && canvas.getContext("webgl2"));
-  } catch (_) {
-    return false;
-  }
-}
-
-// Vector (MapLibre) Dark Matter when WebGL2 is available, raster otherwise.
-// CARTO is retiring the raster basemaps; vector is sharper at every zoom.
-function addBasemap() {
-  if (window.maplibregl && L.maplibreGL && supportsWebGL()) {
-    try {
-      L.maplibreGL({
-        style: withCartoKey(VECTOR_STYLE_URL),
-        attribution: BASEMAP_ATTRIBUTION,
-        interactive: false,
-        transformRequest: function(url) {
-          if (/^https:\/\/([\w-]+\.)?basemaps\.cartocdn\.com\//.test(url)) return { url: withCartoKey(url) };
-          return { url: url };
-        }
-      }).addTo(map);
-      return;
-    } catch (_) {}
-  }
-  var options = Object.assign({ attribution: BASEMAP_ATTRIBUTION }, TILE_LAYER_OPTIONS);
-  L.tileLayer(withCartoKey(TILE_LAYER_URL), options).addTo(map);
 }

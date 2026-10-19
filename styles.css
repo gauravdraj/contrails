@@ -44,19 +44,7 @@ body.noscroll { touch-action: none; }
 
 #app { position: fixed; inset: 0; background-color: #000; }
 #map { height: calc(100% + env(safe-area-inset-bottom, 0px)); }
-.leaflet-container,
-.leaflet-pane,
-.leaflet-map-pane,
-.leaflet-tile-container,
-.leaflet-tile-pane,
-.leaflet-overlay-pane {
-  background: #000;
-}
-.leaflet-tile {
-  background: #000;
-  -webkit-backface-visibility: hidden;
-  backface-visibility: hidden;
-}
+#map, .maplibregl-map { background: #000; }
 
 .vert-up { color: var(--success); }
 .vert-down { color: var(--danger); }
@@ -518,10 +506,9 @@ body.noscroll { touch-action: none; }
   font-size: 16px;
   line-height: 1;
 }
-.route-endpoint-label { background: none; border: none; }
 .route-endpoint-tag {
   display: inline-block;
-  transform: translateX(-50%);
+  pointer-events: none;
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.04em;
@@ -662,64 +649,80 @@ body.noscroll { touch-action: none; }
   }
 }
 
-.leaflet-tooltip.plane-label {
-  background: rgba(8, 15, 26, 0.88);
-  color: var(--text-main);
-  border: none;
-  box-shadow: none;
-  font-size: 10px;
-  font-weight: 600;
-  padding: 2px 6px;
+.user-dot {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #5bbcf5;
+  border: 2px solid #fff;
+  box-sizing: border-box;
   pointer-events: none;
-  transition: none;
 }
-.leaflet-tooltip.plane-label::before { display: none; }
-.plane-marker-icon {
-  transition: none;
+.airport-marker {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  pointer-events: none;
 }
-/* Planes and their labels ride along with the zoom animation instead of hiding until it ends. Outside a
-   zoom the per-frame position updates must not be eased, hence no transition there. */
-.leaflet-zoom-anim .plane-marker-icon.leaflet-zoom-animated,
-.leaflet-zoom-anim .leaflet-tooltip.plane-label.leaflet-zoom-animated {
-  transition: transform 0.25s cubic-bezier(0, 0, 0.25, 1);
+.airport-dot {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #2a3f55;
+  border: 2px solid #8aa0b8;
+  box-sizing: border-box;
 }
-.leaflet-tooltip.airport-label {
+.airport-label {
   background: rgba(13, 24, 39, 0.92);
   color: #afc1d4;
   border: 1px solid rgba(122, 152, 183, 0.34);
+  border-radius: 3px;
   box-shadow: 0 10px 18px rgba(0, 0, 0, 0.18);
   font-size: 11px;
   font-weight: 700;
+  line-height: 1.4;
   padding: 3px 8px;
   pointer-events: auto;
   cursor: pointer;
   letter-spacing: 0.05em;
+  white-space: nowrap;
 }
-.leaflet-tooltip.airport-label::before { display: none; }
-.leaflet-tooltip.runway-label {
+.maplibregl-popup.runway-label { pointer-events: none; }
+.maplibregl-popup.runway-label .maplibregl-popup-tip { display: none; }
+.maplibregl-popup.runway-label .maplibregl-popup-content {
   background: rgba(10, 18, 30, 0.84);
   color: var(--text-muted);
   border: 1px solid rgba(96, 122, 146, 0.28);
   box-shadow: none;
   font-size: 9px;
   font-weight: 600;
+  line-height: 1.4;
   padding: 1px 5px;
-  pointer-events: none;
+  min-width: 0;
 }
-.leaflet-tooltip.runway-label::before { display: none; }
 
-.leaflet-popup-content-wrapper {
+.maplibregl-popup-content {
   background: linear-gradient(180deg, rgba(14, 26, 42, 0.98) 0%, rgba(10, 18, 31, 0.98) 100%);
   color: var(--text-main);
   border-radius: var(--radius-md);
   border: 1px solid var(--border-soft);
   box-shadow: var(--shadow-md);
+  padding: 12px 14px;
+  font-size: 13px;
+  line-height: 1.6;
+  min-width: 200px;
 }
-.leaflet-popup-tip { background: rgba(14, 26, 42, 0.98); }
-.leaflet-popup-content { margin: 12px 14px; font-size: 13px; line-height: 1.6; min-width: 200px; }
-.leaflet-popup-close-button { display: none; }
-.leaflet-popup.airport-schedule-popup .leaflet-popup-content { margin-top: 18px; }
-.leaflet-popup.airport-schedule-popup .leaflet-popup-close-button {
+.maplibregl-popup-anchor-bottom .maplibregl-popup-tip,
+.maplibregl-popup-anchor-bottom-left .maplibregl-popup-tip,
+.maplibregl-popup-anchor-bottom-right .maplibregl-popup-tip { border-top-color: rgba(14, 26, 42, 0.98); }
+.maplibregl-popup-anchor-top .maplibregl-popup-tip,
+.maplibregl-popup-anchor-top-left .maplibregl-popup-tip,
+.maplibregl-popup-anchor-top-right .maplibregl-popup-tip { border-bottom-color: rgba(14, 26, 42, 0.98); }
+.maplibregl-popup-anchor-left .maplibregl-popup-tip { border-right-color: rgba(14, 26, 42, 0.98); }
+.maplibregl-popup-anchor-right .maplibregl-popup-tip { border-left-color: rgba(14, 26, 42, 0.98); }
+.maplibregl-popup.airport-schedule-popup .maplibregl-popup-content { padding-top: 18px; min-width: 300px; }
+.maplibregl-popup.airport-schedule-popup .maplibregl-popup-close-button {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -731,13 +734,12 @@ body.noscroll { touch-action: none; }
   color: var(--text-muted);
   font-size: 22px;
   line-height: 1;
-  text-decoration: none;
 }
-.leaflet-popup.airport-schedule-popup .leaflet-popup-close-button:hover {
+.maplibregl-popup.airport-schedule-popup .maplibregl-popup-close-button:hover {
   color: var(--text-strong);
   background: rgba(255,255,255,0.06);
 }
-.leaflet-popup-content strong { color: var(--accent); font-size: 15px; }
+.maplibregl-popup-content strong { color: var(--accent); font-size: 15px; }
 .popup-header {
   display: flex;
   align-items: flex-start;
@@ -1014,70 +1016,6 @@ body.noscroll { touch-action: none; }
   font-size: 13px;
 }
 
-@media (max-width: 759px) {
-  .leaflet-popup.airport-schedule-popup {
-    position: fixed !important;
-    left: max(10px, env(safe-area-inset-left, 0px)) !important;
-    right: max(10px, env(safe-area-inset-right, 0px)) !important;
-    bottom: calc(10px + env(safe-area-inset-bottom, 0px)) !important;
-    top: auto !important;
-    width: auto !important;
-    max-width: none !important;
-    margin: 0 !important;
-    transform: none !important;
-    z-index: 1200;
-  }
-
-  .leaflet-popup.airport-schedule-popup .leaflet-popup-content-wrapper {
-    max-height: min(54dvh, 430px);
-    border-radius: 24px;
-    overflow: hidden;
-    box-shadow: var(--shadow-lg);
-  }
-
-  .leaflet-popup.airport-schedule-popup .leaflet-popup-content {
-    width: auto !important;
-    min-width: 0;
-    margin: 16px 14px calc(16px + env(safe-area-inset-bottom, 0px));
-  }
-
-  .leaflet-popup.airport-schedule-popup .leaflet-popup-tip-container,
-  .leaflet-popup.airport-schedule-popup .leaflet-popup-tip {
-    display: none;
-  }
-
-  .leaflet-popup.airport-schedule-popup .leaflet-popup-close-button {
-    top: 8px;
-    right: 8px;
-    width: 34px;
-    height: 34px;
-    background: rgba(255, 255, 255, 0.05);
-  }
-
-  .leaflet-popup.airport-schedule-popup .sched-card {
-    width: 100%;
-    max-height: calc(min(54dvh, 430px) - 32px - env(safe-area-inset-bottom, 0px));
-  }
-
-  .leaflet-popup.airport-schedule-popup .sched-header {
-    padding-right: 34px;
-  }
-
-  .leaflet-popup.airport-schedule-popup .sched-toggle-btn {
-    min-height: 34px;
-    border-radius: 10px;
-    font-size: 12px;
-  }
-
-  .leaflet-popup.airport-schedule-popup .sched-rows {
-    max-height: none;
-  }
-
-  .leaflet-popup.airport-schedule-popup .sched-row {
-    padding: 7px 0;
-  }
-}
-
 @media (min-width: 760px) {
   #map-controls {
     width: min(320px, calc(100% - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px) - 24px));
@@ -1093,7 +1031,7 @@ body.noscroll { touch-action: none; }
     max-height: min(70dvh, 520px);
   }
 }
-.leaflet-control-attribution.leaflet-control {
+.maplibregl-ctrl-bottom-left .maplibregl-ctrl-attrib {
   background: rgba(7, 17, 31, 0.55);
   color: #62738a;
   font-size: 9px;
@@ -1102,4 +1040,4 @@ body.noscroll { touch-action: none; }
   border-radius: 0 4px 0 0;
   margin: 0;
 }
-.leaflet-control-attribution a { color: #9aa9bb; }
+.maplibregl-ctrl-attrib a { color: #9aa9bb; }

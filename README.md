@@ -188,6 +188,7 @@ green) rather than failing every push.
 | `index.html` | App shell and HTML structure |
 | `styles.css` | App styles |
 | `js/*.js` | Browser application logic, split by subsystem (see `.cursor/rules/architecture.mdc`) |
+| `vendor/maplibre-gl-<version>/` | Self-hosted MapLibre GL JS, the only map library (needs WebGL) |
 | `contrails-core.js` | Shared pure helpers (geometry, policy, airlines, escaping) used by the app and tests |
 | `contrails-core.test.js` | Unit tests for shared helper logic |
 | `smoke-boot.mjs` | Local smoke check for page boot with fixed coordinates |
@@ -215,4 +216,4 @@ green) rather than failing every push.
 - Live data from [adsb.lol](https://adsb.lol), backup feed from [adsb.fi](https://adsb.fi) open data (personal, non-commercial use)
 - Flight-track paths from the [adsb.lol](https://adsb.lol) / [airplanes.live](https://airplanes.live) trace feeds
 - Map tiles from [CARTO](https://carto.com/)
-- Built with [Leaflet](https://leafletjs.com/)
+- Built with [MapLibre GL JS](https://maplibre.org/) (BSD-3-Clause, self-hosted in `vendor/`)

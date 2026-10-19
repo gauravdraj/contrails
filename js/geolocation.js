@@ -18,6 +18,13 @@ function showLocationFallback(msg) {
   setLoadingMessage(msg, true);
 }
 
+function showMapUnavailable() {
+  document.getElementById("loading").style.display = "";
+  var spinner = document.querySelector("#loading .spinner");
+  if (spinner) spinner.style.display = "none";
+  setLoadingMessage("This browser can\u2019t draw the map. Turn on hardware acceleration (WebGL) and reload.", false);
+}
+
 async function fetchApproximateArea() {
   try {
     var resp = await fetch(geoUrl());
@@ -117,8 +124,11 @@ function boot(lat, lng, options) {
   loadSavedFilters();
   updateFilterButtons();
   updateSummaryUi();
-  initMap(lat, lng);
-  bootView = { center: map.getCenter(), zoom: map.getZoom() };
+  if (!initMap(lat, lng)) {
+    showMapUnavailable();
+    return;
+  }
+  bootView = { center: map.getCenter(), zoom: viewZoom() };
   scheduleSafariToolbarCollapse();
   syncUrlState();
   setReferencePosition(lat, lng, { refresh: false });
@@ -143,8 +153,10 @@ function boot(lat, lng, options) {
 
 function mapMovedSinceBoot() {
   if (!bootView) return true;
-  if (map.getZoom() !== bootView.zoom) return true;
-  return map.latLngToContainerPoint(bootView.center).distanceTo(map.latLngToContainerPoint(map.getCenter())) > 4;
+  if (viewZoom() !== bootView.zoom) return true;
+  var then = screenPoint(bootView.center.lat, bootView.center.lng);
+  var now = screenPoint(map.getCenter().lat, map.getCenter().lng);
+  return Math.hypot(then.x - now.x, then.y - now.y) > 4;
 }
 
 // Switches the reference to the device and recenters, unless the user has already moved the map.
@@ -154,7 +166,7 @@ function adoptDeviceLocation(lat, lng) {
   shouldWatchUserPosition = true;
   geolocationUpdatesAffectReference = true;
   updateDevicePosition(lat, lng, { useAsReference: true });
-  if (!mapMovedSinceBoot()) map.setView([lat, lng], Math.max(map.getZoom(), DEFAULT_MAP_ZOOM));
+  if (!mapMovedSinceBoot()) setMapView(lat, lng, Math.max(viewZoom(), DEFAULT_MAP_ZOOM));
   updateReferenceNote();
   startGeolocation();
 }

@@ -33,11 +33,7 @@ function isAirportPanelDocked() {
 function closeActiveAirportPanel(options) {
   if (!_activeAirportPopup) return;
   _airportRestoreFocusOnClose = !(options && options.restoreFocus === false);
-  if (_activeAirportPopup._isAirportSheet && _activeAirportPopup.close) {
-    _activeAirportPopup.close();
-    return;
-  }
-  if (map) map.closePopup(_activeAirportPopup);
+  _activeAirportPopup.remove();
 }
 
 function handleAirportSchedulePanelClick(event) {
@@ -109,19 +105,21 @@ function openAirportSheetPanel(html, iata) {
   var els = ensureAirportSheetPanel();
   if (!els) return null;
   var removeHandlers = [];
+  // Same surface as a map popup (setHTML / getElement / on("close") / remove) so callers needn't care.
   var api = {
     _isAirportSheet: true,
-    setContent: function(contentHtml) {
+    setHTML: function(contentHtml) {
       els.content.innerHTML = contentHtml;
+      return api;
     },
     getElement: function() {
       return els.sheet;
     },
     on: function(eventName, handler) {
-      if (eventName === "remove" && typeof handler === "function") removeHandlers.push(handler);
+      if (eventName === "close" && typeof handler === "function") removeHandlers.push(handler);
       return api;
     },
-    close: function() {
+    remove: function() {
       if (!els.panel.classList.contains("open")) return;
       els.panel.classList.remove("open");
       els.panel.setAttribute("aria-hidden", "true");
@@ -129,7 +127,7 @@ function openAirportSheetPanel(html, iata) {
       for (var i = 0; i < removeHandlers.length; i++) removeHandlers[i]();
     }
   };
-  api.setContent(html);
+  api.setHTML(html);
   var close = document.getElementById("airport-panel-close");
   if (close) close.setAttribute("aria-label", airportCloseLabel(iata));
   els.panel.classList.add("open");
@@ -141,7 +139,7 @@ function updateAirportPopupCloseName(popup, iata) {
   if (!popup || !popup.getElement) return;
   var el = popup.getElement();
   if (!el || !el.querySelector) return;
-  var close = el.querySelector(".leaflet-popup-close-button");
+  var close = el.querySelector(".maplibregl-popup-close-button");
   if (!close) return;
   var label = airportCloseLabel(iata);
   close.setAttribute("aria-label", label);
@@ -154,7 +152,7 @@ function focusAirportPopupClose(popup) {
   if (!el || !el.querySelector) return;
   var close = popup._isAirportSheet
     ? document.getElementById("airport-panel-close")
-    : el.querySelector(".leaflet-popup-close-button");
+    : el.querySelector(".maplibregl-popup-close-button");
   focusWithoutScroll(close);
 }
 
@@ -193,17 +191,13 @@ function panAirportIntoDockedMapRegion() {
   var visibleHeight = visibleBottom - visibleTop;
   if (visibleHeight < 120) return;
 
-  var targetPoint = map.latLngToContainerPoint([_activeAirportLat, _activeAirportLng]);
+  var targetPoint = screenPoint(_activeAirportLat, _activeAirportLng);
   var desiredX = mapRect.width / 2;
   var desiredY = visibleTop + visibleHeight * 0.52;
   var dx = targetPoint.x - desiredX;
   var dy = targetPoint.y - desiredY;
   if (Math.abs(dx) < 2 && Math.abs(dy) < 2) return;
-  map.panBy([Math.round(dx), Math.round(dy)], {
-    animate: true,
-    duration: 0.35,
-    easeLinearity: 0.25
-  });
+  panMapBy(Math.round(dx), Math.round(dy), 0.35);
 }
 
 function buildArrivalEntry(a, routeEntry, airportIata, distKm, options) {
@@ -941,7 +935,7 @@ function renderSchedulePopup(dir) {
   var html = buildScheduleCardContent(_activeAirportIata, _activeAirportName, liveData, dir, _activeAirportScopeId);
   if (html === _lastScheduleHtml) return;
   _lastScheduleHtml = html;
-  _activeAirportPopup.setContent(html);
+  _activeAirportPopup.setHTML(html);
   if (!_activeAirportPopup._isAirportSheet && _activeAirportScopeId && _activeAirportPopup.getElement) {
     var el = _activeAirportPopup.getElement();
     if (el) {
@@ -982,22 +976,17 @@ function openAirportSchedulePopup(iata, name, lat, lng) {
 
   var liveData = entry.data || buildAirportPopupPlaceholder("Loading airport traffic…", "loading");
   var dockedPanel = isAirportPanelDocked();
-  if (dockedPanel && map && map._popup) map.closePopup();
+  if (dockedPanel && map) closeMapPopup();
   var panelHtml = buildScheduleCardContent(iata, name, liveData, "arrivals", _activeAirportScopeId);
   var popup = dockedPanel
     ? openAirportSheetPanel(panelHtml, iata)
-    : L.popup({
-      maxWidth: 340,
-      minWidth: 300,
+    : showMapPopup(new maplibregl.Popup({
+      maxWidth: "340px",
       closeButton: true,
+      closeOnClick: false,
       className: "airport-schedule-popup",
-      autoPan: true,
-      autoPanPaddingTopLeft: [16, 88],
-      autoPanPaddingBottomRight: [16, 18]
-    })
-      .setLatLng([lat, lng])
-      .setContent(panelHtml)
-      .openOn(map);
+      focusAfterOpen: false
+    }).setLngLat([lng, lat]).setHTML(panelHtml), { padding: { top: 88, right: 16, bottom: 18, left: 16 } });
   if (!popup) {
     _airportFocusOpener = null;
     _airportRestoreFocusOnClose = true;
@@ -1017,7 +1006,7 @@ function openAirportSchedulePopup(iata, name, lat, lng) {
   focusAirportPopupClose(popup);
   scheduleAirportPanelReposition();
 
-  popup.on("remove", function() {
+  popup.on("close", function() {
     if (_activeAirportIata === iata) {
       var restoreFocus = _airportRestoreFocusOnClose;
       var restoreTarget = _airportFocusOpener;

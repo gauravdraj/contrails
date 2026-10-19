@@ -1297,3 +1297,32 @@ test("updateClockOffset tracks the freshest response and creeps up slowly", () =
   off = core.updateClockOffset(off, 30_200, 30_000);
   assert.equal(off, 200);
 });
+
+test("viewBounds pads every side by a fraction of the span and wraps longitude", () => {
+  const b = core.viewBounds(40, 30, -100, -120).pad(0.1);
+  assert.equal(b.north, 41);
+  assert.equal(b.south, 29);
+  assert.equal(b.east, -98);
+  assert.equal(b.west, -122);
+  assert.ok(b.contains(35, -110));
+  assert.ok(!b.contains(42, -110));
+  assert.ok(!b.contains(35, -90));
+  const across = core.viewBounds(10, -10, 190, 170);
+  assert.ok(across.contains(0, -175));
+  assert.ok(across.contains(0, 175));
+  assert.ok(!across.contains(0, 160));
+});
+
+test("alphaToSdf puts a filled square's edge at the cutoff and falls off by 255/radius per pixel", () => {
+  const w = 32, h = 32;
+  const alpha = new Uint8ClampedArray(w * h);
+  for (let y = 8; y < 24; y++) for (let x = 8; x < 24; x++) alpha[y * w + x] = 255;
+  const sdf = core.alphaToSdf(alpha, w, h, 8, 0.25);
+  const at = (x, y) => sdf[y * w + x];
+  assert.equal(at(16, 16), 255);
+  // The edge falls between pixels 7 and 8, so they straddle 191 by half a step each way.
+  assert.equal(at(8, 16), 223);
+  assert.equal(at(7, 16), 159);
+  assert.equal(at(3, 16), 32);
+  assert.equal(at(0, 0), 0);
+});

@@ -38,7 +38,7 @@ function scheduleSaveLastView() {
     if (!map) return;
     var c = map.getCenter();
     if (!c) return;
-    lsSet(LS_VIEW, JSON.stringify({ lat: +c.lat.toFixed(4), lng: +c.lng.toFixed(4), zoom: map.getZoom() }));
+    lsSet(LS_VIEW, JSON.stringify({ lat: +c.lat.toFixed(4), lng: +c.lng.toFixed(4), zoom: viewZoom() }));
   }, 600);
 }
 
@@ -72,33 +72,31 @@ function airportLatLngByIata(iata) {
   return airportLatLngIndex[String(iata).toUpperCase()] || null;
 }
 
+var _routeTags = [];
+
 function clearRouteLine() {
-  if (routeLayer) routeLayer.clearLayers();
+  if (mapReady) map.getSource("route").setData(EMPTY_COLLECTION);
+  for (var i = 0; i < _routeTags.length; i++) _routeTags[i].remove();
+  _routeTags = [];
   _routeLineKey = null;
 }
 
-function addRouteEndpoint(ll, iata, isOrigin) {
-  if (!ll) return;
-  var color = isOrigin ? "#7CFC9B" : "#FF9E6C";
-  L.circleMarker([ll[0], ll[1]], {
-    radius: 5, color: color, weight: 2, fillColor: color, fillOpacity: 0.9,
-    interactive: false, pane: "overlayPane"
-  }).addTo(routeLayer);
+function routeEndpointFeature(ll, iata, isOrigin) {
   if (iata) {
-    L.marker([ll[0], ll[1]], {
-      interactive: false, keyboard: false,
-      icon: L.divIcon({
-        className: "route-endpoint-label",
-        html: '<span class="route-endpoint-tag ' + (isOrigin ? "is-origin" : "is-dest") + '">' +
-          escapeHtml(String(iata).toUpperCase()) + '</span>',
-        iconSize: [0, 0], iconAnchor: [0, -7]
-      })
-    }).addTo(routeLayer);
+    var tag = document.createElement("span");
+    tag.className = "route-endpoint-tag " + (isOrigin ? "is-origin" : "is-dest");
+    tag.textContent = String(iata).toUpperCase();
+    _routeTags.push(new maplibregl.Marker({ element: tag, anchor: "top", offset: [0, 7] }).setLngLat([ll[1], ll[0]]).addTo(map));
   }
+  return {
+    type: "Feature",
+    properties: { color: isOrigin ? "#7CFC9B" : "#FF9E6C" },
+    geometry: { type: "Point", coordinates: [ll[1], ll[0]] }
+  };
 }
 
 function updateRouteLine() {
-  if (!map || !routeLayer) return;
+  if (!mapReady) return;
   var id = selectedAircraftId;
   if (!id) { if (_routeLineKey) clearRouteLine(); return; }
   var plane = findAircraftById(id);
@@ -109,20 +107,23 @@ function updateRouteLine() {
   var dLL = airportLatLngByIata(dIata);
   var key = id + "|" + (oIata || "") + "|" + (dIata || "") + "|" + (oLL ? "o" : "") + (dLL ? "d" : "");
   if (key === _routeLineKey) return;
+  clearRouteLine();
   _routeLineKey = key;
-  routeLayer.clearLayers();
   if (!oLL && !dLL) return;
+  var features = [];
   if (oLL && dLL) {
     var pts = greatCirclePoints(oLL[0], oLL[1], dLL[0], dLL[1], 64);
     if (pts.length) {
-      L.polyline(pts, {
-        color: "#6cb6ff", weight: 2, opacity: 0.8, dashArray: "6 7",
-        interactive: false, pane: "overlayPane"
-      }).addTo(routeLayer);
+      features.push({
+        type: "Feature",
+        properties: {},
+        geometry: { type: "LineString", coordinates: pts.map(function(p) { return [p[1], p[0]]; }) }
+      });
     }
   }
-  addRouteEndpoint(oLL, oIata, true);
-  addRouteEndpoint(dLL, dIata, false);
+  if (oLL) features.push(routeEndpointFeature(oLL, oIata, true));
+  if (dLL) features.push(routeEndpointFeature(dLL, dIata, false));
+  map.getSource("route").setData({ type: "FeatureCollection", features: features });
 }
 
 // --- Follow mode (keep the map centered on the selected aircraft) ---
@@ -152,14 +153,14 @@ function applyFollow(displayTime, force) {
   if (!pose) return;
   var center = map.getCenter();
   if (!center) return;
-  var sz = map.getSize();
+  var sz = mapSize();
   var minSide = Math.min(sz.x, sz.y) || 320;
-  var planePt = map.latLngToContainerPoint([pose.lat, pose.lng]);
-  var centerPt = map.latLngToContainerPoint(center);
-  var drift = Math.sqrt(Math.pow(planePt.x - centerPt.x, 2) + Math.pow(planePt.y - centerPt.y, 2));
+  var planePt = screenPoint(pose.lat, pose.lng);
+  var centerPt = screenPoint(center.lat, center.lng);
+  var drift = Math.hypot(planePt.x - centerPt.x, planePt.y - centerPt.y);
   if (!force && drift < minSide * FOLLOW_DRIFT_FRACTION) return;
   _followPanning = true;
-  map.panTo([pose.lat, pose.lng], { animate: true, duration: 0.45, easeLinearity: 0.25 });
+  panMapTo(pose.lat, pose.lng, 0.45);
 }
 
 // --- Weather radar overlay (hybrid: IEM NEXRAD over CONUS, RainViewer global) ---
@@ -175,30 +176,49 @@ function viewIsConus() {
          c.lng >= CONUS_BOUNDS.minLng && c.lng <= CONUS_BOUNDS.maxLng;
 }
 
+// Radar layers are { source, opacity } specs; the map upscales past the source's maxzoom.
 function buildIemLayer() {
   // USCOMP-N0Q base-reflectivity mosaic, "-0" = latest frame. Native NEXRAD
-  // resolution (~1km) stays crisp into metro/street zoom; maxNativeZoom caps
+  // resolution (~1km) stays crisp into metro/street zoom; maxzoom caps
   // requests once there's no more real detail (and to be polite to IEM).
-  return L.tileLayer(
-    "https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/ridge::USCOMP-N0Q-0/{z}/{x}/{y}.png",
-    {
-      pane: "weatherPane", opacity: 0.7, maxNativeZoom: 12, maxZoom: 18,
-      tileSize: 256, crossOrigin: true,
+  return {
+    source: {
+      type: "raster", tileSize: 256, maxzoom: 12,
+      tiles: ["https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/ridge::USCOMP-N0Q-0/{z}/{x}/{y}.png"],
       attribution: 'Radar \u00a9 <a href="https://mesonet.agron.iastate.edu/">IEM</a> / NWS NEXRAD'
-    }
-  );
+    },
+    opacity: 0.7
+  };
 }
 
 function buildRainviewerLayer() {
   if (!_rvRadar || !_rvRadar.path) return null;
-  return L.tileLayer(
-    _rvRadar.host + _rvRadar.path + "/256/{z}/{x}/{y}/4/1_1.png",
-    {
-      pane: "weatherPane", opacity: 0.55, maxNativeZoom: 7, maxZoom: 18,
-      tileSize: 256, crossOrigin: true,
+  return {
+    source: {
+      type: "raster", tileSize: 256, maxzoom: 7,
+      tiles: [_rvRadar.host + _rvRadar.path + "/256/{z}/{x}/{y}/4/1_1.png"],
       attribution: 'Radar \u00a9 <a href="https://www.rainviewer.com/">RainViewer</a>'
-    }
-  );
+    },
+    opacity: 0.55
+  };
+}
+
+function removeWeatherLayer() {
+  _weatherLayer = null;
+  if (!mapReady || !map.getSource("weather")) return;
+  map.removeLayer("weather");
+  map.removeSource("weather");
+}
+
+// Radar sits under every app layer (runways are the lowest).
+function addWeatherLayer(layer) {
+  removeWeatherLayer();
+  _weatherLayer = layer;
+  whenMapReady(function() {
+    if (_weatherLayer !== layer || map.getSource("weather")) return;
+    map.addSource("weather", layer.source);
+    map.addLayer({ id: "weather", type: "raster", source: "weather", paint: { "raster-opacity": layer.opacity } }, "runways");
+  });
 }
 
 async function fetchRainviewerFrame() {
@@ -219,9 +239,7 @@ function applyWeatherLayer() {
   var source = viewIsConus() ? "iem" : "rainviewer";
   var layer = source === "iem" ? buildIemLayer() : buildRainviewerLayer();
   if (!layer) return null;
-  if (_weatherLayer && map) map.removeLayer(_weatherLayer);
-  _weatherLayer = layer;
-  _weatherLayer.addTo(map);
+  addWeatherLayer(layer);
   _weatherSource = source;
   return source;
 }
@@ -250,9 +268,7 @@ async function enableWeather(opts) {
     // RainViewer index failed. If we're over CONUS we can still show IEM.
     if (weatherOn && viewIsConus()) {
       try {
-        if (_weatherLayer && map) map.removeLayer(_weatherLayer);
-        _weatherLayer = buildIemLayer();
-        _weatherLayer.addTo(map);
+        addWeatherLayer(buildIemLayer());
         _weatherSource = "iem";
         _weatherRefreshTs = Date.now();
         if (!opts.silent) setControlsFeedback("Weather radar on \u00b7 " + weatherSourceLabel("iem"), "info", { timeoutMs: 3500 });
@@ -269,8 +285,7 @@ function disableWeather() {
   weatherOn = false;
   var btn = document.getElementById("toggle-weather");
   if (btn) { btn.classList.remove("on"); btn.setAttribute("aria-pressed", "false"); }
-  if (_weatherLayer && map) map.removeLayer(_weatherLayer);
-  _weatherLayer = null;
+  removeWeatherLayer();
   _weatherSource = null;
 }
 
@@ -340,7 +355,7 @@ function saveCurrentPlace() {
   name = name.trim();
   if (!name) return;
   var places = loadPlaces();
-  places.push({ name: name.slice(0, 40), lat: +c.lat.toFixed(4), lng: +c.lng.toFixed(4), zoom: map.getZoom() });
+  places.push({ name: name.slice(0, 40), lat: +c.lat.toFixed(4), lng: +c.lng.toFixed(4), zoom: viewZoom() });
   savePlaces(places);
   renderPlaces();
   setControlsFeedback("Saved “" + name.slice(0, 40) + "”.", "info", { timeoutMs: 3000 });
@@ -355,7 +370,7 @@ function goToPlace(idx) {
   var p = places[idx];
   if (!p || !map) return;
   setPlacesPanel(false);
-  map.flyTo([p.lat, p.lng], Number.isFinite(p.zoom) ? p.zoom : map.getZoom(), { duration: 0.75, easeLinearity: 0.18 });
+  flyMapTo(p.lat, p.lng, Number.isFinite(p.zoom) ? p.zoom : viewZoom());
 }
 function deletePlace(idx) {
   var places = loadPlaces();
@@ -409,13 +424,13 @@ function adaptiveRefreshMs() {
 
 function currentViewBounds(padRatio) {
   if (!map) return null;
-  var bounds = map.getBounds();
+  var bounds = mapViewBounds();
   return padRatio ? bounds.pad(padRatio) : bounds;
 }
 
 function currentViewCenter() {
   if (map) return map.getCenter();
-  if (userLat != null && userLng != null) return L.latLng(userLat, userLng);
+  if (userLat != null && userLng != null) return { lat: userLat, lng: userLng };
   return null;
 }
 
@@ -426,17 +441,12 @@ function currentViewportFetchSpec() {
   var spec = buildViewportFetchSpec({
     lat: center.lat,
     lng: center.lng
-  }, {
-    northEast: bounds.getNorthEast(),
-    northWest: bounds.getNorthWest(),
-    southEast: bounds.getSouthEast(),
-    southWest: bounds.getSouthWest()
-  }, {
+  }, bounds, {
     minKm: MIN_VIEW_FETCH_KM,
     maxKm: MAX_VIEW_FETCH_KM,
     pad: FETCH_RADIUS_PAD,
     wideViewKm: WIDE_VIEW_FETCH_KM,
-    zoom: map ? map.getZoom() : DEFAULT_MAP_ZOOM
+    zoom: map ? viewZoom() : DEFAULT_MAP_ZOOM
   });
   lastFetchKm = spec.fetchKm;
   return spec;
@@ -445,7 +455,7 @@ function currentViewportFetchSpec() {
 function currentViewPolicy(visibleCount) {
   var spec = currentViewportFetchSpec();
   return buildViewPolicy({
-    zoom: spec ? spec.zoom : (map ? map.getZoom() : DEFAULT_MAP_ZOOM),
+    zoom: spec ? spec.zoom : (map ? viewZoom() : DEFAULT_MAP_ZOOM),
     fetchKm: spec ? spec.fetchKm : lastFetchKm,
     visibleCount: visibleCount,
     labelsEnabled: filters.labels
@@ -461,7 +471,7 @@ function currentViewPolicy(visibleCount) {
 function isLatLngInView(lat, lng, padRatio) {
   var bounds = currentViewBounds(padRatio == null ? VIEW_FILTER_PAD : padRatio);
   if (!bounds) return true;
-  return bounds.contains([lat, lng]);
+  return bounds.contains(lat, lng);
 }
 
 function visibleAircraftCount() {
@@ -571,12 +581,11 @@ function updateDevicePosition(lat, lng, options) {
   deviceLat = lat;
   deviceLng = lng;
   if (map && !userMarker) {
-    userMarker = L.circleMarker([lat, lng], {
-      radius: 7, fillColor: "#5bbcf5", fillOpacity: 1,
-      color: "#fff", weight: 2
-    }).addTo(map);
+    var dot = document.createElement("div");
+    dot.className = "user-dot";
+    userMarker = new maplibregl.Marker({ element: dot }).setLngLat([lng, lat]).addTo(map);
   }
-  if (userMarker) userMarker.setLatLng([lat, lng]);
+  if (userMarker) userMarker.setLngLat([lng, lat]);
   if (options.useAsReference) {
     setReferencePosition(lat, lng, { refresh: options.refresh });
     return;

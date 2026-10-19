@@ -2,14 +2,14 @@
 //
 // Strategy:
 //   - Precache the same-origin app shell so the map launches offline / instantly.
-//   - Cache-first (stale-while-revalidate) for the shell and immutable CDN libs.
+//   - Cache-first (stale-while-revalidate) for the shell, including the vendored map library.
 //   - Never cache live data, tiles, or weather radar — those always hit the network.
 //   - Cache name is version-scoped; a bumped VERSION invalidates the old shell.
 //
 // Bump VERSION in lockstep with APP_VERSION in js/app-core.js so a new deploy supersedes
 // the cached shell within one launch.
 
-const VERSION = "2.35";
+const VERSION = "2.36";
 const CACHE = "contrails-" + VERSION;
 
 const CORE_ASSETS = [
@@ -32,39 +32,14 @@ const CORE_ASSETS = [
   "./contrails-logo-128.webp",
   "./favicon-64.png",
   "./apple-touch-icon.png",
+  "./vendor/maplibre-gl-5.24.0/maplibre-gl.js",
+  "./vendor/maplibre-gl-5.24.0/maplibre-gl.css",
 ];
-
-// Immutable, version-pinned CDN libraries worth keeping for offline launches.
-const CDN_ASSETS = [
-  "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css",
-  "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js",
-  "https://unpkg.com/leaflet-doubletapdrag@0.1.2/Leaflet.DoubleTapDrag.js",
-  "https://unpkg.com/leaflet-doubletapdragzoom@0.3.2/Leaflet.DoubleTapDragZoom.js",
-  "https://unpkg.com/@luomus/leaflet-smooth-wheel-zoom@1.0.0/SmoothWheelZoom.js",
-  "https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.css",
-  "https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js",
-  "https://unpkg.com/@maplibre/maplibre-gl-leaflet@0.1.4/leaflet-maplibre-gl.js",
-];
-
-// Live data / heavy tile sets — always straight to network, never cached here.
-const BYPASS_HOSTS = new Set([
-  "contrails-api.therealgraj.workers.dev",
-  "basemaps.cartocdn.com",
-  "a.basemaps.cartocdn.com",
-  "b.basemaps.cartocdn.com",
-  "c.basemaps.cartocdn.com",
-  "d.basemaps.cartocdn.com",
-  "mesonet.agron.iastate.edu",
-  "tilecache.rainviewer.com",
-  "api.rainviewer.com",
-]);
 
 self.addEventListener("install", (event) => {
   event.waitUntil((async () => {
     const cache = await caches.open(CACHE);
     await cache.addAll(CORE_ASSETS);
-    // CDN assets are best-effort: don't fail the install if unpkg is unreachable.
-    await Promise.allSettled(CDN_ASSETS.map((url) => cache.add(url)));
     await self.skipWaiting();
   })());
 });
@@ -90,8 +65,6 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  if (BYPASS_HOSTS.has(url.hostname)) return;
-
   // App launches: serve the cached shell instantly, refresh it in the background.
   if (request.mode === "navigate") {
     event.respondWith((async () => {
@@ -108,21 +81,21 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  const sameOrigin = url.origin === self.location.origin;
-  const isPinnedCdn = url.hostname === "unpkg.com";
-  if (!sameOrigin && !isPinnedCdn) return;
+  // Live data, tiles, and radar are all cross-origin and always go straight to the network.
+  if (url.origin !== self.location.origin) return;
+  // Vendored libraries are pinned by version in their path, so a cached copy never needs refreshing.
+  const immutable = url.pathname.includes("/vendor/");
 
   event.respondWith((async () => {
     const cache = await caches.open(CACHE);
     const cached = await cache.match(request);
     if (cached) {
-      if (sameOrigin) {
-        event.waitUntil(
-          fetch(request)
-            .then((resp) => { if (resp && resp.ok) cache.put(request, resp.clone()); })
-            .catch(() => {}),
-        );
-      }
+      if (immutable) return cached;
+      event.waitUntil(
+        fetch(request)
+          .then((resp) => { if (resp && resp.ok) cache.put(request, resp.clone()); })
+          .catch(() => {}),
+      );
       return cached;
     }
     try {

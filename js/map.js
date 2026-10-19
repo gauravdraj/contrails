@@ -1,46 +1,71 @@
-// Leaflet map setup, basemap, markers, and map interaction.
+// MapLibre map setup, view helpers, popups, and map interaction.
+
+// --- View helpers (app zoom scale, {lat, lng} order) ---
+function viewZoom() { return map.getZoom() + 1; }
+function toMapZoom(zoom) { return zoom - 1; }
+function screenPoint(lat, lng) { return map.project([lng, lat]); }
+function mapSize() {
+  var el = map.getContainer();
+  return { x: el.clientWidth, y: el.clientHeight };
+}
+function mapViewBounds() {
+  var b = map.getBounds();
+  return viewBounds(b.getNorth(), b.getSouth(), b.getEast(), b.getWest());
+}
+function setMapView(lat, lng, zoom) {
+  map.jumpTo({ center: [lng, lat], zoom: toMapZoom(zoom) });
+}
+function flyMapTo(lat, lng, zoom, durationS) {
+  map.flyTo({ center: [lng, lat], zoom: toMapZoom(zoom), duration: (durationS == null ? 0.75 : durationS) * 1000, essential: true });
+}
+function panMapTo(lat, lng, durationS) {
+  map.easeTo({ center: [lng, lat], duration: durationS * 1000 });
+}
+function panMapBy(dx, dy, durationS) {
+  map.panBy([dx, dy], { duration: durationS * 1000 });
+}
+
+var _mapReadyQueue = [];
+function whenMapReady(fn) {
+  if (mapReady) fn();
+  else _mapReadyQueue.push(fn);
+}
 
 // --- Map setup ---
 function initMap(lat, lng) {
-  var desktopWheelTuning = isDesktopFinePointer;
-  map = L.map("map", {
-    center: [lat, lng],
-    zoom: Number.isFinite(bootZoomOverride) ? Math.max(MIN_MAP_ZOOM, bootZoomOverride)
-      : (Number.isFinite(paramZoom) ? Math.max(MIN_MAP_ZOOM, paramZoom) : DEFAULT_MAP_ZOOM),
-    minZoom: MIN_MAP_ZOOM,
-    zoomControl: false,
-    attributionControl: false,
-    preferCanvas: true,
-    zoomSnap: desktopWheelTuning ? 0.25 : 0,
-    scrollWheelZoom: !desktopWheelTuning,
-    smoothWheelZoom: desktopWheelTuning,
-    smoothSensitivity: 1,
-    zoomDelta: desktopWheelTuning ? 0.5 : 0.25,
-    wheelPxPerZoomLevel: desktopWheelTuning ? 120 : 180,
-    wheelDebounceTime: desktopWheelTuning ? 50 : 40,
-    zoomAnimation: true,
-    zoomAnimationThreshold: 8,
-    fadeAnimation: false,
-    markerZoomAnimation: true,
-    doubleClickZoom: !isIOSSafari,
-    doubleTapDragZoom: isIOSSafari ? false : "center",
-    doubleTapDragZoomOptions: { reverse: true }
-  });
-  map.createPane("airportCirclePane");
-  map.getPane("airportCirclePane").style.zIndex = 620;
-  map.getPane("airportCirclePane").style.pointerEvents = "none";
-  map.createPane("planeLabelPane");
-  map.getPane("planeLabelPane").style.zIndex = 630;
-  map.createPane("airportTooltipPane");
-  map.getPane("airportTooltipPane").style.zIndex = 640;
-  map.createPane("weatherPane");
-  map.getPane("weatherPane").style.zIndex = 250;
-  map.getPane("weatherPane").style.pointerEvents = "none";
-  addBasemap();
-  L.control.attribution({ position: "bottomleft", prefix: false }).addTo(map);
+  var zoom = Number.isFinite(bootZoomOverride) ? bootZoomOverride
+    : (Number.isFinite(paramZoom) ? paramZoom : DEFAULT_MAP_ZOOM);
+  try {
+    map = new maplibregl.Map({
+      container: "map",
+      style: withCartoKey(VECTOR_STYLE_URL),
+      center: [lng, lat],
+      zoom: toMapZoom(Math.max(MIN_MAP_ZOOM, Math.min(MAX_MAP_ZOOM, zoom))),
+      minZoom: toMapZoom(MIN_MAP_ZOOM),
+      maxZoom: toMapZoom(MAX_MAP_ZOOM),
+      attributionControl: false,
+      dragRotate: false,
+      pitchWithRotate: false,
+      touchPitch: false,
+      maxPitch: 0,
+      // Plane labels are re-placed as planes move; fading them in and out on every placement would flicker.
+      fadeDuration: 0,
+      transformRequest: function(url) {
+        if (/^https:\/\/([\w-]+\.)?basemaps\.cartocdn\.com\//.test(url)) return { url: withCartoKey(url) };
+        return { url: url };
+      }
+    });
+  } catch (err) {
+    console.error("Map failed to start:", err);
+    map = null;
+    return false;
+  }
+  map.touchZoomRotate.disableRotation();
+  map.keyboard.disableRotation();
+  map.addControl(new maplibregl.AttributionControl({ compact: false }), "bottom-left");
+  // "style.load", not "load": "load" also waits for every initial tile, and one slow tile would hold planes back.
+  map.once("style.load", onMapStyleLoad);
 
-  var _autoPanning = false;
-  map.on("autopanstart", function() { _autoPanning = true; });
   map.on("movestart", function() {
     _isPanning = true;
     if (_autoPanning) { _autoPanning = false; return; }
@@ -48,109 +73,38 @@ function initMap(lat, lng) {
   });
   map.on("click", function(e) {
     if (Date.now() < ignoreMapClickUntil) return;
-    if (!selectedAircraftId) return;
-    setSelectedAircraft(null);
+    var hex = planeAtPoint(e.point);
+    if (hex) {
+      setSelectedAircraft(hex);
+      openPlanePopup(hex);
+      return;
+    }
+    closeMapPopup();
+    if (selectedAircraftId) setSelectedAircraft(null);
   });
+  if (isDesktopFinePointer) {
+    var hoverFrame = 0, hoverPoint = null;
+    map.on("mousemove", function(e) {
+      hoverPoint = e.point;
+      if (hoverFrame) return;
+      hoverFrame = requestAnimationFrame(function() {
+        hoverFrame = 0;
+        map.getCanvas().style.cursor = hoverPoint && planeAtPoint(hoverPoint) ? "pointer" : "";
+      });
+    });
+  }
+  map.on("zoomstart", function() { clearTimeout(moveEndDebounceTimer); moveEndDebounceTimer = null; });
 
-  map.on("zoomstart", function() { _isZooming = true; clearTimeout(moveEndDebounceTimer); moveEndDebounceTimer = null; });
-  map.on("zoomend", function() { _isZooming = false; });
-
-  routeLayer = L.layerGroup().addTo(map);
-  trailLayer = L.layerGroup().addTo(map);
-  runwayLayer = L.layerGroup().addTo(map);
-  airportLayer = L.layerGroup().addTo(map);
-  aircraftLayer = L.layerGroup().addTo(map);
   if (weatherOn) enableWeather({ silent: true });
-  installIOSOneFingerZoom();
-  var _popupJustOpened = false;
-  var popupCheckRafPending = false;
-  function popupPanelLeavingView(popup) {
-    if (!popup || !popup.getElement) return false;
-    var el = popup.getElement();
-    if (!el || !el.getBoundingClientRect) return false;
-    var mapRect = map.getContainer().getBoundingClientRect();
-    var popupRect = el.getBoundingClientRect();
-    if (popupRect.height < 1 || popupRect.width < 1) return false;
-    var edgeMargin = 6;
-    return popupRect.top < mapRect.top + edgeMargin ||
-      popupRect.left < mapRect.left + edgeMargin ||
-      popupRect.bottom > mapRect.bottom - edgeMargin ||
-      popupRect.right > mapRect.right - edgeMargin;
-  }
-  function isAirportSchedulePopup(popup) {
-    if (!popup) return false;
-    if (_activeAirportPopup && popup === _activeAirportPopup) return true;
-    if (!popup.getElement) return false;
-    var el = popup.getElement();
-    return !!(el && el.classList && el.classList.contains("airport-schedule-popup"));
-  }
   map.on("move", function() {
     if (_popupJustOpened || _autoPanning) return;
     if (popupCheckRafPending) return;
     popupCheckRafPending = true;
     requestAnimationFrame(function() {
       popupCheckRafPending = false;
-      var p = map._popup;
-      if (p && !isAirportSchedulePopup(p) && popupPanelLeavingView(p)) map.closePopup();
+      var p = activeMapPopup;
+      if (p && !isAirportSchedulePopup(p) && popupPanelLeavingView(p)) closeMapPopup();
     });
-  });
-  map.on("popupopen", function(e) {
-    _popupJustOpened = true;
-    setTimeout(function() { _popupJustOpened = false; }, 600);
-    var el = e.popup.getElement();
-    if (!el) return;
-    if (!el.__contrailsPopupActionsBound) {
-      el.__contrailsPopupActionsBound = true;
-      el.addEventListener("click", function(event) {
-        var t = event.target;
-        if (!t || !t.closest) return;
-        var shareBtn = t.closest(".popup-share");
-        if (shareBtn) {
-          event.preventDefault();
-          event.stopPropagation();
-          sharePlaneById(shareBtn.getAttribute("data-hex"));
-          return;
-        }
-        if (handleAirportSchedulePanelClick(event)) return;
-      });
-    }
-    var popupSourceHex = null;
-    for (var id in markerMap) {
-      if (markerMap[id].getPopup() === e.popup) { popupSourceHex = id; break; }
-    }
-    if (popupSourceHex) {
-      var popupAircraft = findAircraftById(popupSourceHex);
-      if (popupAircraft) e.popup.setContent(buildPopup(popupAircraft));
-    }
-    var photoEl = el.querySelector(".popup-photo");
-    if (photoEl) {
-      var hex = photoEl.getAttribute("data-hex");
-      loadPopupPhoto(photoEl);
-      var acInfoEl = el.querySelector(".popup-aircraft");
-      if (acInfoEl) loadPopupAircraftInfo(acInfoEl);
-      loadPopupTrack(hex);
-      matchScheduleRoute(hex);
-      var clickedPlane = findAircraftById(hex);
-      if (clickedPlane && clickedPlane.callsign && !clickedPlane.private) {
-        tryFr24Search(clickedPlane, { force: true }).then(function() {
-          var m = markerMap[hex];
-          if (m && m.getPopup() && m.getPopup().isOpen()) {
-            var updA = findAircraftById(hex);
-            if (updA) m.getPopup().setContent(buildPopup(updA));
-          }
-        });
-      }
-    }
-    setTimeout(function() {
-      var ctrl = document.getElementById("map-controls");
-      if (!ctrl || !el) return;
-      var ctrlBottom = ctrl.getBoundingClientRect().bottom;
-      var popupRect = el.getBoundingClientRect();
-      if (popupRect.top < ctrlBottom + 10) {
-        _autoPanning = true;
-        map.panBy([0, popupRect.top - ctrlBottom - 10], { animate: true, duration: 0.3 });
-      }
-    }, 50);
   });
   map.on("moveend", function() {
     _isPanning = false;
@@ -165,137 +119,256 @@ function initMap(lat, lng) {
       }, 120);
     }
     if (_popupJustOpened || _autoPanning) { _autoPanning = false; return; }
-    var p = map._popup;
+    var p = activeMapPopup;
     if (p && !isAirportSchedulePopup(p)) {
-      if (popupPanelLeavingView(p)) {
-        map.closePopup();
-      } else if (p._latlng && !map.getBounds().contains(p._latlng)) {
-        map.closePopup();
-      }
+      var ll = p.getLngLat();
+      if (popupPanelLeavingView(p) || !mapViewBounds().contains(ll.lat, ll.lng)) closeMapPopup();
     }
   });
   if (isIOSDevice) {
-    setTimeout(function() { map.invalidateSize({ animate: false }); }, 300);
+    setTimeout(function() { if (map) map.resize(); }, 300);
   }
   window.addEventListener("resize", function() {
-    if (map) map.invalidateSize({ animate: false });
     scheduleAirportPanelReposition(160);
+  });
+  return true;
+}
+
+function onMapStyleLoad() {
+  addPlaneImages();
+  addAppLayers();
+  mapReady = true;
+  var queued = _mapReadyQueue;
+  _mapReadyQueue = [];
+  for (var i = 0; i < queued.length; i++) queued[i]();
+  renderRunways();
+  refreshViewportUi({ fetch: false });
+}
+
+var PLANE_LABEL_FONT = ["Montserrat Medium", "Open Sans Bold", "Noto Sans Regular"];
+var EMPTY_COLLECTION = { type: "FeatureCollection", features: [] };
+
+// Bottom to top: runways, route line, trails, route endpoints, plane labels, planes, the selected plane.
+// Planes ignore placement: a rotated icon's collision box is the box around the rotated image, which would
+// swallow its own label. Labels still collide with each other and push basemap text aside.
+function addAppLayers() {
+  ["runways", "route", "trails", "planes"].forEach(function(id) {
+    map.addSource(id, { type: "geojson", data: EMPTY_COLLECTION });
+  });
+  map.addLayer({
+    id: "runways", type: "line", source: "runways",
+    paint: { "line-color": "#7a8a9f", "line-width": 2.5, "line-opacity": 0.7, "line-dasharray": [3.2, 2] }
+  });
+  map.addLayer({
+    id: "route-line", type: "line", source: "route", filter: ["==", ["geometry-type"], "LineString"],
+    paint: { "line-color": "#6cb6ff", "line-width": 2, "line-opacity": 0.8, "line-dasharray": [3, 3.5] }
+  });
+  map.addLayer({
+    id: "trails", type: "line", source: "trails",
+    layout: { "line-cap": "round", "line-join": "round" },
+    paint: { "line-color": ["get", "color"], "line-opacity": ["get", "opacity"], "line-width": ["get", "width"] }
+  });
+  map.addLayer({
+    id: "route-ends", type: "circle", source: "route", filter: ["==", ["geometry-type"], "Point"],
+    paint: {
+      "circle-radius": 5, "circle-color": ["get", "color"], "circle-opacity": 0.9,
+      "circle-stroke-color": ["get", "color"], "circle-stroke-width": 2
+    }
+  });
+  map.addLayer({
+    id: "plane-labels", type: "symbol", source: "planes",
+    layout: {
+      visibility: "none",
+      "text-field": ["get", "label"],
+      "text-font": PLANE_LABEL_FONT,
+      "text-size": 10,
+      "text-variable-anchor": ["top", "right", "bottom", "left"],
+      "text-radial-offset": ["get", "labelOffset"],
+      "text-padding": 1,
+      "icon-image": "label-chip",
+      "icon-text-fit": "both",
+      "icon-text-fit-padding": [2, 5, 2, 5]
+    },
+    paint: { "text-color": "#d5e0eb" }
+  });
+  var planeLayout = {
+    "icon-image": ["get", "icon"],
+    "icon-size": ["get", "size"],
+    "icon-rotate": ["get", "track"],
+    "icon-rotation-alignment": "map",
+    "icon-allow-overlap": true,
+    "icon-ignore-placement": true,
+    "symbol-z-order": "viewport-y"
+  };
+  var planePaint = { "icon-color": ["get", "color"], "icon-halo-color": "#0a0e17", "icon-halo-width": 1 };
+  map.addLayer({ id: "planes", type: "symbol", source: "planes", filter: ["!", ["get", "selected"]], layout: planeLayout, paint: planePaint });
+  map.addLayer({ id: "planes-selected", type: "symbol", source: "planes", filter: ["get", "selected"], layout: planeLayout, paint: planePaint });
+  map.on("mousemove", "runways", showRunwayTooltip);
+  map.on("mouseleave", "runways", hideRunwayTooltip);
+}
+
+// Nearest drawn plane within a finger's (or cursor's) reach of a screen point.
+function planeAtPoint(point) {
+  var reach = isDesktopFinePointer ? 6 : 14;
+  var best = null, bestDist = Infinity;
+  for (var hex in markerMap) {
+    var rec = markerMap[hex];
+    var pt = screenPoint(rec.lat, rec.lng);
+    var d = Math.hypot(pt.x - point.x, pt.y - point.y);
+    if (d <= rec.props.radiusPx + reach && d < bestDist) {
+      best = hex;
+      bestDist = d;
+    }
+  }
+  return best;
+}
+
+var _runwayTooltip = null;
+function showRunwayTooltip(e) {
+  var f = e.features && e.features[0];
+  if (!f || !f.properties.name) return;
+  if (!_runwayTooltip) {
+    _runwayTooltip = new maplibregl.Popup({ closeButton: false, closeOnClick: false, className: "runway-label", offset: 6 });
+  }
+  _runwayTooltip.setLngLat(e.lngLat).setText(f.properties.name);
+  if (!_runwayTooltip.isOpen()) _runwayTooltip.addTo(map);
+}
+function hideRunwayTooltip() {
+  if (_runwayTooltip) _runwayTooltip.remove();
+}
+
+// --- Popups: one open at a time ---
+var activeMapPopup = null;
+var planePopupHex = null;
+var _autoPanning = false;
+var _popupJustOpened = false;
+var popupCheckRafPending = false;
+
+function showMapPopup(popup, options) {
+  closeMapPopup();
+  activeMapPopup = popup;
+  planePopupHex = options && options.planeHex ? options.planeHex : null;
+  popup.on("close", function() {
+    if (activeMapPopup !== popup) return;
+    activeMapPopup = null;
+    planePopupHex = null;
+  });
+  popup.addTo(map);
+  afterPopupOpened(popup, options);
+  return popup;
+}
+
+function closeMapPopup() {
+  if (activeMapPopup) activeMapPopup.remove();
+}
+
+function popupPanelLeavingView(popup) {
+  if (!popup || !popup.getElement) return false;
+  var el = popup.getElement();
+  if (!el || !el.getBoundingClientRect) return false;
+  var mapRect = map.getContainer().getBoundingClientRect();
+  var popupRect = el.getBoundingClientRect();
+  if (popupRect.height < 1 || popupRect.width < 1) return false;
+  var edgeMargin = 6;
+  return popupRect.top < mapRect.top + edgeMargin ||
+    popupRect.left < mapRect.left + edgeMargin ||
+    popupRect.bottom > mapRect.bottom - edgeMargin ||
+    popupRect.right > mapRect.right - edgeMargin;
+}
+
+function isAirportSchedulePopup(popup) {
+  if (!popup) return false;
+  if (_activeAirportPopup && popup === _activeAirportPopup) return true;
+  var el = popup.getElement && popup.getElement();
+  return !!(el && el.classList && el.classList.contains("airport-schedule-popup"));
+}
+
+function bindPopupActions(el) {
+  if (!el || el.__contrailsPopupActionsBound) return;
+  el.__contrailsPopupActionsBound = true;
+  el.addEventListener("click", function(event) {
+    var t = event.target;
+    if (!t || !t.closest) return;
+    var shareBtn = t.closest(".popup-share");
+    if (shareBtn) {
+      event.preventDefault();
+      event.stopPropagation();
+      sharePlaneById(shareBtn.getAttribute("data-hex"));
+      return;
+    }
+    handleAirportSchedulePanelClick(event);
   });
 }
 
-function clampZoom(zoom) {
-  var min = map && map.getMinZoom() != null ? map.getMinZoom() : 0;
-  var max = map && map.getMaxZoom() != null ? map.getMaxZoom() : 18;
-  return Math.max(min, Math.min(max, zoom));
+// Pans so the popup clears the controls dock and, with `padding` ({top, right, bottom, left}), the map edges.
+function afterPopupOpened(popup, options) {
+  _popupJustOpened = true;
+  setTimeout(function() { _popupJustOpened = false; }, 600);
+  bindPopupActions(popup.getElement());
+  var padding = options && options.padding;
+  setTimeout(function() {
+    var el = popup.getElement();
+    if (!el || activeMapPopup !== popup) return;
+    var mapRect = map.getContainer().getBoundingClientRect();
+    var popupRect = el.getBoundingClientRect();
+    var ctrl = document.getElementById("map-controls");
+    var ctrlBottom = ctrl ? ctrl.getBoundingClientRect().bottom : mapRect.top;
+    var dx = 0, dy = 0;
+    if (popupRect.top < ctrlBottom + 10) dy = popupRect.top - ctrlBottom - 10;
+    if (padding) {
+      if (popupRect.top + dy < mapRect.top + padding.top) dy = popupRect.top - mapRect.top - padding.top;
+      else if (popupRect.bottom > mapRect.bottom - padding.bottom) dy = popupRect.bottom - mapRect.bottom + padding.bottom;
+      if (popupRect.left < mapRect.left + padding.left) dx = popupRect.left - mapRect.left - padding.left;
+      else if (popupRect.right > mapRect.right - padding.right) dx = popupRect.right - mapRect.right + padding.right;
+    }
+    if (!dx && !dy) return;
+    _autoPanning = true;
+    panMapBy(Math.round(dx), Math.round(dy), 0.3);
+  }, 50);
 }
 
-function installIOSOneFingerZoom() {
-  if (!isIOSSafari || !map) return;
-  var el = map.getContainer();
-  var lastTap = null;
-  var gesture = null;
-  var zoomFrame = 0;
-  var queuedZoom = null;
+function openPlanePopup(hex) {
+  var a = findAircraftById(hex);
+  var rec = markerMap[hex];
+  if (!a || !rec) return;
+  var html = buildPopup(a);
+  var popup = new maplibregl.Popup({
+    closeButton: false,
+    closeOnClick: false,
+    anchor: "bottom",
+    offset: rec.props.radiusPx + 2,
+    maxWidth: "300px",
+    className: "plane-popup",
+    focusAfterOpen: false
+  }).setLngLat([rec.lng, rec.lat]).setHTML(html);
+  if (extraState[hex]) extraState[hex].popupHtml = html;
+  showMapPopup(popup, { planeHex: hex });
+  onPlanePopupOpened(hex, popup.getElement());
+}
 
-  function flushQueuedZoom() {
-    if (zoomFrame) {
-      cancelAnimationFrame(zoomFrame);
-      zoomFrame = 0;
-    }
-    if (gesture && queuedZoom != null) {
-      map.setZoomAround(gesture.anchorLatLng, queuedZoom, { animate: false });
-      queuedZoom = null;
-    }
+function setPlanePopupHtml(hex, html) {
+  if (planePopupHex !== hex || !activeMapPopup) return;
+  activeMapPopup.setHTML(html);
+}
+
+function refreshPlanePopup(hex) {
+  if (planePopupHex !== hex) return;
+  var a = findAircraftById(hex);
+  if (a) setPlanePopupHtml(hex, buildPopup(a));
+}
+
+function onPlanePopupOpened(hex, el) {
+  var photoEl = el && el.querySelector(".popup-photo");
+  if (!photoEl) return;
+  loadPopupPhoto(photoEl);
+  var acInfoEl = el.querySelector(".popup-aircraft");
+  if (acInfoEl) loadPopupAircraftInfo(acInfoEl);
+  loadPopupTrack(hex);
+  matchScheduleRoute(hex);
+  var clickedPlane = findAircraftById(hex);
+  if (clickedPlane && clickedPlane.callsign && !clickedPlane.private) {
+    tryFr24Search(clickedPlane, { force: true }).then(function() { refreshPlanePopup(hex); });
   }
-
-  function resetGesture() {
-    if (zoomFrame) {
-      cancelAnimationFrame(zoomFrame);
-      zoomFrame = 0;
-    }
-    queuedZoom = null;
-    if (map.dragging && !map.dragging.enabled()) map.dragging.enable();
-    gesture = null;
-  }
-
-  function queueZoom(targetZoom) {
-    queuedZoom = targetZoom;
-    if (zoomFrame) return;
-    zoomFrame = requestAnimationFrame(function() {
-      zoomFrame = 0;
-      if (!gesture || queuedZoom == null) return;
-      map.setZoomAround(gesture.anchorLatLng, queuedZoom, { animate: false });
-      queuedZoom = null;
-    });
-  }
-
-  function onTouchStart(e) {
-    if (e.touches.length !== 1) {
-      suppressViewportRefresh = false;
-      resetGesture();
-      return;
-    }
-    var touch = e.touches[0];
-    var now = Date.now();
-    var point = { x: touch.clientX, y: touch.clientY };
-    if (lastTap && now - lastTap.ts < 350 && Math.hypot(point.x - lastTap.x, point.y - lastTap.y) < 28) {
-      if (map.dragging && map.dragging.enabled()) map.dragging.disable();
-      suppressViewportRefresh = true;
-      ignoreMapClickUntil = now + 500;
-      var anchorPoint = map.mouseEventToContainerPoint({ clientX: touch.clientX, clientY: touch.clientY });
-      gesture = {
-        anchorLatLng: map.containerPointToLatLng(anchorPoint),
-        startY: touch.clientY,
-        startZoom: map.getZoom(),
-        moved: false
-      };
-      lastTap = null;
-      e.preventDefault();
-      e.stopPropagation();
-    } else {
-      lastTap = { ts: now, x: point.x, y: point.y };
-    }
-  }
-
-  function onTouchMove(e) {
-    if (!gesture || e.touches.length !== 1) return;
-    var dy = e.touches[0].clientY - gesture.startY;
-    if (Math.abs(dy) > 6) gesture.moved = true;
-    var targetZoom = clampZoom(gesture.startZoom + dy / 90);
-    queueZoom(targetZoom);
-    e.preventDefault();
-    e.stopPropagation();
-  }
-
-  function onTouchEnd(e) {
-    if (!gesture) return;
-    if (!gesture.moved) {
-      map.setZoomAround(gesture.anchorLatLng, clampZoom(gesture.startZoom + 1), { animate: true });
-      setTimeout(function() {
-        suppressViewportRefresh = false;
-      }, 0);
-    } else {
-      flushQueuedZoom();
-      requestAnimationFrame(function() {
-        suppressViewportRefresh = false;
-        refreshViewportUi({ fetch: true });
-      });
-    }
-    ignoreMapClickUntil = Date.now() + 500;
-    if (e) {
-      e.preventDefault();
-      e.stopPropagation();
-    }
-    resetGesture();
-  }
-
-  el.addEventListener("touchstart", onTouchStart, { passive: false });
-  el.addEventListener("touchmove", onTouchMove, { passive: false });
-  el.addEventListener("touchend", onTouchEnd, { passive: false });
-  el.addEventListener("touchcancel", function() {
-    suppressViewportRefresh = false;
-    resetGesture();
-  }, { passive: true });
 }
 
 function syncUrlState() {
@@ -303,7 +376,7 @@ function syncUrlState() {
     var center = map.getCenter();
     params.set("lat", center.lat.toFixed(4));
     params.set("lng", center.lng.toFixed(4));
-    params.set("zoom", String(Math.round(map.getZoom() * 4) / 4));
+    params.set("zoom", String(Math.round(viewZoom() * 4) / 4));
   } else if (userLat != null && userLng != null) {
     params.set("lat", userLat.toFixed(4));
     params.set("lng", userLng.toFixed(4));
@@ -437,7 +510,7 @@ function fallbackToUserLocation() {
         shouldWatchUserPosition = true;
         geolocationUpdatesAffectReference = true;
         updateDevicePosition(lat, lng, { useAsReference: true });
-        map.setView([lat, lng], map.getZoom());
+        setMapView(lat, lng, viewZoom());
         startGeolocation();
       },
       function() {
@@ -446,7 +519,7 @@ function fallbackToUserLocation() {
           referenceMode = approx.approximate ? "approximate" : "default";
           referenceMeta = approx;
           setReferencePosition(approx.lat, approx.lng);
-          map.setView([approx.lat, approx.lng], map.getZoom());
+          setMapView(approx.lat, approx.lng, viewZoom());
         });
       },
       { timeout: 5000 }
@@ -457,7 +530,7 @@ function fallbackToUserLocation() {
       referenceMode = approx.approximate ? "approximate" : "default";
       referenceMeta = approx;
       setReferencePosition(approx.lat, approx.lng);
-      map.setView([approx.lat, approx.lng], map.getZoom());
+      setMapView(approx.lat, approx.lng, viewZoom());
     });
   }
 }
@@ -468,7 +541,7 @@ function buildPlaneShareUrl(id) {
   var pose = normalized ? getDisplayPoseForAircraft(normalized, currentDisplayTime(Date.now())) : null;
   var lat = pose ? pose.lat : (plane ? plane.lat : (map ? map.getCenter().lat : paramLat));
   var lng = pose ? pose.lng : (plane ? plane.lng : (map ? map.getCenter().lng : paramLng));
-  var zoom = Math.max(map ? map.getZoom() : DEFAULT_MAP_ZOOM, SEARCH_MIN_ZOOM);
+  var zoom = Math.max(map ? viewZoom() : DEFAULT_MAP_ZOOM, SEARCH_MIN_ZOOM);
   var url = new URL(location.href);
   url.searchParams.set("lat", lat.toFixed(4));
   url.searchParams.set("lng", lng.toFixed(4));
@@ -525,28 +598,24 @@ function focusAircraftById(id, options) {
   }
   if (selectedAircraftId !== plane.icao24) setSelectedAircraft(plane.icao24);
   else if (filtersChanged) renderMap();
-  var marker = markerMap[plane.icao24];
   if (options.center && map) {
     var pose = getDisplayPoseForAircraft(plane.icao24, currentDisplayTime(Date.now())) || { lat: plane.lat, lng: plane.lng };
-    map.flyTo([pose.lat, pose.lng], Math.max(map.getZoom(), options.minZoom || SEARCH_MIN_ZOOM), {
-      duration: options.duration == null ? 0.75 : options.duration,
-      easeLinearity: 0.18
-    });
+    flyMapTo(pose.lat, pose.lng, Math.max(viewZoom(), options.minZoom || SEARCH_MIN_ZOOM), options.duration);
   }
-  if (marker && options.openPopup !== false) marker.openPopup();
+  if (markerMap[plane.icao24] && options.openPopup !== false) openPlanePopup(plane.icao24);
   return true;
 }
 
 function centerMapOnPlane(lat, lng, minZoom) {
   if (!map) return;
-  var targetZoom = Math.max(map.getZoom(), minZoom || SEARCH_MIN_ZOOM);
+  var targetZoom = Math.max(viewZoom(), minZoom || SEARCH_MIN_ZOOM);
   var center = map.getCenter();
   var moved = !center ||
     Math.abs(center.lat - lat) > 1e-4 ||
     Math.abs(center.lng - lng) > 1e-4 ||
-    Math.abs(map.getZoom() - targetZoom) > 0.01;
+    Math.abs(viewZoom() - targetZoom) > 0.01;
   if (moved) {
-    map.flyTo([lat, lng], targetZoom, { duration: 0.75, easeLinearity: 0.18 });
+    flyMapTo(lat, lng, targetZoom);
   } else {
     fetchAircraft({ source: "lookup" });
   }

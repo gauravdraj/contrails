@@ -779,7 +779,7 @@ function renderAirports() {
   var bounds = currentViewBounds(AIRPORT_VIEW_PAD);
   if (!airportData || !bounds) {
     for (var k in airportMarkers) {
-      airportLayer.removeLayer(airportMarkers[k].marker);
+      airportMarkers[k].marker.remove();
       delete airportMarkers[k];
     }
     return;
@@ -787,8 +787,8 @@ function renderAirports() {
   var candidates = [];
   for (var i = 0; i < airportData.length; i++) {
     var ap = airportData[i];
-    if (!bounds.contains([ap[1], ap[2]])) continue;
-    var pt = map.latLngToContainerPoint([ap[1], ap[2]]);
+    if (!bounds.contains(ap[1], ap[2])) continue;
+    var pt = screenPoint(ap[1], ap[2]);
     candidates.push({ x: pt.x, y: pt.y, rank: ap[5] || 0, ap: ap });
   }
   // When zoomed out, busier airports win and smaller ones whose labels would collide are left off.
@@ -797,7 +797,7 @@ function renderAirports() {
   for (var c = 0; c < kept.length; c++) inBounds[kept[c].ap[0]] = kept[c].ap;
   for (var old in airportMarkers) {
     if (!inBounds[old]) {
-      airportLayer.removeLayer(airportMarkers[old].marker);
+      airportMarkers[old].marker.remove();
       delete airportMarkers[old];
     }
   }
@@ -806,24 +806,17 @@ function renderAirports() {
     var ap = inBounds[code];
     var iata = ap[0], name = ap[3] || iata;
     (function(code, apName, lat, lng) {
-      var m = L.circleMarker([lat, lng], {
-        radius: 6, fillColor: "#2a3f55", fillOpacity: 1,
-        color: "#8aa0b8", weight: 2,
-        pane: "airportCirclePane"
-      })
-      .bindTooltip(buildAirportLabelHtml(code, lat, lng), {
-        permanent: true,
-        direction: "right",
-        offset: [8, 0],
-        className: "airport-label",
-        interactive: true,
-        pane: "airportTooltipPane"
-      })
-      .on("click", function() { openAirportSchedulePopup(code, apName, lat, lng); })
-      .addTo(airportLayer);
+      var el = document.createElement("div");
+      el.className = "airport-marker";
+      el.innerHTML = '<span class="airport-dot"></span><span class="airport-label">' + buildAirportLabelHtml(code) + "</span>";
+      el.querySelector(".airport-label").addEventListener("click", function(e) {
+        // Keep the map's own click handler from closing the popup this opens.
+        e.stopPropagation();
+        openAirportSchedulePopup(code, apName, lat, lng);
+      });
+      // The element's left edge is offset so the dot, not the label, sits on the airport.
+      var m = new maplibregl.Marker({ element: el, anchor: "left", offset: [-7, 0] }).setLngLat([lng, lat]).addTo(map);
       airportMarkers[code] = { marker: m, lat: lat, lng: lng };
-      var el = m.getTooltip() && m.getTooltip().getElement();
-      if (el) el.addEventListener("click", function() { openAirportSchedulePopup(code, apName, lat, lng); });
     })(iata, name, ap[1], ap[2]);
   }
 }
@@ -840,39 +833,24 @@ async function fetchRunways() {
   }
 }
 
+// Runways are static, so the map gets every one of them once and culls them itself.
+var _runwaysRendered = false;
 function renderRunways() {
-  var bounds = currentViewBounds(AIRPORT_VIEW_PAD);
-  if (!runwayData || !bounds) {
-    for (var k in runwayLines) {
-      runwayLayer.removeLayer(runwayLines[k]);
-      delete runwayLines[k];
-    }
-    return;
-  }
-  var inBounds = {};
+  if (!runwayData || !mapReady || _runwaysRendered) return;
+  var features = [];
   for (var iata in runwayData) {
     var rwys = runwayData[iata];
     for (var j = 0; j < rwys.length; j++) {
       var r = rwys[j];
-      if (!bounds.contains([(r[0] + r[3]) / 2, (r[1] + r[4]) / 2])) continue;
-      inBounds[iata + "-" + j] = r;
+      features.push({
+        type: "Feature",
+        properties: { name: r[6] },
+        geometry: { type: "LineString", coordinates: [[r[1], r[0]], [r[4], r[3]]] }
+      });
     }
   }
-  for (var old in runwayLines) {
-    if (!inBounds[old]) {
-      runwayLayer.removeLayer(runwayLines[old]);
-      delete runwayLines[old];
-    }
-  }
-  for (var key in inBounds) {
-    if (runwayLines[key]) continue;
-    var r = inBounds[key];
-    runwayLines[key] = L.polyline([[r[0],r[1]], [r[3],r[4]]], {
-      color: "#7a8a9f", weight: 2.5, opacity: 0.7, dashArray: "8,5"
-    }).bindTooltip(r[6], {
-      permanent: false, direction: "center", className: "runway-label"
-    }).addTo(runwayLayer);
-  }
+  map.getSource("runways").setData({ type: "FeatureCollection", features: features });
+  _runwaysRendered = true;
 }
 
 function updateStatus() {

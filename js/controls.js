@@ -362,7 +362,7 @@
         label: result.query.display,
         reason: "search"
       });
-      if (map) map.closePopup();
+      if (map) closeMapPopup();
       input.value = result.query.display;
       input.blur();
       closeSearchResults();
