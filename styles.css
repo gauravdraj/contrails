@@ -671,12 +671,17 @@ body.noscroll { touch-action: none; }
   font-weight: 600;
   padding: 2px 6px;
   pointer-events: none;
-  transition: none !important;
+  transition: none;
 }
 .leaflet-tooltip.plane-label::before { display: none; }
-.plane-marker-icon,
-.plane-marker-icon.leaflet-zoom-animated {
-  transition: none !important;
+.plane-marker-icon {
+  transition: none;
+}
+/* Planes and their labels ride along with the zoom animation instead of hiding until it ends. Outside a
+   zoom the per-frame position updates must not be eased, hence no transition there. */
+.leaflet-zoom-anim .plane-marker-icon.leaflet-zoom-animated,
+.leaflet-zoom-anim .leaflet-tooltip.plane-label.leaflet-zoom-animated {
+  transition: transform 0.25s cubic-bezier(0, 0, 0.25, 1);
 }
 .leaflet-tooltip.airport-label {
   background: rgba(13, 24, 39, 0.92);

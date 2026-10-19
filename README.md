@@ -193,7 +193,7 @@ green) rather than failing every push.
 | `smoke-boot.mjs` | Local smoke check for page boot with fixed coordinates |
 | `scripts/healthcheck.mjs` | Live Worker endpoint health check (catches silent upstream breakage) |
 | `scripts/dev-server.mjs` | Local dev: static server + the real Worker under Node |
-| `airports.json` | Airport positions (IATA, lat, lng, name, city), shared by the app and the Worker |
+| `airports.json` | Airport positions (IATA, lat, lng, name, city, rank), shared by the app and the Worker. Rank is the route count, used to keep the busiest airport's label when labels collide |
 | `runways.json` | Runway endpoints for overlay lines |
 | `worker/src/index.js` | Cloudflare Worker entrypoint and route wiring |
 | `worker/src/providers.js` | Traffic failover: adsb.lol primary, adsb.fi open-data backup |

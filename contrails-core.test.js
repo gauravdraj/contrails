@@ -1271,3 +1271,29 @@ test("greatCirclePoints: identical points and bad input degrade gracefully", () 
   assert.deepEqual(core.greatCirclePoints(null, 1, 2, 3), []);
   assert.deepEqual(core.greatCirclePoints(1, 1, NaN, 3), []);
 });
+
+test("declutterLabels keeps the higher-ranked of two overlapping labels", () => {
+  const kept = core.declutterLabels([
+    { id: "OAK", x: 100, y: 100, rank: 32 },
+    { id: "SFO", x: 104, y: 108, rank: 150 },
+    { id: "SJC", x: 140, y: 160, rank: 38 },
+  ], { w: 44, h: 22 });
+  assert.deepEqual(kept.map((k) => k.id), ["SFO", "SJC"]);
+});
+
+test("declutterLabels keeps labels that sit side by side without touching", () => {
+  const kept = core.declutterLabels([
+    { id: "A", x: 0, y: 0, rank: 1 },
+    { id: "B", x: 60, y: 0, rank: 2 },
+  ], { w: 44, h: 22 });
+  assert.equal(kept.length, 2);
+});
+
+test("updateClockOffset tracks the freshest response and creeps up slowly", () => {
+  let off = core.updateClockOffset(null, 10_500, 10_000);
+  assert.equal(off, 500);
+  off = core.updateClockOffset(off, 22_900, 20_000);
+  assert.equal(off, 550);
+  off = core.updateClockOffset(off, 30_200, 30_000);
+  assert.equal(off, 200);
+});

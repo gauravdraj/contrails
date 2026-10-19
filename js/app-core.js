@@ -42,6 +42,8 @@ const greatCirclePoints = core.greatCirclePoints;
 const pointOnRunway = core.pointOnRunway;
 const SQUAWK_ALERT = core.SQUAWK_ALERTS;
 const AIRLINE_ICAO_TO_IATA = core.AIRLINE_ICAO_TO_IATA;
+const declutterLabels = core.declutterLabels;
+const updateClockOffset = core.updateClockOffset;
 if (!airlineName || !angleDiffDeg || !bearingDegrees || !buildViewPolicy || !buildViewportFetchSpec || !cardinalDir ||
     !callsignVariants || !computePlaybackDelayMs || !escapeHtml || !formatDistanceMiles || !formatSpeedMph ||
     !getAirportNextRow || !haversineKm || !interpolatePlaybackPose || !interpolateTimedPose || !isLikelyPrivateCallsign ||
@@ -50,11 +52,11 @@ if (!airlineName || !angleDiffDeg || !bearingDegrees || !buildViewPolicy || !bui
     !classifyGroundDepartureStatus ||
     !findFlightStartIndex || !matchRunwayDesignator || !deriveActiveRunways || !greatCirclePoints || !pointOnRunway ||
     !roundTenths || !slantKm || !elevationDeg || !SQUAWK_ALERT ||
-    !sizeFromCategory || !sizeClass || !isLikelyPrivateClass || !dimColor) {
+    !sizeFromCategory || !sizeClass || !isLikelyPrivateClass || !dimColor || !declutterLabels || !updateClockOffset) {
   throw new Error("Contrails core helpers failed to load.");
 }
 
-const APP_VERSION = "2.34";
+const APP_VERSION = "2.35";
 const isLocal = location.hostname === "localhost" || location.hostname === "127.0.0.1";
 const isIOSDevice = /iP(ad|hone|od)/.test(navigator.userAgent) ||
   (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
@@ -68,9 +70,7 @@ const isDesktopFinePointer = !isIOSDevice &&
 // Local dev runs the real Worker under Node (scripts/dev-server.mjs).
 const WORKER_URL = isLocal ? location.protocol + "//" + location.hostname + ":8791" : "https://contrails-api.therealgraj.workers.dev";
 document.getElementById("version-badge").textContent = APP_VERSION;
-document.getElementById("controls-logo-image").setAttribute("src", "contrails-logo.png?v=" + APP_VERSION);
 document.getElementById("app-touch-icon").setAttribute("href", "apple-touch-icon.png?v=" + APP_VERSION);
-document.getElementById("app-favicon").setAttribute("href", "apple-touch-icon.png?v=" + APP_VERSION);
 if (typeof navigator !== "undefined" && "serviceWorker" in navigator) {
   window.addEventListener("load", function() {
     navigator.serviceWorker.register("sw.js").catch(function() {});
@@ -167,6 +167,9 @@ function aircraftUrl(hex) {
 const REFRESH_MS = 5000;
 const DEFAULT_MAP_ZOOM = 11;
 const MIN_MAP_ZOOM = 5;
+// IP geolocation is city-level at best, so it opens on the wider region.
+const APPROX_AREA_ZOOM = 9;
+const GEO_QUICK_BOOT_MS = 1500;
 // CARTO basemap keys are client-side by design and restricted to the live
 // site's referrer, so localhost requests go keyless (raster tiles watermark).
 const CARTO_KEY = "cb1_3umv_1_aa4684ea4fce195778be2673";
@@ -184,6 +187,8 @@ const DEFAULT_BROWSE_LAT = 51.5074;
 const DEFAULT_BROWSE_LNG = -0.1278;
 const VIEW_FILTER_PAD = 0.08;
 const AIRPORT_VIEW_PAD = 0.16;
+// Screen footprint of an airport dot plus its IATA tag, for label decluttering.
+const AIRPORT_LABEL_BOX = { w: 60, h: 24 };
 const TRAIL_VIEW_PAD = 0.18;
 const FETCH_RADIUS_PAD = 1.22;
 const MIN_VIEW_FETCH_KM = 18;
@@ -196,10 +201,12 @@ const LABEL_MAX_VISIBLE_PLANES = 90;
 const MAP_FETCH_IDLE_MS = 220;
 const MAP_FETCH_IDLE_MS_WIDE = 320;
 const PLAYBACK_DELAY_MIN_MS = 3200;
-const PLAYBACK_DELAY_MAX_MS = 6500;
+const PLAYBACK_DELAY_MAX_MS = 8000;
 const PLAYBACK_DELAY_SAFETY_MS = 250;
 const PLAYBACK_EXTRAPOLATION_MS = 1200;
-const MARKER_TARGET_INTERVAL_MS = Math.round(1000 / 24);
+// 0 = every animation frame.
+const MARKER_TARGET_INTERVAL_MS = 0;
+const TRAIL_FRAME_MS = 66;
 const STALE_HISTORY_MS = 6 * 60 * 1000;
 const SEEDED_TRAIL_WINDOW_MS = 30000;
 const SEEDED_TRAIL_POINTS = 8;
@@ -303,7 +310,10 @@ let fetchAbortController = null;
 let activeFetchUrl = null;
 let fetchRequestSeq = 0;
 let appBooted = false;
+let bootView = null;
 let playbackDelayMs = REFRESH_MS + PLAYBACK_DELAY_SAFETY_MS;
+let feedClockOffsetMs = null;
+let feedAgeMs = 0;
 let fetchJitterMs = 0;
 let shouldWatchUserPosition = true;
 let geolocationWatchId = null;

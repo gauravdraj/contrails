@@ -729,7 +729,7 @@ function bindPlaneLabel(marker, text, yOffset, direction) {
   var offset = direction === "top" ? [0, -yOffset] :
                direction === "bottom" ? [0, yOffset] :
                direction === "right" ? [yOffset, 0] : [-yOffset, 0];
-  marker.bindTooltip(text, { permanent: true, direction: direction, offset: offset, className: "plane-label", pane: "planeLabelPane" });
+  marker.bindTooltip(new PlaneLabel({ permanent: true, direction: direction, offset: offset, className: "plane-label", pane: "planeLabelPane" }).setContent(text));
   if (marker.getTooltip() && marker.getLatLng()) {
     marker.getTooltip().setLatLng(marker.getLatLng());
     marker.getTooltip().update();
@@ -784,6 +784,30 @@ function syncMarkerVisualState(marker, a, markerState, policy, isSelected, popup
   markerState.labelDir = showLabels ? labelDir : "";
 }
 
+// Leaflet rounds marker positions to whole pixels, so a slow-moving plane steps a pixel at a time. Plane
+// markers keep the fractional position (the icon is already on its own compositing layer via translate3d)
+// and only touch z-index when the rounded row changes.
+var PlaneMarker = L.Marker.extend({
+  update: function() {
+    if (this._icon && this._map) this._setPos(this._map.project(this._latlng)._subtract(this._map.getPixelOrigin()));
+    return this;
+  },
+  _setPos: function(pos) {
+    L.DomUtil.setPosition(this._icon, pos);
+    var z = Math.round(pos.y) + this.options.zIndexOffset;
+    if (z !== this._zIndex) {
+      this._zIndex = z;
+      this._resetZIndex();
+    }
+  }
+});
+
+var PlaneLabel = L.Tooltip.extend({
+  _updatePosition: function() {
+    this._setPosition(this._map.project(this._latlng)._subtract(this._map.getPixelOrigin()));
+  }
+});
+
 function syncMarkerPose(marker, pose) {
   if (!marker || !pose) return;
   var cur = marker.getLatLng();
@@ -836,8 +860,8 @@ var _markerDrainTimer = 0;
 
 function markerAnimationIntervalMs(markerCount) {
   if (!markerCount) return 250;
-  if (markerCount > 320) return 84;
-  if (markerCount > 220) return 56;
+  if (markerCount > 320) return 50;
+  if (markerCount > 200) return 33;
   return MARKER_TARGET_INTERVAL_MS;
 }
 
@@ -915,7 +939,7 @@ function renderMarkers(now, displayPoses) {
     } else {
       newThisFrame++;
       var icon = planeIcon(a.track, a.aircraftType, a.private, a.category, a.altFt, a.ground);
-      var marker = L.marker([displayPose.lat, displayPose.lng], { icon: icon }).bindPopup("", {
+      var marker = new PlaneMarker([displayPose.lat, displayPose.lng], { icon: icon }).bindPopup("", {
         closeButton: false, autoPan: false
       });
       marker.on("click", (function(id, m) {
@@ -956,6 +980,7 @@ function renderMarkers(now, displayPoses) {
 }
 
 var _lastAnimateTs = 0;
+var _lastTrailFrameTs = 0;
 function animateMarkers() {
   markerAnimationFrame = 0;
   var now = Date.now();
@@ -967,7 +992,8 @@ function animateMarkers() {
     return;
   }
   _lastAnimateTs = now;
-  if (!_isPanning) {
+  // During an animated zoom Leaflet eases every marker to its new spot; moving them here would cancel that.
+  if (!_isPanning && !map._animatingZoom) {
     var displayTime = currentDisplayTime(now);
     var displayPoses = {};
     for (var id in extraState) {
@@ -982,7 +1008,12 @@ function animateMarkers() {
       displayPoses[id] = pose;
       syncMarkerPose(marker, pose);
     }
-    renderTrails(now, displayPoses);
+    // Trail tips trail the plane by at most one trail frame, which isn't visible, and trails cost far more
+    // to redraw than markers do to move.
+    if (now - _lastTrailFrameTs >= TRAIL_FRAME_MS) {
+      _lastTrailFrameTs = now;
+      renderTrails(now, displayPoses);
+    }
   }
   scheduleMarkerAnimation(minInterval);
 }

@@ -47,7 +47,7 @@ async function requestApproximateArea(fallbackMessage) {
   if (appBooted) return;
   var lastView = loadLastView();
   if (lastView) {
-    bootZoomOverride = isFinite(lastView.zoom) ? lastView.zoom : null;
+    bootZoomOverride = Number.isFinite(lastView.zoom) ? lastView.zoom : null;
     boot(lastView.lat, lastView.lng, {
       watchPosition: false,
       referenceMode: "manual",
@@ -58,7 +58,9 @@ async function requestApproximateArea(fallbackMessage) {
   }
   setLoadingMessage("Finding an approximate area...", false);
   var approx = await fetchApproximateArea();
+  if (appBooted) return;
   if (approx) {
+    if (approx.approximate) bootZoomOverride = APPROX_AREA_ZOOM;
     boot(approx.lat, approx.lng, {
       watchPosition: false,
       referenceMode: approx.approximate ? "approximate" : "default",
@@ -116,6 +118,7 @@ function boot(lat, lng, options) {
   updateFilterButtons();
   updateSummaryUi();
   initMap(lat, lng);
+  bootView = { center: map.getCenter(), zoom: map.getZoom() };
   scheduleSafariToolbarCollapse();
   syncUrlState();
   setReferencePosition(lat, lng, { refresh: false });
@@ -138,6 +141,24 @@ function boot(lat, lng, options) {
   updateViewHint(0);
 }
 
+function mapMovedSinceBoot() {
+  if (!bootView) return true;
+  if (map.getZoom() !== bootView.zoom) return true;
+  return map.latLngToContainerPoint(bootView.center).distanceTo(map.latLngToContainerPoint(map.getCenter())) > 4;
+}
+
+// Switches the reference to the device and recenters, unless the user has already moved the map.
+function adoptDeviceLocation(lat, lng) {
+  referenceMode = "device";
+  referenceMeta = null;
+  shouldWatchUserPosition = true;
+  geolocationUpdatesAffectReference = true;
+  updateDevicePosition(lat, lng, { useAsReference: true });
+  if (!mapMovedSinceBoot()) map.setView([lat, lng], Math.max(map.getZoom(), DEFAULT_MAP_ZOOM));
+  updateReferenceNote();
+  startGeolocation();
+}
+
 function requestInitialLocation() {
   if (appBooted) return;
   if (!navigator.geolocation) {
@@ -145,12 +166,22 @@ function requestInitialLocation() {
     return;
   }
   setLoadingMessage("Getting location...", false);
+  // A pending permission prompt or slow GPS fix shouldn't hold the map back: open on the last view or
+  // the IP region after a moment, then move to the device once it answers.
+  var quickBoot = setTimeout(function() {
+    requestApproximateArea("Location access is off. You can still browse the map or enter coordinates.");
+  }, GEO_QUICK_BOOT_MS);
   navigator.geolocation.getCurrentPosition(
-    function(pos) { boot(pos.coords.latitude, pos.coords.longitude, { watchPosition: true }); },
+    function(pos) {
+      clearTimeout(quickBoot);
+      if (!appBooted) boot(pos.coords.latitude, pos.coords.longitude, { watchPosition: true });
+      else if (map && referenceMode !== "device") adoptDeviceLocation(pos.coords.latitude, pos.coords.longitude);
+    },
     function() {
+      clearTimeout(quickBoot);
       requestApproximateArea("Location access is off. You can still browse the map or enter coordinates.");
     },
-    { enableHighAccuracy: true, timeout: 10000 }
+    { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 }
   );
 }
 

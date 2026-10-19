@@ -36,7 +36,7 @@ async function fetchAircraft(options) {
         setControlsFeedback("Primary traffic feed restored.", "success", { timeoutMs: 4000 });
       }
     }
-    processAircraft(data.ac || []);
+    processAircraft(data.ac || [], data.now);
   } catch (err) {
     if (err && err.name === "AbortError") return;
     trafficFailStreak++;
@@ -62,6 +62,7 @@ async function fetchAircraft(options) {
 function buildAircraftSnapshot(ac, options) {
   options = options || {};
   var now = options.now != null ? options.now : Date.now();
+  var positionNow = options.positionNow != null ? options.positionNow : now;
   var includeProximity = options.includeProximity !== false;
   var snapshot = [];
   var activeIds = {};
@@ -88,7 +89,7 @@ function buildAircraftSnapshot(ac, options) {
     var viewDistKm = includeProximity ? viewportDistanceKm(s.lat, s.lon) : null;
     var altFt = isGround ? null : (typeof s.alt_baro === "number" ? Math.round(s.alt_baro) : null);
     var slantDistanceKm = includeProximity && metrics && metrics.distKm != null ? slantKm(metrics.distKm, altFt) : null;
-    var reportTs = now - Math.max(0, (s.seen_pos || 0) * 1000);
+    var reportTs = positionNow - Math.max(0, (s.seen_pos || 0) * 1000);
     activeIds[hex] = true;
 
     snapshot.push({
@@ -130,8 +131,20 @@ function buildAircraftSnapshot(ac, options) {
   };
 }
 
-function processAircraft(ac) {
-  var snapshot = buildAircraftSnapshot(ac);
+// seen_pos is relative to the feed's snapshot time, not to when the response reached us: the Worker can
+// serve a grid response a few seconds old, so stamping positions with our receive time makes planes surge
+// and stall. Translate the feed's clock to ours instead.
+function feedPositionClock(feedNow, receivedAt) {
+  if (!Number.isFinite(feedNow)) return receivedAt;
+  feedClockOffsetMs = updateClockOffset(feedClockOffsetMs, receivedAt, feedNow);
+  var positionNow = Math.min(receivedAt, feedNow + feedClockOffsetMs);
+  feedAgeMs = feedAgeMs * 0.8 + (receivedAt - positionNow) * 0.2;
+  return positionNow;
+}
+
+function processAircraft(ac, feedNow) {
+  var receivedAt = Date.now();
+  var snapshot = buildAircraftSnapshot(ac, { now: receivedAt, positionNow: feedPositionClock(feedNow, receivedAt) });
   var now = snapshot.now;
   if (lastFetchTs) updatePlaybackDelay(now - lastFetchTs);
   else updatePlaybackDelay(null);
@@ -564,7 +577,7 @@ function updatePlaybackDelay(observedIntervalMs) {
     var deviation = Math.abs(observedIntervalMs - baseline);
     fetchJitterMs = fetchJitterMs * 0.75 + deviation * 0.25;
   }
-  var targetDelay = computePlaybackDelayMs(fetchInterval, fetchJitterMs, {
+  var targetDelay = computePlaybackDelayMs(fetchInterval + feedAgeMs, fetchJitterMs, {
     minMs: PLAYBACK_DELAY_MIN_MS,
     maxMs: PLAYBACK_DELAY_MAX_MS,
     safetyMs: PLAYBACK_DELAY_SAFETY_MS
@@ -771,12 +784,17 @@ function renderAirports() {
     }
     return;
   }
-  var inBounds = {};
+  var candidates = [];
   for (var i = 0; i < airportData.length; i++) {
     var ap = airportData[i];
     if (!bounds.contains([ap[1], ap[2]])) continue;
-    inBounds[ap[0]] = ap;
+    var pt = map.latLngToContainerPoint([ap[1], ap[2]]);
+    candidates.push({ x: pt.x, y: pt.y, rank: ap[5] || 0, ap: ap });
   }
+  // When zoomed out, busier airports win and smaller ones whose labels would collide are left off.
+  var kept = declutterLabels(candidates, AIRPORT_LABEL_BOX);
+  var inBounds = {};
+  for (var c = 0; c < kept.length; c++) inBounds[kept[c].ap[0]] = kept[c].ap;
   for (var old in airportMarkers) {
     if (!inBounds[old]) {
       airportLayer.removeLayer(airportMarkers[old].marker);

@@ -355,7 +355,7 @@ function goToPlace(idx) {
   var p = places[idx];
   if (!p || !map) return;
   setPlacesPanel(false);
-  map.flyTo([p.lat, p.lng], isFinite(p.zoom) ? p.zoom : map.getZoom(), { duration: 0.75, easeLinearity: 0.18 });
+  map.flyTo([p.lat, p.lng], Number.isFinite(p.zoom) ? p.zoom : map.getZoom(), { duration: 0.75, easeLinearity: 0.18 });
 }
 function deletePlace(idx) {
   var places = loadPlaces();

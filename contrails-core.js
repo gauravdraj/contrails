@@ -1062,6 +1062,32 @@
     return cls === "bizjet" || cls === "light" || cls === "turboprop";
   }
 
+  // Greedy label placement: highest rank first; every label is a w x h box at the same offset from its point
+  // (screen pixels), so two overlap when their points are closer than w across and h down. A label that would
+  // overlap one already placed is dropped. Returns the kept items in placement order.
+  function declutterLabels(items, box) {
+    var sorted = items.slice().sort(function(a, b) { return (b.rank || 0) - (a.rank || 0); });
+    var kept = [];
+    for (var i = 0; i < sorted.length; i++) {
+      var it = sorted[i];
+      var hit = false;
+      for (var j = 0; j < kept.length && !hit; j++) {
+        hit = Math.abs(kept[j].x - it.x) < box.w && Math.abs(kept[j].y - it.y) < box.h;
+      }
+      if (!hit) kept.push(it);
+    }
+    return kept;
+  }
+
+  // Offset to add to a feed timestamp (the feed server's clock) to get the client clock. Cached responses
+  // arrive late, so the smallest receive delay seen recently is the best estimate; it is allowed to creep
+  // up slowly so a client clock change is eventually absorbed.
+  function updateClockOffset(prevOffsetMs, receivedAtMs, feedNowMs, creepMs) {
+    var observed = receivedAtMs - feedNowMs;
+    if (prevOffsetMs == null || !isFinite(prevOffsetMs)) return observed;
+    return Math.min(observed, prevOffsetMs + (creepMs == null ? 50 : creepMs));
+  }
+
   function dimColor(hslStr) {
     var m = hslStr.match(/[\d.]+/g);
     if (!m || m.length < 3) return hslStr;
@@ -1116,6 +1142,8 @@
     sizeFromCategory: sizeFromCategory,
     sizeClass: sizeClass,
     isLikelyPrivateClass: isLikelyPrivateClass,
-    dimColor: dimColor
+    dimColor: dimColor,
+    declutterLabels: declutterLabels,
+    updateClockOffset: updateClockOffset
   };
 });

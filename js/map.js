@@ -5,8 +5,8 @@ function initMap(lat, lng) {
   var desktopWheelTuning = isDesktopFinePointer;
   map = L.map("map", {
     center: [lat, lng],
-    zoom: isFinite(bootZoomOverride) ? Math.max(MIN_MAP_ZOOM, bootZoomOverride)
-      : (isFinite(paramZoom) ? Math.max(MIN_MAP_ZOOM, paramZoom) : DEFAULT_MAP_ZOOM),
+    zoom: Number.isFinite(bootZoomOverride) ? Math.max(MIN_MAP_ZOOM, bootZoomOverride)
+      : (Number.isFinite(paramZoom) ? Math.max(MIN_MAP_ZOOM, paramZoom) : DEFAULT_MAP_ZOOM),
     minZoom: MIN_MAP_ZOOM,
     zoomControl: false,
     attributionControl: false,
@@ -21,7 +21,7 @@ function initMap(lat, lng) {
     zoomAnimation: true,
     zoomAnimationThreshold: 8,
     fadeAnimation: false,
-    markerZoomAnimation: false,
+    markerZoomAnimation: true,
     doubleClickZoom: !isIOSSafari,
     doubleTapDragZoom: isIOSSafari ? false : "center",
     doubleTapDragZoomOptions: { reverse: true }
