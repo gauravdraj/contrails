@@ -277,11 +277,9 @@ function formatTakeoffSummaryStatus(row, liveData) {
   var signal = describeAirportDepartureStatus(row, {
     activeRunways: !!(liveData && liveData.activeDepartureRunways)
   });
-  if (row.status === "Holding") return signal.onRunway ? "Holding on runway" : "Holding";
   if (row.status === "Departing") return "Departing";
   if (row.status === "Climbing") return "Climbing";
-  if (row.status === "Taxiing") return signal.nearRunway ? "Taxiing near runway" : "Taxiing";
-  return row.status || signal.label;
+  return signal.label;
 }
 
 function buildScheduleNextSummary(liveData, dir) {
@@ -310,7 +308,9 @@ function buildScheduleNextSummary(liveData, dir) {
     if (dir === "landed") summaryClass += " landed";
   } else {
     var depSignal = describeAirportDepartureStatus(next, { activeRunways: !!liveData.activeDepartureRunways });
-    if (depSignal.confidence === "medium") title = "Likely next takeoff";
+    // Climbing rows sort last, so a climbing top row means nothing is queued on the ground.
+    if (next.status === "Climbing") title = "Just departed";
+    else if (depSignal.confidence === "medium") title = "Likely next takeoff";
     else if (depSignal.confidence === "low") title = "Possible next takeoff";
     statusText = formatTakeoffSummaryStatus(next, liveData);
     if (next.destIata) routeParts.push("to " + next.destIata);
@@ -338,12 +338,43 @@ function mergeActiveRunways(primary, fallback) {
   return { departing_runways: dep, arriving_runways: arr };
 }
 
+// Runways seen in use per airport, so a quiet few minutes with no plane on a runway don't drop the active
+// runway and reshuffle the board between refreshes. A newly seen runway replaces the remembered one.
+var ACTIVE_RUNWAY_MEMORY_MS = 15 * 60 * 1000;
+var _activeRunwayMemory = {};
+
+function rememberActiveRunways(iata, derived) {
+  var now = Date.now();
+  var mem = _activeRunwayMemory[iata] || (_activeRunwayMemory[iata] = {});
+  var out = {};
+  ["departing_runways", "arriving_runways"].forEach(function(key) {
+    var seen = derived && derived[key];
+    if (seen && seen.length) mem[key] = { list: seen, at: now };
+    out[key] = mem[key] && now - mem[key].at <= ACTIVE_RUNWAY_MEMORY_MS ? mem[key].list : [];
+  });
+  return out.departing_runways.length || out.arriving_runways.length ? out : null;
+}
+
+// Feed speed change (kts) across the client's recent samples for this plane; negative when slowing.
+function recentSpeedChangeKts(hex, spanMs) {
+  var samples = extraState[hex] && extraState[hex].samples;
+  if (!samples || samples.length < 2) return null;
+  var last = samples[samples.length - 1];
+  for (var i = 0; i < samples.length - 1; i++) {
+    if (last.ts - samples[i].ts <= spanMs) return (last.spdMs - samples[i].spdMs) / 0.514444;
+  }
+  return null;
+}
+
 function buildLiveScheduleData(airportIata, airportLat, airportLng, sourceAircraft, activeRunwaysOverride) {
   var list = Array.isArray(sourceAircraft) ? sourceAircraft : aircraft;
   var arrivals = [];
   var departures = [];
+  var justLanded = [];
+  var nowMs = Date.now();
   var airportRwys = runwayData && runwayData[airportIata];
-  var activeRunways = mergeActiveRunways(activeRunwaysOverride, deriveActiveRunways(airportRwys, airportIata, list));
+  var derivedRunways = rememberActiveRunways(airportIata, deriveActiveRunways(airportRwys, airportIata, list));
+  var activeRunways = mergeActiveRunways(activeRunwaysOverride, derivedRunways);
   var activeDepThresholds = [];
   if (activeRunways && activeRunways.departing_runways) {
     var depDesigs = activeRunways.departing_runways;
@@ -416,27 +447,57 @@ function buildLiveScheduleData(airportIata, airportLat, airportLng, sourceAircra
     }
     return { on: false, distFromThresholdKm: null, bearing: null };
   }
-  function nearestDepThresholdKm(a) {
+  function nearestDepThreshold(a) {
+    var best = null;
+    function consider(lat, lng) {
+      var d = haversineKm(a.lat, a.lng, lat, lng);
+      if (!best || d < best.km) best = { lat: lat, lng: lng, km: d };
+    }
     if (activeDepThresholds.length > 0) {
-      var minD = Infinity;
       for (var t = 0; t < activeDepThresholds.length; t++) {
-        var th = activeDepThresholds[t];
-        var d = haversineKm(a.lat, a.lng, th.thresholdLat, th.thresholdLon);
-        if (d < minD) minD = d;
+        consider(activeDepThresholds[t].thresholdLat, activeDepThresholds[t].thresholdLon);
       }
-      return minD < Infinity ? minD : null;
+      return best;
     }
     var rwys = runwayData && runwayData[airportIata];
     if (rwys) {
-      var minD = Infinity;
       for (var r = 0; r < rwys.length; r++) {
-        var rw = rwys[r];
-        var d = Math.min(haversineKm(a.lat, a.lng, rw[0], rw[1]), haversineKm(a.lat, a.lng, rw[3], rw[4]));
-        if (d < minD) minD = d;
+        consider(rwys[r][0], rwys[r][1]);
+        consider(rwys[r][3], rwys[r][4]);
       }
-      return minD < Infinity ? minD : null;
     }
-    return null;
+    return best;
+  }
+  function nearestDepThresholdKm(a) {
+    var th = nearestDepThreshold(a);
+    return th ? th.km : null;
+  }
+  // Is a ground plane heading for a departure threshold? With known active runways, any of their thresholds
+  // counts (the nearest may not be the one it is going to); otherwise only the nearest runway end. Prefer the
+  // track's actual change in distance over the last ~20 s, else its heading while moving. Returns { toward, km } with km to the
+  // threshold it is heading for; toward is null when unknown.
+  function headingForRunway(a, nearest) {
+    var targets = activeDepThresholds.length
+      ? activeDepThresholds.map(function(th) { return { lat: th.thresholdLat, lng: th.thresholdLon }; })
+      : (nearest ? [nearest] : []);
+    if (!targets.length) return null;
+    var hist = posHistory[a.icao24];
+    var moving = (a.speedKts || 0) >= 5 && a.track != null;
+    var verdict = { toward: null, km: null };
+    for (var i = 0; i < targets.length; i++) {
+      var th = targets[i];
+      var closing = closingKm(hist, th.lat, th.lng, 20000);
+      var toward = closing != null && Math.abs(closing) >= 0.02
+        ? closing > 0
+        : (moving ? angleDiffDeg(a.track, bearingDegrees(a.lat, a.lng, th.lat, th.lng)) < 90 : null);
+      if (toward) {
+        var km = haversineKm(a.lat, a.lng, th.lat, th.lng);
+        if (!verdict.toward || km < verdict.km) verdict = { toward: true, km: km };
+      } else if (toward === false && verdict.toward == null) {
+        verdict.toward = false;
+      }
+    }
+    return verdict;
   }
 
   var departureHexes = {};
@@ -468,8 +529,9 @@ function buildLiveScheduleData(airportIata, airportLat, airportLng, sourceAircra
       var depStatus = "Departing";
       if (depRwy.on && distKm <= 5 && (a.altFt == null || a.altFt < 2000)) {
         // Over the active departure runway at low altitude — takeoff roll / rotation.
-        // Gate on climbing or very low altitude to filter out level transit overflights.
-        if (climbing || (a.altFt != null && a.altFt < 500)) {
+        // Gate on climbing or very low altitude to filter out level transit overflights. A descending plane
+        // under 500 ft is landing on a runway shared with departures, not taking off.
+        if (climbing || (a.altFt != null && a.altFt < 500 && vRateFpm > -200)) {
           shouldShow = true;
           depRunwayKm = depRwy.distFromThresholdKm;
           depStatus = a.altFt != null && a.altFt > 500 ? "Climbing" : "Departing";
@@ -513,9 +575,17 @@ function buildLiveScheduleData(airportIata, airportLat, airportLng, sourceAircra
       var spdKts = a.speedKts || 0;
       var depRwyGround = matchDepRunway(a);
       var anyRwy = matchAnyRunway(a);
+      // Arrivals with no resolved route: seen descending in the last 15 min, or braking hard on a runway
+      // (a takeoff roll only speeds up). They go to the Landed tab instead of the takeoff queue.
+      var speedChange = anyRwy.on && spdKts >= 30 ? recentSpeedChangeKts(a.icao24, 30000) : null;
+      if (landedRecently(posHistory[a.icao24], nowMs) || (speedChange != null && speedChange <= -10)) {
+        justLanded.push({ a: a, rc: rc, distKm: distKm });
+        continue;
+      }
+      var depThreshold = nearestDepThreshold(a);
       var groundRunwayKm = depRwyGround.on
         ? depRwyGround.distFromThresholdKm
-        : (anyRwy.on ? anyRwy.distFromThresholdKm : nearestDepThresholdKm(a));
+        : (anyRwy.on ? anyRwy.distFromThresholdKm : (depThreshold ? depThreshold.km : null));
       // Direction- and runway-aware: a plane tracking opposite/across the active
       // departure runway, or sitting on a different (inactive/closed) runway or
       // crossing one, is taxiing — not beginning a takeoff roll.
@@ -528,6 +598,8 @@ function buildLiveScheduleData(airportIata, airportLat, airportLng, sourceAircra
         anyRunwayBearing: anyRwy.bearing,
         haveActiveDep: activeDepThresholds.length > 0
       });
+      var heading = groundStatus === "Taxiing" ? headingForRunway(a, depThreshold) : { toward: null, km: null };
+      if (heading.toward && !depRwyGround.on && !anyRwy.on) groundRunwayKm = heading.km;
       departures.push({
         hex: a.icao24,
         callsign: a.callsign,
@@ -539,6 +611,7 @@ function buildLiveScheduleData(airportIata, airportLat, airportLng, sourceAircra
         status: groundStatus,
         distKm: distKm,
         runwayDistKm: groundRunwayKm,
+        towardRunway: heading.toward,
         hasDest: !!(rc && rc.destination),
         originMatch: originHere,
         routeConfidence: rc && rc.confidence ? rc.confidence : null,
@@ -665,6 +738,26 @@ function buildLiveScheduleData(airportIata, airportLat, airportLng, sourceAircra
       speedKts: taxSpd
     });
   }
+  for (var jl = 0; jl < justLanded.length; jl++) {
+    var la = justLanded[jl].a, lrc = justLanded[jl].rc;
+    var lSpd = la.speedKts || 0;
+    taxiingIn.push({
+      hex: la.icao24,
+      callsign: la.callsign,
+      originIata: lrc && lrc.origin && lrc.origin.iata !== airportIata ? lrc.origin.iata : null,
+      aircraftType: la.aircraftType,
+      lat: la.lat,
+      lng: la.lng,
+      altFt: 0,
+      distKm: justLanded[jl].distKm,
+      etaMin: 0,
+      arrivalScore: 0,
+      proximity: false,
+      taxiingIn: true,
+      parked: lSpd < 3,
+      speedKts: lSpd
+    });
+  }
   var landedRows = sortAirportLandedRows(landed, taxiingIn);
   arrivals = sortAirportInboundRows(arrivals, { exclude: landedRows });
   departures = sortAirportDepartureRows(departures, { activeRunways: activeDepThresholds.length > 0 });
@@ -742,7 +835,7 @@ function buildScheduleCardContent(iata, name, liveData, dir, scopeId) {
       var hintLabel = depSignal.label;
       var dotColor;
       if (f.status === "Departing" || f.status === "Climbing") dotColor = "cyan live";
-      else if (f.status === "Holding") dotColor = "yellow";
+      else if (f.status === "Holding" || depSignal.label === "Holding short") dotColor = "yellow";
       else if (f.status === "Taxiing") dotColor = "green";
       else dotColor = "gray";
       html += '<div class="sched-row"' + scheduleRowAttrs(f) + '>' +

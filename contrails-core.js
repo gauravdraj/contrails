@@ -868,9 +868,59 @@
     return limitAirportRows(rows, totalLimit);
   }
 
+  // Takeoff board order: rolling, lined up, the ground queue (taxiing + parked), then planes already climbing
+  // out, which have taken off and are listed last as "just departed".
   function airportDepartureStatusOrder(status) {
-    var statusOrd = { Departing: 0, Climbing: 0, Holding: 1, Taxiing: 2, Parked: 3 };
-    return statusOrd[status] != null ? statusOrd[status] : 3;
+    var statusOrd = { Departing: 0, Holding: 1, Taxiing: 3, Parked: 4, Climbing: 5 };
+    return statusOrd[status] != null ? statusOrd[status] : 4;
+  }
+
+  // Stopped this close to a departure threshold means waiting at the hold-short line.
+  var HOLD_SHORT_KM = 0.35;
+
+  // Rank inside the ground queue: 0 holding short or taxiing toward the runway, 1 taxiing in an unknown
+  // direction, 2 parked away from the runway, 3 taxiing away from every departure runway.
+  function departureQueueTier(row) {
+    if (row.status === "Parked") return row.runwayDistKm != null && row.runwayDistKm <= HOLD_SHORT_KM ? 0 : 2;
+    if (row.towardRunway === true) return 0;
+    if (row.towardRunway === false) return 3;
+    return 1;
+  }
+
+  // Track points are [lat, lng, ts, altFt, ground, breakBefore, synthetic]. True when the aircraft was seen
+  // airborne within the window with a real altitude change (an approach), not a ground/air flag flicker at
+  // field elevation. Used to tell a just-landed plane from one about to depart.
+  function landedRecently(points, nowMs, options) {
+    if (!points || !points.length) return false;
+    options = options || {};
+    var windowMs = options.windowMs != null ? options.windowMs : 15 * 60 * 1000;
+    var minSpanFt = options.minSpanFt != null ? options.minSpanFt : 400;
+    var lo = Infinity, hi = -Infinity;
+    for (var i = points.length - 1; i >= 0; i--) {
+      var p = points[i];
+      if (!p || p[2] < nowMs - windowMs) break;
+      if (p[6] || p[4] || p[3] == null || !isFinite(p[3])) continue;
+      if (p[3] < lo) lo = p[3];
+      if (p[3] > hi) hi = p[3];
+    }
+    return hi - lo >= minSpanFt;
+  }
+
+  // How much closer (km) the track got to a target over about `spanMs`; negative when moving away. Null when
+  // the track is too short or the earlier point is too old to say.
+  function closingKm(points, targetLat, targetLng, spanMs) {
+    if (!points || points.length < 2) return null;
+    spanMs = spanMs || 20000;
+    var last = points[points.length - 1];
+    for (var i = points.length - 2; i >= 0; i--) {
+      var p = points[i];
+      if (p[6]) continue;
+      var age = last[2] - p[2];
+      if (age < spanMs) continue;
+      if (age > spanMs * 4) return null;
+      return haversineKm(p[0], p[1], targetLat, targetLng) - haversineKm(last[0], last[1], targetLat, targetLng);
+    }
+    return null;
   }
 
   function classifyGroundDepartureStatus(input) {
@@ -959,26 +1009,27 @@
     var label = status;
     var sortOrder = airportDepartureStatusOrder(status);
 
+    var holdingShort = status === "Parked" && runwayDistKm != null && runwayDistKm <= HOLD_SHORT_KM;
     if (status === "Departing") {
       label = "Rolling";
       confidence = activeRunway || onRunway || speedKts >= 50 || routeOrigin ? "high" : "medium";
-      sortOrder = 0;
     } else if (status === "Climbing") {
-      label = "Climbing out";
+      label = "Just departed";
       confidence = routeOrigin || activeRunway || nearRunway ? "high" : "medium";
-      sortOrder = 1;
     } else if (status === "Holding") {
       label = onRunway ? "Holding on runway" : "Holding";
       confidence = activeRunway || onRunway || nearRunway || routeOrigin ? "high" : "medium";
-      sortOrder = 2;
     } else if (status === "Taxiing") {
-      label = nearRunway ? "Taxiing near runway" : "Taxiing";
-      confidence = nearRunway || routeOrigin ? "medium" : "low";
-      sortOrder = 3;
+      if (row.towardRunway === false) label = "Taxiing away";
+      else if (nearRunway) label = "Taxiing near runway";
+      else label = row.towardRunway ? "Taxiing to runway" : "Taxiing";
+      confidence = row.towardRunway !== false && (nearRunway || routeOrigin || row.towardRunway) ? "medium" : "low";
+    } else if (holdingShort) {
+      label = "Holding short";
+      confidence = "medium";
     } else {
       label = routeOrigin ? "Parked, route matched" : "Parked";
       confidence = routeOrigin ? "medium" : "low";
-      sortOrder = 4;
     }
 
     return {
@@ -1013,16 +1064,15 @@
     var aSignal = describeAirportDepartureStatus(a, options);
     var bSignal = describeAirportDepartureStatus(b, options);
 
-    // Taxiing AND Parked are both "staged on the ground, not yet rolling." Among
-    // these, imminence is proximity to the runway start (threshold), NOT whether
-    // the plane happens to be creeping (Taxiing) or momentarily stopped (Parked):
-    // a plane stopped at/near the threshold is more imminent than one taxiing in
-    // from a far ramp. So rank the whole staged group by distance-to-threshold,
-    // crossing the Taxiing/Parked boundary, with route/airport-distance only as
-    // tiebreakers. Departing/Climbing/Holding stay above this group.
-    var aStaged = aSignal.sortOrder >= 3;
-    var bStaged = bSignal.sortOrder >= 3;
+    // Taxiing and Parked are both the ground queue. Imminence is being at the hold-short line or taxiing
+    // toward the runway, then distance to the threshold; a plane parked at a gate near the runway end or
+    // taxiing away from it is not next just because it is close. Route/airport distance only break ties.
+    var aStaged = aSignal.sortOrder === 3 || aSignal.sortOrder === 4;
+    var bStaged = bSignal.sortOrder === 3 || bSignal.sortOrder === 4;
     if (aStaged && bStaged) {
+      var aTier = departureQueueTier(a || {});
+      var bTier = departureQueueTier(b || {});
+      if (aTier !== bTier) return aTier - bTier;
       var aRwyDist = a && a.runwayDistKm != null ? a.runwayDistKm : Infinity;
       var bRwyDist = b && b.runwayDistKm != null ? b.runwayDistKm : Infinity;
       if (aRwyDist !== bRwyDist) return aRwyDist - bRwyDist;
@@ -1268,6 +1318,8 @@
     compareAirportArrivalEntries: compareAirportArrivalEntries,
     compareAirportDepartureEntries: compareAirportDepartureEntries,
     classifyGroundDepartureStatus: classifyGroundDepartureStatus,
+    landedRecently: landedRecently,
+    closingKm: closingKm,
     describeAirportDepartureStatus: describeAirportDepartureStatus,
     buildCoverageCircles: buildCoverageCircles,
     buildViewPolicy: buildViewPolicy,

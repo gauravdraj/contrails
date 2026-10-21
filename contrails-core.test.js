@@ -944,7 +944,7 @@ test("airport departure rows: runway rolling beats holding and taxiing for next 
   assert.equal(next.callsign, "ROLL1", "top next takeoff summary row should be the rolling runway aircraft");
 });
 
-test("airport departure rows: climbing origin match beats parked aircraft near runway", () => {
+test("airport departure rows: planes already climbing out sort after the ground queue", () => {
   var rows = core.sortAirportDepartureRows([
     {
       callsign: "PARK1",
@@ -972,10 +972,56 @@ test("airport departure rows: climbing origin match beats parked aircraft near r
     }
   ], { activeRunways: false });
 
-  // Climbing (origin-matched) still tops the staged ground group; within that
-  // group the closer-to-threshold Parked plane (0.1) now beats the farther
-  // Taxiing one (0.2) -- staged Taxiing/Parked rank together by distance.
-  assert.deepEqual(callsigns(rows), ["CLIMB1", "PARK1", "TAXI1"]);
+  // CLIMB1 has already taken off; PARK1 is stopped at the hold-short line.
+  assert.deepEqual(callsigns(rows), ["PARK1", "TAXI1", "CLIMB1"]);
+  assert.equal(core.describeAirportDepartureStatus(rows[0]).label, "Holding short");
+  assert.equal(core.describeAirportDepartureStatus(rows[2]).label, "Just departed");
+});
+
+test("airport departure rows: lined up beats climbing; rolling stays first", () => {
+  var rows = core.sortAirportDepartureRows([
+    { callsign: "CLIMB1", status: "Climbing", runwayDistKm: 1, speedKts: 170, distKm: 3, originMatch: true },
+    { callsign: "HOLD1", status: "Holding", runwayDistKm: 0.05, speedKts: 0, distKm: 0.5, activeRunway: true },
+    { callsign: "ROLL1", status: "Departing", runwayDistKm: 0.6, speedKts: 90, distKm: 0.9, activeRunway: true }
+  ], { activeRunways: true });
+  assert.deepEqual(callsigns(rows), ["ROLL1", "HOLD1", "CLIMB1"]);
+});
+
+test("airport departure rows: queue ranks heading for the runway over parked near it or taxiing away", () => {
+  var rows = core.sortAirportDepartureRows([
+    { callsign: "AWAY", status: "Taxiing", runwayDistKm: 0.5, speedKts: 15, distKm: 1, towardRunway: false },
+    { callsign: "GATE", status: "Parked", runwayDistKm: 0.6, speedKts: 0, distKm: 1, originMatch: true },
+    { callsign: "TOWARD", status: "Taxiing", runwayDistKm: 1.8, speedKts: 15, distKm: 2, towardRunway: true },
+    { callsign: "UNKNOWN", status: "Taxiing", runwayDistKm: 0.9, speedKts: 15, distKm: 1.2 },
+    { callsign: "SHORT", status: "Parked", runwayDistKm: 0.1, speedKts: 0, distKm: 0.8 }
+  ], { activeRunways: true });
+  assert.deepEqual(callsigns(rows), ["SHORT", "TOWARD", "UNKNOWN", "GATE", "AWAY"]);
+  assert.equal(core.describeAirportDepartureStatus(rows[1]).label, "Taxiing to runway");
+  assert.equal(core.describeAirportDepartureStatus(rows[4]).label, "Taxiing away");
+});
+
+test("landedRecently: a descent within the window counts, a flag flicker at field elevation does not", () => {
+  var now = 1000000000;
+  var approach = [
+    [0, 0, now - 300000, 3000, false], [0, 0, now - 200000, 1500, false],
+    [0, 0, now - 120000, 200, false], [0, 0, now - 60000, null, true]
+  ];
+  assert.equal(core.landedRecently(approach, now), true);
+  var flicker = [[0, 0, now - 90000, 5430, false], [0, 0, now - 60000, 5425, false], [0, 0, now - 30000, null, true]];
+  assert.equal(core.landedRecently(flicker, now), false);
+  assert.equal(core.landedRecently(approach, now + 20 * 60000), false, "outside the 15 min window");
+  var seeded = [[0, 0, now - 50000, 3000, false, false, true], [0, 0, now - 40000, 200, false, false, true]];
+  assert.equal(core.landedRecently(seeded, now), false, "synthetic seed points are ignored");
+});
+
+test("closingKm: positive when approaching the target, negative when leaving, null when too short or stale", () => {
+  var t = [37.0, -122.0];
+  var toward = [[37.02, -122.0, 0], [37.01, -122.0, 25000]];
+  assert.ok(core.closingKm(toward, t[0], t[1], 20000) > 1);
+  var away = [[37.01, -122.0, 0], [37.02, -122.0, 25000]];
+  assert.ok(core.closingKm(away, t[0], t[1], 20000) < -1);
+  assert.equal(core.closingKm([[37.01, -122.0, 0], [37.0, -122.0, 5000]], t[0], t[1], 20000), null);
+  assert.equal(core.closingKm([[37.01, -122.0, 0], [37.0, -122.0, 200000]], t[0], t[1], 20000), null);
 });
 
 test("airport departure rows: closer parked beats farther taxiing", () => {

@@ -32,6 +32,8 @@ const countGroundByAirport = core.countGroundByAirport;
 const sortAirportDepartureRows = core.sortAirportDepartureRows;
 const describeAirportDepartureStatus = core.describeAirportDepartureStatus;
 const classifyGroundDepartureStatus = core.classifyGroundDepartureStatus;
+const landedRecently = core.landedRecently;
+const closingKm = core.closingKm;
 const slantKm = core.slantKm;
 const elevationDeg = core.elevationDeg;
 const sizeFromCategory = core.sizeFromCategory;
@@ -54,7 +56,7 @@ if (!airlineName || !angleDiffDeg || !bearingDegrees || !buildViewPolicy || !bui
     !getAirportNextRow || !haversineKm || !interpolatePlaybackPose || !interpolateTimedPose || !isLikelyPrivateCallsign ||
     !normalizeAircraftHex || !normalizeFlightQuery || !normalizeSearchText || !parseCoordinate || !parseDatisActiveRunways || !projectLatLng ||
     !scoreArrivalCandidate || !sortAirportInboundRows || !sortAirportLandedRows || !sortAirportDepartureRows || !describeAirportDepartureStatus ||
-    !classifyGroundDepartureStatus ||
+    !classifyGroundDepartureStatus || !landedRecently || !closingKm ||
     !findFlightStartIndex || !matchRunwayDesignator || !deriveActiveRunways || !greatCirclePoints || !pointOnRunway ||
     !roundTenths || !slantKm || !elevationDeg || !SQUAWK_ALERT ||
     !sizeFromCategory || !sizeClass || !isLikelyPrivateClass || !dimColor || !declutterLabels || !updateClockOffset ||
@@ -62,7 +64,7 @@ if (!airlineName || !angleDiffDeg || !bearingDegrees || !buildViewPolicy || !bui
   throw new Error("Contrails core helpers failed to load.");
 }
 
-const APP_VERSION = "2.39";
+const APP_VERSION = "2.40";
 const isLocal = location.hostname === "localhost" || location.hostname === "127.0.0.1";
 const isIOSDevice = /iP(ad|hone|od)/.test(navigator.userAgent) ||
   (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
