@@ -498,7 +498,7 @@ function buildLiveScheduleData(airportIata, airportLat, airportLng, sourceAircra
     var targets = activeDepThresholds.length
       ? activeDepThresholds.map(function(th) { return { lat: th.thresholdLat, lng: th.thresholdLon }; })
       : (nearest ? [nearest] : []);
-    if (!targets.length) return null;
+    if (!targets.length) return { toward: null, km: null };
     var hist = posHistory[a.icao24];
     var moving = (a.speedKts || 0) >= 5 && a.track != null;
     var verdict = { toward: null, km: null };
