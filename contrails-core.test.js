@@ -541,13 +541,14 @@ test("scoreArrivalCandidate altitude floor clamps overhead cruiser without desti
   assert.ok(result.etaMin >= 20, "altitude floor should clamp etaMin to at least 20 (was " + result.etaMin + ")");
 });
 
-test("scoreArrivalCandidate destination-confirmed near nominal descent point uses cruise+descent ETA", () => {
+test("scoreArrivalCandidate destination-confirmed 36 km out accounts for slowing on approach and final", () => {
   var result = core.scoreArrivalCandidate({
     altFt: 6000, vRate: -12, distKm: 36, spdKts: 250, destinationMatch: true
   });
 
-  assert.ok(result.etaMin > 4, "etaMin should be greater than 4 (was " + result.etaMin + ")");
-  assert.ok(result.etaMin < 6, "etaMin should be less than 6 (was " + result.etaMin + ")");
+  // 21 km at 220 kts + 15 km at 150 kts = 6.3 min (constant 250 kts would say 4.7).
+  assert.ok(result.etaMin > 5.5, "etaMin should be greater than 5.5 (was " + result.etaMin + ")");
+  assert.ok(result.etaMin < 7.5, "etaMin should be less than 7.5 (was " + result.etaMin + ")");
 });
 
 test("scoreArrivalCandidate relaxed thresholds: 8000 ft / 20 km descending without destinationMatch is eligible", () => {
@@ -1388,4 +1389,30 @@ test("alphaToSdf puts a filled square's edge at the cutoff and falls off by 255/
   assert.equal(at(7, 16), 159);
   assert.equal(at(3, 16), 32);
   assert.equal(at(0, 0), 0);
+});
+
+test("arrivalPathTimeMin slows to approach and final speeds", () => {
+  // 15 km final at 150 kts = 3.24 min; at 280 kts the old constant-speed model said 1.74 min.
+  assert.ok(Math.abs(core.arrivalPathTimeMin(15, 280) - 3.24) < 0.01);
+  // 100 km: 40 km at 450 kts + 45 km at 220 kts + 15 km at 150 kts.
+  var expected = 40 / (450 * 1.852 / 60) + 45 / (220 * 1.852 / 60) + 15 / (150 * 1.852 / 60);
+  assert.ok(Math.abs(core.arrivalPathTimeMin(100, 450) - expected) < 0.01);
+  // A plane already slower than the caps keeps its own speed.
+  assert.ok(Math.abs(core.arrivalPathTimeMin(10, 120) - 10 / (120 * 1.852 / 60)) < 0.01);
+  assert.equal(core.arrivalPathTimeMin(null, 200), null);
+});
+
+test("blendArrivalEta: geometry close in, feed ETA far out, linear between 10 and 20 min", () => {
+  assert.equal(core.blendArrivalEta(6, 30), 6);
+  assert.equal(core.blendArrivalEta(25, 40), 40);
+  assert.equal(core.blendArrivalEta(15, 25), 20);
+  assert.equal(core.blendArrivalEta(25, null), 25);
+  assert.equal(core.blendArrivalEta(25, -3), 25, "a feed time already in the past is ignored");
+});
+
+test("scoreArrivalCandidate uses the feed ETA only for routed arrivals far out", () => {
+  var far = core.scoreArrivalCandidate({ altFt: 30000, distKm: 300, spdKts: 450, vRate: -20, destinationMatch: true, feedEtaMin: 50 });
+  assert.equal(far.etaMin, 50);
+  var near = core.scoreArrivalCandidate({ altFt: 2000, distKm: 12, spdKts: 160, vRate: -12, destinationMatch: true, feedEtaMin: 30 });
+  assert.ok(near.etaMin < 6, "close in, live geometry wins");
 });

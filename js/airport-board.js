@@ -200,11 +200,29 @@ function panAirportIntoDockedMapRegion() {
   panMapBy(Math.round(dx), Math.round(dy), 0.35);
 }
 
+// FR24's estimated landing time for a live inbound flight, in minutes from now (null if not on the board).
+// est_arr is an absolute time, so a schedule fetched a few minutes ago is still usable.
+function feedArrivalEtaMin(callsign, airportIata) {
+  var cached = scheduleDataCache[airportIata];
+  if (!callsign || !cached || !cached.data || Date.now() - cached.ts > 3 * SCHEDULE_CACHE_TTL) return null;
+  var variants = callsignVariants(callsign).map(function(v) { return v.toUpperCase(); });
+  var arrs = cached.data.arrivals || [];
+  for (var i = 0; i < arrs.length; i++) {
+    var row = arrs[i];
+    if (!row.live || !row.est_arr) continue;
+    var cs = (row.callsign || "").toUpperCase();
+    var fn = (row.flight || "").replace(/\s/g, "").toUpperCase();
+    if (variants.indexOf(cs) !== -1 || variants.indexOf(fn) !== -1) return (row.est_arr * 1000 - Date.now()) / 60000;
+  }
+  return null;
+}
+
 function buildArrivalEntry(a, routeEntry, airportIata, distKm, options) {
   options = options || {};
   var destinationMatch = !!(routeEntry && routeEntry.destination && routeEntry.destination.iata === airportIata);
   var originMatch = !!(routeEntry && routeEntry.origin && routeEntry.origin.iata === airportIata);
   var scored = scoreArrivalCandidate({
+    feedEtaMin: destinationMatch ? feedArrivalEtaMin(a.callsign, airportIata) : null,
     altFt: a.altFt,
     vRate: a.vRate,
     distKm: distKm,
@@ -961,6 +979,7 @@ async function refreshActiveAirportPopup(options) {
   var promise = (async function() {
     try {
       var datisPromise = fetchAirportDatisActiveRunways(iata, entry);
+      var schedulePromise = fetchScheduleData(iata);
       var resp = await fetch(trafficUrl(lat, lng, AIRPORT_POPUP_FETCH_KM));
       if (!resp.ok) throw new Error("HTTP " + resp.status);
       var payload = await resp.json();
@@ -977,6 +996,7 @@ async function refreshActiveAirportPopup(options) {
       }
 
       await fetchRoutesForPlanes(snapshot.aircraft, { sortFn: airportRouteCandidateComparator(lat, lng) });
+      await schedulePromise;
       entry.data = buildLiveScheduleData(iata, lat, lng, snapshot.aircraft, datisActiveRunways);
       if (_activeAirportIata === iata && _activeAirportPopup) {
         _lastScheduleHtml = "";

@@ -665,6 +665,26 @@
     };
   }
 
+  // Minutes to fly `distKm` to the airport, slowing down on the way in: the current ground speed out to 60 km,
+  // at most 220 kts from 60 to 15 km (approach), at most 150 kts on the last 15 km (final).
+  function arrivalPathTimeMin(distKm, spdKts) {
+    if (distKm == null || !isFinite(distKm)) return null;
+    var gs = spdKts > 0 ? spdKts : 250;
+    var legs = [[Math.max(0, distKm - 60), gs], [Math.max(0, Math.min(distKm, 60) - 15), Math.min(gs, 220)], [Math.min(distKm, 15), Math.min(gs, 150)]];
+    var min = 0;
+    for (var i = 0; i < legs.length; i++) min += legs[i][0] / (legs[i][1] * 1.852 / 60);
+    return min;
+  }
+
+  // Far out, the feed's (FR24) estimated landing time knows the schedule and routing better than geometry;
+  // close in, live geometry wins. Blend linearly from the geometry ETA at 10 min to the feed ETA at 20 min.
+  function blendArrivalEta(geoEtaMin, feedEtaMin) {
+    if (feedEtaMin == null || !isFinite(feedEtaMin) || feedEtaMin < 0) return geoEtaMin;
+    if (geoEtaMin == null || !isFinite(geoEtaMin)) return feedEtaMin;
+    var w = Math.max(0, Math.min(1, (geoEtaMin - 10) / 10));
+    return geoEtaMin * (1 - w) + feedEtaMin * w;
+  }
+
   function scoreArrivalCandidate(input) {
     input = input || {};
     var altFt = isFinite(input.altFt) ? Math.max(0, input.altFt) : null;
@@ -678,23 +698,15 @@
     var vRateFpm = isFinite(input.vRate) ? input.vRate * 60 : null;
     var descending = vRateFpm != null && vRateFpm <= -200;
     var climbing = vRateFpm != null && vRateFpm >= 150;
-    var speedKmPerMin = spdKts > 0 ? spdKts * 1.852 / 60 : 0;
-    var distanceEtaMin = distKm != null && speedKmPerMin > 0 ? distKm / speedKmPerMin : null;
+    var distanceEtaMin = distKm != null && spdKts > 0 ? arrivalPathTimeMin(distKm, spdKts) : null;
     var descentEtaMin = descending && altFt != null
       ? altFt / Math.max(Math.abs(vRateFpm), 300)
       : null;
     var etaMin = null;
     var eligible = true;
 
-    if (destinationMatch && altFt != null && distKm != null) {
-      var nominalDescDistKm = altFt / 172;
-      if (distKm > nominalDescDistKm) {
-        var cruiseDistKm = distKm - nominalDescDistKm;
-        var cruiseTimeMin = speedKmPerMin > 0 ? cruiseDistKm / speedKmPerMin : cruiseDistKm / 10;
-        etaMin = cruiseTimeMin + altFt / 1500;
-      } else {
-        etaMin = altFt / 1500;
-      }
+    if (destinationMatch && distKm != null) {
+      etaMin = arrivalPathTimeMin(distKm, spdKts);
     } else if (descentEtaMin != null) {
       etaMin = descentEtaMin;
       if (distanceEtaMin != null) etaMin = descentEtaMin * 0.8 + distanceEtaMin * 0.2;
@@ -708,6 +720,7 @@
       etaMin = 999;
     }
     if (altFt != null) etaMin = Math.max(etaMin, altFt / 1500);
+    if (destinationMatch) etaMin = blendArrivalEta(etaMin, input.feedEtaMin);
 
     if (phase === "departing" || phase === "landed") eligible = false;
     if (originMatch) eligible = false;
@@ -1319,6 +1332,8 @@
     compareAirportDepartureEntries: compareAirportDepartureEntries,
     classifyGroundDepartureStatus: classifyGroundDepartureStatus,
     landedRecently: landedRecently,
+    arrivalPathTimeMin: arrivalPathTimeMin,
+    blendArrivalEta: blendArrivalEta,
     closingKm: closingKm,
     describeAirportDepartureStatus: describeAirportDepartureStatus,
     buildCoverageCircles: buildCoverageCircles,
