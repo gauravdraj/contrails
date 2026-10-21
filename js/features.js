@@ -72,27 +72,20 @@ function airportLatLngByIata(iata) {
   return airportLatLngIndex[String(iata).toUpperCase()] || null;
 }
 
-var _routeTags = [];
+var _routeLegsAt = null;
 
 function clearRouteLine() {
   if (mapReady) map.getSource("route").setData(EMPTY_COLLECTION);
-  for (var i = 0; i < _routeTags.length; i++) _routeTags[i].remove();
-  _routeTags = [];
   _routeLineKey = null;
+  _routeLegsAt = null;
+  setRouteAirports(null, null);
 }
 
-function routeEndpointFeature(ll, iata, isOrigin) {
-  if (iata) {
-    var tag = document.createElement("span");
-    tag.className = "route-endpoint-tag " + (isOrigin ? "is-origin" : "is-dest");
-    tag.textContent = String(iata).toUpperCase();
-    _routeTags.push(new maplibregl.Marker({ element: tag, anchor: "top", offset: [0, 7] }).setLngLat([ll[1], ll[0]]).addTo(map));
-  }
-  return {
-    type: "Feature",
-    properties: { color: isOrigin ? "#7CFC9B" : "#FF9E6C" },
-    geometry: { type: "Point", coordinates: [ll[1], ll[0]] }
-  };
+// The selected plane's origin and destination airports keep their labels and are highlighted in place.
+function setRouteAirports(origin, dest) {
+  if (routeAirports.origin === origin && routeAirports.dest === dest) return;
+  routeAirports = { origin: origin, dest: dest };
+  if (mapReady) renderAirports();
 }
 
 function updateRouteLine() {
@@ -101,28 +94,49 @@ function updateRouteLine() {
   if (!id) { if (_routeLineKey) clearRouteLine(); return; }
   var plane = findAircraftById(id);
   var rc = plane && plane.callsign ? routeCache[plane.callsign] : null;
-  var oIata = rc && rc.origin ? rc.origin.iata : null;
-  var dIata = rc && rc.destination ? rc.destination.iata : null;
-  var oLL = airportLatLngByIata(oIata);
-  var dLL = airportLatLngByIata(dIata);
-  var key = id + "|" + (oIata || "") + "|" + (dIata || "") + "|" + (oLL ? "o" : "") + (dLL ? "d" : "");
-  if (key === _routeLineKey) return;
-  clearRouteLine();
-  _routeLineKey = key;
-  if (!oLL && !dLL) return;
-  var features = [];
-  if (oLL && dLL) {
-    var pts = greatCirclePoints(oLL[0], oLL[1], dLL[0], dLL[1], 64);
-    if (pts.length) {
-      features.push({
-        type: "Feature",
-        properties: {},
-        geometry: { type: "LineString", coordinates: pts.map(function(p) { return [p[1], p[0]]; }) }
-      });
-    }
+  var oIata = rc && rc.origin && rc.origin.iata ? String(rc.origin.iata).toUpperCase() : null;
+  var dIata = rc && rc.destination && rc.destination.iata ? String(rc.destination.iata).toUpperCase() : null;
+  var key = id + "|" + (oIata || "") + "|" + (dIata || "");
+  if (key !== _routeLineKey) {
+    _routeLineKey = key;
+    _routeLegsAt = null;
+    setRouteAirports(airportLatLngByIata(oIata) ? oIata : null, airportLatLngByIata(dIata) ? dIata : null);
   }
-  if (oLL) features.push(routeEndpointFeature(oLL, oIata, true));
-  if (dLL) features.push(routeEndpointFeature(dLL, dIata, false));
+  updateRouteLegs();
+}
+
+// Great-circle leg as [lng, lat] pairs, shifted by whole turns so its plane end sits on the drawn plane
+// (the plane's longitude stays within ±180, while the curve keeps longitude continuous across the antimeridian).
+function routeLegCoords(from, to, planeLng, planeAtEnd) {
+  var segments = Math.max(2, Math.min(64, Math.round(haversineKm(from[0], from[1], to[0], to[1]) / 40)));
+  var pts = greatCirclePoints(from[0], from[1], to[0], to[1], segments);
+  if (!pts.length) return null;
+  var end = planeAtEnd ? pts[pts.length - 1] : pts[0];
+  var shift = Math.round((planeLng - end[1]) / 360) * 360;
+  return pts.map(function(p) { return [p[1] + shift, p[0]]; });
+}
+
+// Origin → plane (flown) and plane → destination (ahead). Rebuilt as the plane moves, skipped until it has
+// moved about a pixel.
+function updateRouteLegs() {
+  if (!mapReady) return;
+  var rec = selectedAircraftId ? markerMap[selectedAircraftId] : null;
+  var oLL = airportLatLngByIata(routeAirports.origin);
+  var dLL = airportLatLngByIata(routeAirports.dest);
+  if (!rec || (!oLL && !dLL)) {
+    if (_routeLegsAt) map.getSource("route").setData(EMPTY_COLLECTION);
+    _routeLegsAt = null;
+    return;
+  }
+  var tol = 360 / (512 * Math.pow(2, map.getZoom()));
+  if (_routeLegsAt && Math.abs(_routeLegsAt.lat - rec.lat) < tol && Math.abs(_routeLegsAt.lng - rec.lng) < tol) return;
+  _routeLegsAt = { lat: rec.lat, lng: rec.lng };
+  var here = [rec.lat, rec.lng];
+  var features = [];
+  var flown = oLL && routeLegCoords(oLL, here, rec.lng, true);
+  var ahead = dLL && routeLegCoords(here, dLL, rec.lng, false);
+  if (flown) features.push({ type: "Feature", properties: { leg: "flown" }, geometry: { type: "LineString", coordinates: flown } });
+  if (ahead) features.push({ type: "Feature", properties: { leg: "ahead" }, geometry: { type: "LineString", coordinates: ahead } });
   map.getSource("route").setData({ type: "FeatureCollection", features: features });
 }
 

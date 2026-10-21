@@ -506,21 +506,6 @@ body.noscroll { touch-action: none; }
   font-size: 16px;
   line-height: 1;
 }
-.route-endpoint-tag {
-  display: inline-block;
-  pointer-events: none;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  padding: 1px 5px;
-  border-radius: 6px;
-  white-space: nowrap;
-  color: #0a0e17;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
-}
-.route-endpoint-tag.is-origin { background: #7CFC9B; }
-.route-endpoint-tag.is-dest { background: #FF9E6C; }
-
 #loading {
   position: fixed;
   inset: 0;
@@ -698,6 +683,17 @@ body.noscroll { touch-action: none; }
   letter-spacing: 0;
 }
 .airport-ground[hidden] { display: none; }
+.airport-marker.route-origin,
+.airport-marker.route-dest { z-index: 1; }
+.maplibregl-popup { z-index: 2; }
+.route-origin .airport-dot { background: #7CFC9B; border-color: #fff; }
+.route-dest .airport-dot { background: #FF9E6C; border-color: #fff; }
+.route-origin .airport-label,
+.route-dest .airport-label { color: #0a0e17; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5); }
+.route-origin .airport-label { background: #7CFC9B; border-color: #7CFC9B; }
+.route-dest .airport-label { background: #FF9E6C; border-color: #FF9E6C; }
+.route-origin .airport-ground,
+.route-dest .airport-ground { background: rgba(10, 14, 23, 0.18); color: #0a0e17; }
 #coverage-hint {
   position: fixed;
   left: 50%;

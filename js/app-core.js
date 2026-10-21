@@ -62,7 +62,7 @@ if (!airlineName || !angleDiffDeg || !bearingDegrees || !buildViewPolicy || !bui
   throw new Error("Contrails core helpers failed to load.");
 }
 
-const APP_VERSION = "2.37";
+const APP_VERSION = "2.38";
 const isLocal = location.hostname === "localhost" || location.hostname === "127.0.0.1";
 const isIOSDevice = /iP(ad|hone|od)/.test(navigator.userAgent) ||
   (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
@@ -247,6 +247,7 @@ let airportLatLngIndex = null;
 var followMode = false;
 var _followPanning = false;
 var _routeLineKey = null;
+var routeAirports = { origin: null, dest: null };
 var weatherOn = false;
 var _weatherLayer = null;
 var _weatherRefreshTs = 0;

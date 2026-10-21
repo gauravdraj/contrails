@@ -1382,7 +1382,7 @@ if (!airlineName || !angleDiffDeg || !bearingDegrees || !buildViewPolicy || !bui
   throw new Error("Contrails core helpers failed to load.");
 }
 
-const APP_VERSION = "2.37";
+const APP_VERSION = "2.38";
 const isLocal = location.hostname === "localhost" || location.hostname === "127.0.0.1";
 const isIOSDevice = /iP(ad|hone|od)/.test(navigator.userAgent) ||
   (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
@@ -1567,6 +1567,7 @@ let airportLatLngIndex = null;
 var followMode = false;
 var _followPanning = false;
 var _routeLineKey = null;
+var routeAirports = { origin: null, dest: null };
 var weatherOn = false;
 var _weatherLayer = null;
 var _weatherRefreshTs = 0;
@@ -1957,7 +1958,7 @@ function onMapStyleLoad() {
 var PLANE_LABEL_FONT = ["Montserrat Medium", "Open Sans Bold", "Noto Sans Regular"];
 var EMPTY_COLLECTION = { type: "FeatureCollection", features: [] };
 
-// Bottom to top: runways, route line, trails, route endpoints, plane labels, planes, the selected plane.
+// Bottom to top: runways, route legs, trails, plane labels, planes, the selected plane.
 // Planes ignore placement: a rotated icon's collision box is the box around the rotated image, which would
 // swallow its own label. Labels still collide with each other and push basemap text aside.
 function addAppLayers() {
@@ -1969,20 +1970,18 @@ function addAppLayers() {
     paint: { "line-color": "#7a8a9f", "line-width": 2.5, "line-opacity": 0.7, "line-dasharray": [3.2, 2] }
   });
   map.addLayer({
-    id: "route-line", type: "line", source: "route", filter: ["==", ["geometry-type"], "LineString"],
-    paint: { "line-color": "#6cb6ff", "line-width": 2, "line-opacity": 0.8, "line-dasharray": [3, 3.5] }
+    id: "route-flown", type: "line", source: "route", filter: ["==", ["get", "leg"], "flown"],
+    layout: { "line-cap": "round" },
+    paint: { "line-color": "#6cb6ff", "line-width": 1.5, "line-opacity": 0.45 }
+  });
+  map.addLayer({
+    id: "route-ahead", type: "line", source: "route", filter: ["==", ["get", "leg"], "ahead"],
+    paint: { "line-color": "#6cb6ff", "line-width": 2, "line-opacity": 0.85, "line-dasharray": [3, 3.5] }
   });
   map.addLayer({
     id: "trails", type: "line", source: "trails",
     layout: { "line-cap": "round", "line-join": "round" },
     paint: { "line-color": ["get", "color"], "line-opacity": ["get", "opacity"], "line-width": ["get", "width"] }
-  });
-  map.addLayer({
-    id: "route-ends", type: "circle", source: "route", filter: ["==", ["geometry-type"], "Point"],
-    paint: {
-      "circle-radius": 5, "circle-color": ["get", "color"], "circle-opacity": 0.9,
-      "circle-stroke-color": ["get", "color"], "circle-stroke-width": 2
-    }
   });
   map.addLayer({
     id: "plane-labels", type: "symbol", source: "planes",
@@ -2741,27 +2740,20 @@ function airportLatLngByIata(iata) {
   return airportLatLngIndex[String(iata).toUpperCase()] || null;
 }
 
-var _routeTags = [];
+var _routeLegsAt = null;
 
 function clearRouteLine() {
   if (mapReady) map.getSource("route").setData(EMPTY_COLLECTION);
-  for (var i = 0; i < _routeTags.length; i++) _routeTags[i].remove();
-  _routeTags = [];
   _routeLineKey = null;
+  _routeLegsAt = null;
+  setRouteAirports(null, null);
 }
 
-function routeEndpointFeature(ll, iata, isOrigin) {
-  if (iata) {
-    var tag = document.createElement("span");
-    tag.className = "route-endpoint-tag " + (isOrigin ? "is-origin" : "is-dest");
-    tag.textContent = String(iata).toUpperCase();
-    _routeTags.push(new maplibregl.Marker({ element: tag, anchor: "top", offset: [0, 7] }).setLngLat([ll[1], ll[0]]).addTo(map));
-  }
-  return {
-    type: "Feature",
-    properties: { color: isOrigin ? "#7CFC9B" : "#FF9E6C" },
-    geometry: { type: "Point", coordinates: [ll[1], ll[0]] }
-  };
+// The selected plane's origin and destination airports keep their labels and are highlighted in place.
+function setRouteAirports(origin, dest) {
+  if (routeAirports.origin === origin && routeAirports.dest === dest) return;
+  routeAirports = { origin: origin, dest: dest };
+  if (mapReady) renderAirports();
 }
 
 function updateRouteLine() {
@@ -2770,28 +2762,49 @@ function updateRouteLine() {
   if (!id) { if (_routeLineKey) clearRouteLine(); return; }
   var plane = findAircraftById(id);
   var rc = plane && plane.callsign ? routeCache[plane.callsign] : null;
-  var oIata = rc && rc.origin ? rc.origin.iata : null;
-  var dIata = rc && rc.destination ? rc.destination.iata : null;
-  var oLL = airportLatLngByIata(oIata);
-  var dLL = airportLatLngByIata(dIata);
-  var key = id + "|" + (oIata || "") + "|" + (dIata || "") + "|" + (oLL ? "o" : "") + (dLL ? "d" : "");
-  if (key === _routeLineKey) return;
-  clearRouteLine();
-  _routeLineKey = key;
-  if (!oLL && !dLL) return;
-  var features = [];
-  if (oLL && dLL) {
-    var pts = greatCirclePoints(oLL[0], oLL[1], dLL[0], dLL[1], 64);
-    if (pts.length) {
-      features.push({
-        type: "Feature",
-        properties: {},
-        geometry: { type: "LineString", coordinates: pts.map(function(p) { return [p[1], p[0]]; }) }
-      });
-    }
+  var oIata = rc && rc.origin && rc.origin.iata ? String(rc.origin.iata).toUpperCase() : null;
+  var dIata = rc && rc.destination && rc.destination.iata ? String(rc.destination.iata).toUpperCase() : null;
+  var key = id + "|" + (oIata || "") + "|" + (dIata || "");
+  if (key !== _routeLineKey) {
+    _routeLineKey = key;
+    _routeLegsAt = null;
+    setRouteAirports(airportLatLngByIata(oIata) ? oIata : null, airportLatLngByIata(dIata) ? dIata : null);
   }
-  if (oLL) features.push(routeEndpointFeature(oLL, oIata, true));
-  if (dLL) features.push(routeEndpointFeature(dLL, dIata, false));
+  updateRouteLegs();
+}
+
+// Great-circle leg as [lng, lat] pairs, shifted by whole turns so its plane end sits on the drawn plane
+// (the plane's longitude stays within ±180, while the curve keeps longitude continuous across the antimeridian).
+function routeLegCoords(from, to, planeLng, planeAtEnd) {
+  var segments = Math.max(2, Math.min(64, Math.round(haversineKm(from[0], from[1], to[0], to[1]) / 40)));
+  var pts = greatCirclePoints(from[0], from[1], to[0], to[1], segments);
+  if (!pts.length) return null;
+  var end = planeAtEnd ? pts[pts.length - 1] : pts[0];
+  var shift = Math.round((planeLng - end[1]) / 360) * 360;
+  return pts.map(function(p) { return [p[1] + shift, p[0]]; });
+}
+
+// Origin → plane (flown) and plane → destination (ahead). Rebuilt as the plane moves, skipped until it has
+// moved about a pixel.
+function updateRouteLegs() {
+  if (!mapReady) return;
+  var rec = selectedAircraftId ? markerMap[selectedAircraftId] : null;
+  var oLL = airportLatLngByIata(routeAirports.origin);
+  var dLL = airportLatLngByIata(routeAirports.dest);
+  if (!rec || (!oLL && !dLL)) {
+    if (_routeLegsAt) map.getSource("route").setData(EMPTY_COLLECTION);
+    _routeLegsAt = null;
+    return;
+  }
+  var tol = 360 / (512 * Math.pow(2, map.getZoom()));
+  if (_routeLegsAt && Math.abs(_routeLegsAt.lat - rec.lat) < tol && Math.abs(_routeLegsAt.lng - rec.lng) < tol) return;
+  _routeLegsAt = { lat: rec.lat, lng: rec.lng };
+  var here = [rec.lat, rec.lng];
+  var features = [];
+  var flown = oLL && routeLegCoords(oLL, here, rec.lng, true);
+  var ahead = dLL && routeLegCoords(here, dLL, rec.lng, false);
+  if (flown) features.push({ type: "Feature", properties: { leg: "flown" }, geometry: { type: "LineString", coordinates: flown } });
+  if (ahead) features.push({ type: "Feature", properties: { leg: "ahead" }, geometry: { type: "LineString", coordinates: ahead } });
   map.getSource("route").setData({ type: "FeatureCollection", features: features });
 }
 
@@ -4151,12 +4164,16 @@ function renderAirports() {
     var ap = airportData[i];
     if (!bounds.contains(ap[1], ap[2])) continue;
     var pt = screenPoint(ap[1], ap[2]);
-    candidates.push({ x: pt.x, y: pt.y, rank: ap[5] || 0, ap: ap });
+    candidates.push({ x: pt.x, y: pt.y, rank: isRouteAirport(ap[0]) ? Infinity : ap[5] || 0, ap: ap });
   }
   // When zoomed out, busier airports win and smaller ones whose labels would collide are left off.
+  // The selected plane's endpoints always keep theirs, even if they collide with each other.
   var kept = declutterLabels(candidates, groundPlanesShown() ? AIRPORT_LABEL_BOX : AIRPORT_LABEL_BOX_COUNTED);
   var inBounds = {};
   for (var c = 0; c < kept.length; c++) inBounds[kept[c].ap[0]] = kept[c].ap;
+  for (var r = 0; r < candidates.length; r++) {
+    if (candidates[r].rank === Infinity) inBounds[candidates[r].ap[0]] = candidates[r].ap;
+  }
   for (var old in airportMarkers) {
     if (!inBounds[old]) {
       airportMarkers[old].marker.remove();
@@ -4182,7 +4199,16 @@ function renderAirports() {
       airportMarkers[code] = { marker: m, lat: lat, lng: lng, countEl: el.querySelector(".airport-ground"), count: 0 };
     })(iata, name, ap[1], ap[2]);
   }
+  for (var hc in airportMarkers) {
+    var markerEl = airportMarkers[hc].marker.getElement();
+    markerEl.classList.toggle("route-origin", hc === routeAirports.origin);
+    markerEl.classList.toggle("route-dest", hc === routeAirports.dest && hc !== routeAirports.origin);
+  }
   updateAirportGroundCounts();
+}
+
+function isRouteAirport(code) {
+  return !!code && (code === routeAirports.origin || code === routeAirports.dest);
 }
 
 // While ground planes are hidden (zoomed out), each airport label shows how many are on the ground there.
@@ -5130,6 +5156,7 @@ function animateMarkers() {
     syncMarkerPose(markerMap[id], pose);
   }
   if (markerCount) pushPlaneLayer();
+  updateRouteLegs();
   // Trail tips trail the plane by at most one trail frame, which isn't visible, and trails cost far more
   // to rebuild than plane positions.
   if (now - _lastTrailFrameTs >= TRAIL_FRAME_MS) {

@@ -148,7 +148,7 @@ function onMapStyleLoad() {
 var PLANE_LABEL_FONT = ["Montserrat Medium", "Open Sans Bold", "Noto Sans Regular"];
 var EMPTY_COLLECTION = { type: "FeatureCollection", features: [] };
 
-// Bottom to top: runways, route line, trails, route endpoints, plane labels, planes, the selected plane.
+// Bottom to top: runways, route legs, trails, plane labels, planes, the selected plane.
 // Planes ignore placement: a rotated icon's collision box is the box around the rotated image, which would
 // swallow its own label. Labels still collide with each other and push basemap text aside.
 function addAppLayers() {
@@ -160,20 +160,18 @@ function addAppLayers() {
     paint: { "line-color": "#7a8a9f", "line-width": 2.5, "line-opacity": 0.7, "line-dasharray": [3.2, 2] }
   });
   map.addLayer({
-    id: "route-line", type: "line", source: "route", filter: ["==", ["geometry-type"], "LineString"],
-    paint: { "line-color": "#6cb6ff", "line-width": 2, "line-opacity": 0.8, "line-dasharray": [3, 3.5] }
+    id: "route-flown", type: "line", source: "route", filter: ["==", ["get", "leg"], "flown"],
+    layout: { "line-cap": "round" },
+    paint: { "line-color": "#6cb6ff", "line-width": 1.5, "line-opacity": 0.45 }
+  });
+  map.addLayer({
+    id: "route-ahead", type: "line", source: "route", filter: ["==", ["get", "leg"], "ahead"],
+    paint: { "line-color": "#6cb6ff", "line-width": 2, "line-opacity": 0.85, "line-dasharray": [3, 3.5] }
   });
   map.addLayer({
     id: "trails", type: "line", source: "trails",
     layout: { "line-cap": "round", "line-join": "round" },
     paint: { "line-color": ["get", "color"], "line-opacity": ["get", "opacity"], "line-width": ["get", "width"] }
-  });
-  map.addLayer({
-    id: "route-ends", type: "circle", source: "route", filter: ["==", ["geometry-type"], "Point"],
-    paint: {
-      "circle-radius": 5, "circle-color": ["get", "color"], "circle-opacity": 0.9,
-      "circle-stroke-color": ["get", "color"], "circle-stroke-width": 2
-    }
   });
   map.addLayer({
     id: "plane-labels", type: "symbol", source: "planes",

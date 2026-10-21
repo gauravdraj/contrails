@@ -868,12 +868,16 @@ function renderAirports() {
     var ap = airportData[i];
     if (!bounds.contains(ap[1], ap[2])) continue;
     var pt = screenPoint(ap[1], ap[2]);
-    candidates.push({ x: pt.x, y: pt.y, rank: ap[5] || 0, ap: ap });
+    candidates.push({ x: pt.x, y: pt.y, rank: isRouteAirport(ap[0]) ? Infinity : ap[5] || 0, ap: ap });
   }
   // When zoomed out, busier airports win and smaller ones whose labels would collide are left off.
+  // The selected plane's endpoints always keep theirs, even if they collide with each other.
   var kept = declutterLabels(candidates, groundPlanesShown() ? AIRPORT_LABEL_BOX : AIRPORT_LABEL_BOX_COUNTED);
   var inBounds = {};
   for (var c = 0; c < kept.length; c++) inBounds[kept[c].ap[0]] = kept[c].ap;
+  for (var r = 0; r < candidates.length; r++) {
+    if (candidates[r].rank === Infinity) inBounds[candidates[r].ap[0]] = candidates[r].ap;
+  }
   for (var old in airportMarkers) {
     if (!inBounds[old]) {
       airportMarkers[old].marker.remove();
@@ -899,7 +903,16 @@ function renderAirports() {
       airportMarkers[code] = { marker: m, lat: lat, lng: lng, countEl: el.querySelector(".airport-ground"), count: 0 };
     })(iata, name, ap[1], ap[2]);
   }
+  for (var hc in airportMarkers) {
+    var markerEl = airportMarkers[hc].marker.getElement();
+    markerEl.classList.toggle("route-origin", hc === routeAirports.origin);
+    markerEl.classList.toggle("route-dest", hc === routeAirports.dest && hc !== routeAirports.origin);
+  }
   updateAirportGroundCounts();
+}
+
+function isRouteAirport(code) {
+  return !!code && (code === routeAirports.origin || code === routeAirports.dest);
 }
 
 // While ground planes are hidden (zoomed out), each airport label shows how many are on the ground there.
