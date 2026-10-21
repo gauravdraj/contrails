@@ -829,7 +829,7 @@ function animateMarkers() {
     syncMarkerPose(markerMap[id], pose);
   }
   if (markerCount) pushPlaneLayer();
-  updateRouteLegs();
+  updateRouteLine();
   // Trail tips trail the plane by at most one trail frame, which isn't visible, and trails cost far more
   // to rebuild than plane positions.
   if (now - _lastTrailFrameTs >= TRAIL_FRAME_MS) {

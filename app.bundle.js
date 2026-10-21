@@ -1382,7 +1382,7 @@ if (!airlineName || !angleDiffDeg || !bearingDegrees || !buildViewPolicy || !bui
   throw new Error("Contrails core helpers failed to load.");
 }
 
-const APP_VERSION = "2.38";
+const APP_VERSION = "2.39";
 const isLocal = location.hostname === "localhost" || location.hostname === "127.0.0.1";
 const isIOSDevice = /iP(ad|hone|od)/.test(navigator.userAgent) ||
   (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
@@ -5156,7 +5156,7 @@ function animateMarkers() {
     syncMarkerPose(markerMap[id], pose);
   }
   if (markerCount) pushPlaneLayer();
-  updateRouteLegs();
+  updateRouteLine();
   // Trail tips trail the plane by at most one trail frame, which isn't visible, and trails cost far more
   // to rebuild than plane positions.
   if (now - _lastTrailFrameTs >= TRAIL_FRAME_MS) {
