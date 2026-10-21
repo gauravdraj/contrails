@@ -197,8 +197,9 @@ green) rather than failing every push.
 | `smoke-boot.mjs` | Local smoke check for page boot with fixed coordinates |
 | `scripts/healthcheck.mjs` | Live Worker endpoint health check (catches silent upstream breakage) |
 | `scripts/dev-server.mjs` | Local dev: static server + the real Worker under Node |
-| `airports.json` | Airport positions (IATA, lat, lng, name, city, rank), shared by the app and the Worker. Rank is the route count, used to keep the busiest airport's label when labels collide |
-| `runways.json` | Runway endpoints for overlay lines |
+| `airports.json` | Airport positions (IATA, lat, lng, name, city, rank, elevation in ft), shared by the app and the Worker. Rank is the route count, used to keep the busiest airport's label when labels collide. Elevation turns feed altitudes (above sea level) into height above the field for the airport board |
+| `runways.json` | Runway endpoints and end elevations for about 1,100 airports (open, hard-surface, 4,000 ft or longer). Drawn as overlay lines and used to work out active runways and approach paths |
+| `scripts/build-airport-geo.mjs` | Regenerates `runways.json` and the elevation column of `airports.json` from OurAirports data (downloads the CSVs, or pass local `airports.csv runways.csv`) |
 | `worker/src/index.js` | Cloudflare Worker entrypoint and route wiring |
 | `worker/src/providers.js` | Traffic failover: adsb.lol primary, adsb.fi open-data backup |
 | `worker/src/routes.js` | Route merging, track-based route inference, phase detection |

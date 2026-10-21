@@ -665,6 +665,50 @@
     };
   }
 
+  // Flying distance (km) to touchdown on the best of the given landing runways ({thresholdLat, thresholdLon,
+  // farEndLat, farEndLon}). Lined up on final (within ~2 km of the extended centerline, tracking the landing
+  // direction, up to 35 km out) it is the distance to the threshold. Otherwise (downwind, base, vectors) it is
+  // the trip to a join point on the extended centerline 15-30 km out plus that final leg, so it is never
+  // shorter than the straight line. Null without runways.
+  // runways.json entries ([leLat, leLon, leElev, heLat, heLon, heElev, label]) as landing ends in both
+  // directions, shaped like matchRunwayDesignator results.
+  function runwayApproachEnds(entries) {
+    var ends = [];
+    for (var i = 0; entries && i < entries.length; i++) {
+      var e = entries[i];
+      if (!e || e.length < 5) continue;
+      ends.push({ thresholdLat: e[0], thresholdLon: e[1], farEndLat: e[3], farEndLon: e[4] });
+      ends.push({ thresholdLat: e[3], thresholdLon: e[4], farEndLat: e[0], farEndLon: e[1] });
+    }
+    return ends;
+  }
+
+  function approachPathKm(lat, lng, track, runways, options) {
+    if (!runways || !runways.length || lat == null || lng == null) return null;
+    options = options || {};
+    var joinKm = options.joinKm != null ? options.joinKm : 15;
+    var best = null;
+    for (var i = 0; i < runways.length; i++) {
+      var r = runways[i];
+      if (!r) continue;
+      var hdg = bearingDegrees(r.thresholdLat, r.thresholdLon, r.farEndLat, r.farEndLon);
+      var xt = crossTrackKm(lat, lng, r.thresholdLat, r.thresholdLon, r.farEndLat, r.farEndLon);
+      var out = -alongTrackKm(lat, lng, r.thresholdLat, r.thresholdLon, r.farEndLat, r.farEndLon, xt);
+      var aligned = track == null || angleDiffDeg(track, hdg) <= 30;
+      var onFinal = out >= 0 && out <= 35 && Math.abs(xt) <= 2 + out * 0.05 && aligned;
+      var pathKm;
+      if (onFinal) {
+        pathKm = Math.sqrt(out * out + xt * xt);
+      } else {
+        var jd = Math.max(joinKm, Math.min(out, 30));
+        var join = projectLatLng(r.thresholdLat, r.thresholdLon, (hdg + 180) % 360, jd * 1000);
+        pathKm = haversineKm(lat, lng, join[0], join[1]) + jd;
+      }
+      if (!best || pathKm < best.pathKm) best = { pathKm: pathKm, onFinal: onFinal, runway: r };
+    }
+    return best;
+  }
+
   // Minutes to fly `distKm` to the airport, slowing down on the way in: the current ground speed out to 60 km,
   // at most 220 kts from 60 to 15 km (approach), at most 150 kts on the last 15 km (final).
   function arrivalPathTimeMin(distKm, spdKts) {
@@ -685,10 +729,15 @@
     return geoEtaMin * (1 - w) + feedEtaMin * w;
   }
 
+  // altFt is the feed's (sea-level) altitude; with fieldElevFt every altitude rule works on height above the
+  // airport. pathKm, when known, is the flying distance to touchdown (approachPathKm) and drives the ETA;
+  // distKm (straight line to the airport) still decides eligibility.
   function scoreArrivalCandidate(input) {
     input = input || {};
-    var altFt = isFinite(input.altFt) ? Math.max(0, input.altFt) : null;
+    var fieldElevFt = isFinite(input.fieldElevFt) ? input.fieldElevFt : 0;
+    var altFt = isFinite(input.altFt) ? Math.max(0, input.altFt - fieldElevFt) : null;
     var distKm = isFinite(input.distKm) ? Math.max(0, input.distKm) : null;
+    var etaDistKm = isFinite(input.pathKm) ? Math.max(input.pathKm, distKm || 0) : distKm;
     var spdKts = isFinite(input.spdKts) ? Math.max(0, input.spdKts) : 0;
     var confidence = input.confidence || "";
     var phase = input.phase || "";
@@ -698,15 +747,15 @@
     var vRateFpm = isFinite(input.vRate) ? input.vRate * 60 : null;
     var descending = vRateFpm != null && vRateFpm <= -200;
     var climbing = vRateFpm != null && vRateFpm >= 150;
-    var distanceEtaMin = distKm != null && spdKts > 0 ? arrivalPathTimeMin(distKm, spdKts) : null;
+    var distanceEtaMin = etaDistKm != null && spdKts > 0 ? arrivalPathTimeMin(etaDistKm, spdKts) : null;
     var descentEtaMin = descending && altFt != null
       ? altFt / Math.max(Math.abs(vRateFpm), 300)
       : null;
     var etaMin = null;
     var eligible = true;
 
-    if (destinationMatch && distKm != null) {
-      etaMin = arrivalPathTimeMin(distKm, spdKts);
+    if ((destinationMatch || isFinite(input.pathKm)) && etaDistKm != null) {
+      etaMin = arrivalPathTimeMin(etaDistKm, spdKts);
     } else if (descentEtaMin != null) {
       etaMin = descentEtaMin;
       if (distanceEtaMin != null) etaMin = descentEtaMin * 0.8 + distanceEtaMin * 0.2;
@@ -714,8 +763,8 @@
       etaMin = distanceEtaMin;
     } else if (altFt != null) {
       etaMin = Math.max(altFt / 1200, 1);
-    } else if (distKm != null) {
-      etaMin = Math.max(distKm / 10, 1);
+    } else if (etaDistKm != null) {
+      etaMin = Math.max(etaDistKm / 10, 1);
     } else {
       etaMin = 999;
     }
@@ -1333,6 +1382,10 @@
     classifyGroundDepartureStatus: classifyGroundDepartureStatus,
     landedRecently: landedRecently,
     arrivalPathTimeMin: arrivalPathTimeMin,
+    approachPathKm: approachPathKm,
+    runwayApproachEnds: runwayApproachEnds,
+    crossTrackKm: crossTrackKm,
+    alongTrackKm: alongTrackKm,
     blendArrivalEta: blendArrivalEta,
     closingKm: closingKm,
     describeAirportDepartureStatus: describeAirportDepartureStatus,

@@ -200,6 +200,19 @@ function panAirportIntoDockedMapRegion() {
   panMapBy(Math.round(dx), Math.round(dy), 0.35);
 }
 
+var _airportElevIndex = null;
+// Field elevation (ft) from airports.json, 0 when unknown. The feed reports sea-level altitude, so every
+// "low altitude" rule on the board compares height above this.
+function airportElevationFt(iata) {
+  if (!_airportElevIndex && airportData) {
+    _airportElevIndex = {};
+    for (var i = 0; i < airportData.length; i++) {
+      if (airportData[i][6] != null) _airportElevIndex[airportData[i][0]] = airportData[i][6];
+    }
+  }
+  return (_airportElevIndex && _airportElevIndex[iata]) || 0;
+}
+
 // FR24's estimated landing time for a live inbound flight, in minutes from now (null if not on the board).
 // est_arr is an absolute time, so a schedule fetched a few minutes ago is still usable.
 function feedArrivalEtaMin(callsign, airportIata) {
@@ -223,6 +236,8 @@ function buildArrivalEntry(a, routeEntry, airportIata, distKm, options) {
   var originMatch = !!(routeEntry && routeEntry.origin && routeEntry.origin.iata === airportIata);
   var scored = scoreArrivalCandidate({
     feedEtaMin: destinationMatch ? feedArrivalEtaMin(a.callsign, airportIata) : null,
+    pathKm: options.pathKm,
+    fieldElevFt: airportElevationFt(airportIata),
     altFt: a.altFt,
     vRate: a.vRate,
     distKm: distKm,
@@ -384,6 +399,23 @@ function recentSpeedChangeKts(hex, spanMs) {
   return null;
 }
 
+var _nearbyRunwayEnds = {};
+
+// Landing ends of every runway at other airports within 50 km, for telling apart traffic bound for a
+// neighbour (OAK finals pass close to SFO).
+function nearbyRunwayEnds(iata, lat, lng) {
+  if (_nearbyRunwayEnds[iata]) return _nearbyRunwayEnds[iata];
+  if (!runwayData || !airportData) return [];
+  var ends = [];
+  for (var i = 0; i < airportData.length; i++) {
+    var row = airportData[i];
+    if (row[0] === iata || !runwayData[row[0]]) continue;
+    if (haversineKm(lat, lng, row[1], row[2]) > 50) continue;
+    ends = ends.concat(runwayApproachEnds(runwayData[row[0]]));
+  }
+  return (_nearbyRunwayEnds[iata] = ends);
+}
+
 function buildLiveScheduleData(airportIata, airportLat, airportLng, sourceAircraft, activeRunwaysOverride) {
   var list = Array.isArray(sourceAircraft) ? sourceAircraft : aircraft;
   var arrivals = [];
@@ -391,7 +423,10 @@ function buildLiveScheduleData(airportIata, airportLat, airportLng, sourceAircra
   var justLanded = [];
   var nowMs = Date.now();
   var airportRwys = runwayData && runwayData[airportIata];
-  var derivedRunways = rememberActiveRunways(airportIata, deriveActiveRunways(airportRwys, airportIata, list));
+  var fieldElev = airportElevationFt(airportIata);
+  function heightFt(a) { return a.altFt == null ? null : a.altFt - fieldElev; }
+  var derivedRunways = rememberActiveRunways(airportIata,
+    deriveActiveRunways(airportRwys, airportIata, list, { maxAltFt: 1500 + fieldElev }));
   var activeRunways = mergeActiveRunways(activeRunwaysOverride, derivedRunways);
   var activeDepThresholds = [];
   if (activeRunways && activeRunways.departing_runways) {
@@ -435,6 +470,35 @@ function buildLiveScheduleData(airportIata, airportLat, airportLng, sourceAircra
       }
     }
     return { on: false, distFromThresholdKm: null };
+  }
+  var homeEnds = runwayApproachEnds(airportRwys);
+  var neighbourEnds = nearbyRunwayEnds(airportIata, airportLat, airportLng);
+  function landingElsewhere(a) {
+    if (!neighbourEnds.length || a.track == null) return false;
+    var there = approachPathKm(a.lat, a.lng, a.track, neighbourEnds);
+    if (!there || !there.onFinal) return false;
+    var here = approachPathKm(a.lat, a.lng, a.track, homeEnds);
+    return !(here && here.onFinal && here.pathKm <= there.pathKm);
+  }
+  function approachKm(a) {
+    var best = approachPathKm(a.lat, a.lng, a.track, activeArrThresholds);
+    return best ? best.pathKm : null;
+  }
+  // Flying the downwind leg for an active landing runway: tracking opposite the landing direction, offset
+  // 1.5-12 km to the side and within 20 km of the threshold along the runway line. Such planes head away
+  // from the airport but are among the next to land.
+  function onDownwind(a) {
+    if (a.track == null) return false;
+    for (var t = 0; t < activeArrThresholds.length; t++) {
+      var th = activeArrThresholds[t];
+      var hdg = bearingDegrees(th.thresholdLat, th.thresholdLon, th.farEndLat, th.farEndLon);
+      if (angleDiffDeg(a.track, (hdg + 180) % 360) > 30) continue;
+      var xt = Math.abs(crossTrackKm(a.lat, a.lng, th.thresholdLat, th.thresholdLon, th.farEndLat, th.farEndLon));
+      if (xt < 1.5 || xt > 12) continue;
+      var along = alongTrackKm(a.lat, a.lng, th.thresholdLat, th.thresholdLon, th.farEndLat, th.farEndLon, xt);
+      if (Math.abs(along) <= 20) return true;
+    }
+    return false;
   }
   function matchAnyRunway(a) {
     if (activeDepThresholds.length > 0) {
@@ -530,7 +594,7 @@ function buildLiveScheduleData(airportIata, airportLat, airportLng, sourceAircra
     if (!a.ground) {
       if (destinationHere) {
         if (distKm > AIRPORT_POPUP_FETCH_KM) continue;
-        var inboundEntry = buildArrivalEntry(a, rc, airportIata, distKm);
+        var inboundEntry = buildArrivalEntry(a, rc, airportIata, distKm, { pathKm: approachKm(a) });
         if (inboundEntry) arrivals.push(inboundEntry);
         continue;
       }
@@ -538,21 +602,22 @@ function buildLiveScheduleData(airportIata, airportLat, airportLng, sourceAircra
       // and RIU-unavailable cases still show planes climbing out after liftoff.
       var vRateFpm = a.vRate != null ? a.vRate * 60 : 0;
       var climbing = vRateFpm > 100;
-      var lowAlt = a.altFt != null && a.altFt < 6000;
+      var aglFt = heightFt(a);
+      var lowAlt = aglFt != null && aglFt < 6000;
       var depRwy = matchDepRunway(a);
       var bearingFromAirport = bearingDegrees(airportLat, airportLng, a.lat, a.lng);
       var outboundTrack = a.track != null && angleDiffDeg(a.track, bearingFromAirport) < 75;
       var shouldShow = false;
       var depRunwayKm = null;
       var depStatus = "Departing";
-      if (depRwy.on && distKm <= 5 && (a.altFt == null || a.altFt < 2000)) {
+      if (depRwy.on && distKm <= 5 && (aglFt == null || aglFt < 2000)) {
         // Over the active departure runway at low altitude — takeoff roll / rotation.
         // Gate on climbing or very low altitude to filter out level transit overflights. A descending plane
         // under 500 ft is landing on a runway shared with departures, not taking off.
-        if (climbing || (a.altFt != null && a.altFt < 500 && vRateFpm > -200)) {
+        if (climbing || (aglFt != null && aglFt < 500 && vRateFpm > -200)) {
           shouldShow = true;
           depRunwayKm = depRwy.distFromThresholdKm;
-          depStatus = a.altFt != null && a.altFt > 500 ? "Climbing" : "Departing";
+          depStatus = aglFt != null && aglFt > 500 ? "Climbing" : "Departing";
         }
       } else if (originHere && distKm <= DEPARTURE_PERIMETER_KM && lowAlt && climbing) {
         shouldShow = true;
@@ -562,7 +627,7 @@ function buildLiveScheduleData(airportIata, airportLat, airportLng, sourceAircra
         // No route info yet but geometry is strong: close, low, climbing, heading outbound.
         shouldShow = true;
         depRunwayKm = nearestDepThresholdKm(a);
-        depStatus = a.altFt != null && a.altFt > 500 ? "Climbing" : "Departing";
+        depStatus = aglFt != null && aglFt > 500 ? "Climbing" : "Departing";
       }
       if (shouldShow) {
         departures.push({
@@ -649,12 +714,13 @@ function buildLiveScheduleData(airportIata, airportLat, airportLng, sourceAircra
     if (rc && rc.origin && rc.origin.iata === airportIata) continue;
     if (rc && rc.destination && rc.destination.iata !== airportIata && rc.confidence === "high") continue;
     var vRateFpm = a.vRate != null ? a.vRate * 60 : 0;
-    if (a.altFt == null || a.altFt > 10000 || vRateFpm > -200) continue;
+    if (a.altFt == null || heightFt(a) > 10000 || vRateFpm > -200) continue;
     var toBearing = bearingDegrees(a.lat, a.lng, airportLat, airportLng);
-    if (a.track != null && angleDiffDeg(a.track, toBearing) > 60) continue;
+    if (a.track != null && angleDiffDeg(a.track, toBearing) > 60 && !onDownwind(a)) continue;
+    if (landingElsewhere(a)) continue;
     var fbDistKm = haversineKm(a.lat, a.lng, airportLat, airportLng);
     if (fbDistKm > 40) continue;
-    var fallbackEntry = buildArrivalEntry(a, rc, airportIata, fbDistKm, { proximity: true });
+    var fallbackEntry = buildArrivalEntry(a, rc, airportIata, fbDistKm, { proximity: true, pathKm: approachKm(a) });
     if (fallbackEntry) arrivals.push(fallbackEntry);
   }
   var landed = [];
@@ -667,7 +733,7 @@ function buildLiveScheduleData(airportIata, airportLat, airportLng, sourceAircra
       if (!rc || !rc.destination || rc.destination.iata !== airportIata) continue;
       var landedDist = haversineKm(a.lat, a.lng, airportLat, airportLng);
       if (!a.ground) {
-        if (landedDist > 5 || a.altFt == null || a.altFt >= 500) continue;
+        if (landedDist > 5 || a.altFt == null || heightFt(a) >= 500) continue;
       }
       var arrMatch = matchArrRunway(a);
       if (!arrMatch.on) continue;

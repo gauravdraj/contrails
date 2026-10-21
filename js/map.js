@@ -156,7 +156,7 @@ function addAppLayers() {
     map.addSource(id, { type: "geojson", data: EMPTY_COLLECTION });
   });
   map.addLayer({
-    id: "runways", type: "line", source: "runways",
+    id: "runways", type: "line", source: "runways", minzoom: 8,
     paint: { "line-color": "#7a8a9f", "line-width": 2.5, "line-opacity": 0.7, "line-dasharray": [3.2, 2] }
   });
   map.addLayer({

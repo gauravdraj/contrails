@@ -1416,3 +1416,62 @@ test("scoreArrivalCandidate uses the feed ETA only for routed arrivals far out",
   var near = core.scoreArrivalCandidate({ altFt: 2000, distKm: 12, spdKts: 160, vRate: -12, destinationMatch: true, feedEtaMin: 30 });
   assert.ok(near.etaMin < 6, "close in, live geometry wins");
 });
+
+// SFO 28L: threshold at the east end, landing toward the west-northwest.
+var RWY_28L = { thresholdLat: 37.6117, thresholdLon: -122.3584, farEndLat: 37.6263, farEndLon: -122.3931 };
+var HDG_28L = core.bearingDegrees(RWY_28L.thresholdLat, RWY_28L.thresholdLon, RWY_28L.farEndLat, RWY_28L.farEndLon);
+
+test("approachPathKm: lined up on final is the distance to the threshold", () => {
+  var p = core.projectLatLng(RWY_28L.thresholdLat, RWY_28L.thresholdLon, (HDG_28L + 180) % 360, 10000);
+  var r = core.approachPathKm(p[0], p[1], HDG_28L, [RWY_28L]);
+  assert.equal(r.onFinal, true);
+  assert.ok(Math.abs(r.pathKm - 10) < 0.1, "was " + r.pathKm);
+});
+
+test("approachPathKm: downwind abeam the field flies out to the join point and back", () => {
+  // 5 km to the side of the threshold, tracking opposite the landing direction.
+  var p = core.projectLatLng(RWY_28L.thresholdLat, RWY_28L.thresholdLon, (HDG_28L + 90) % 360, 5000);
+  var r = core.approachPathKm(p[0], p[1], (HDG_28L + 180) % 360, [RWY_28L]);
+  assert.equal(r.onFinal, false);
+  // sqrt(15^2 + 5^2) + 15 ~= 30.8 km, versus 5 km straight to the threshold.
+  assert.ok(Math.abs(r.pathKm - 30.8) < 0.5, "was " + r.pathKm);
+});
+
+test("approachPathKm: never shorter than the straight line, and picks the better runway", () => {
+  var other = { thresholdLat: 37.6135, thresholdLon: -122.3572, farEndLat: 37.6287, farEndLon: -122.3934 }; // 28R
+  var p = core.projectLatLng(RWY_28L.thresholdLat, RWY_28L.thresholdLon, 40, 30000);
+  var r = core.approachPathKm(p[0], p[1], 220, [RWY_28L, other]);
+  assert.ok(r.pathKm >= core.haversineKm(p[0], p[1], RWY_28L.thresholdLat, RWY_28L.thresholdLon) - 0.01);
+  var lined = core.projectLatLng(other.thresholdLat, other.thresholdLon, (HDG_28L + 180) % 360, 8000);
+  assert.equal(core.approachPathKm(lined[0], lined[1], HDG_28L, [RWY_28L, other]).runway, other);
+  assert.equal(core.approachPathKm(37, -122, 0, []), null);
+});
+
+test("scoreArrivalCandidate: path distance drives the ETA; altitude rules use height above the field", () => {
+  var straight = core.scoreArrivalCandidate({ altFt: 3000, distKm: 5, spdKts: 180, vRate: -5, destinationMatch: true });
+  var downwind = core.scoreArrivalCandidate({ altFt: 3000, distKm: 5, spdKts: 180, vRate: -5, destinationMatch: true, pathKm: 30.8 });
+  assert.ok(downwind.etaMin > straight.etaMin + 3, straight.etaMin + " vs " + downwind.etaMin);
+  // Denver (5,431 ft): 1,000 ft above the field on a 5 km final is about 1 min out, not 4.3 (6,431 / 1,500).
+  var den = core.scoreArrivalCandidate({ altFt: 6431, distKm: 5, spdKts: 140, vRate: -12, destinationMatch: true, fieldElevFt: 5431 });
+  assert.ok(den.etaMin < 2, "was " + den.etaMin);
+});
+
+test("runwayApproachEnds: an OAK runway-30 final is on final there, not at SFO", () => {
+  var oak = core.runwayApproachEnds([[37.7305, -122.222, 6, 37.7248, -122.205, 6, "OAK 10L/28R"], [37.7191, -122.241, 8, 37.7015, -122.214, 9, "OAK 12/30"]]);
+  assert.equal(oak.length, 4);
+  assert.deepEqual(oak[1], { thresholdLat: 37.7248, thresholdLon: -122.205, farEndLat: 37.7305, farEndLon: -122.222 });
+  var sfo = core.runwayApproachEnds([[37.6263, -122.3931, 13, 37.6117, -122.3584, 10, "SFO 10R/28L"], [37.6287, -122.3934, 13, 37.6135, -122.3572, 10, "SFO 10L/28R"]]);
+  // SWA2751, seen live: 1,275 ft, tracking 310 deg, south-east of Oakland.
+  assert.equal(core.approachPathKm(37.6618, -122.155, 309.7, oak).onFinal, true);
+  assert.equal(core.approachPathKm(37.6618, -122.155, 309.7, sfo).onFinal, false);
+  // UAL1777, seen live on the SFO 28 final.
+  assert.equal(core.approachPathKm(37.5617, -122.2393, 297.9, sfo).onFinal, true);
+});
+
+test("scoreArrivalCandidate: with a runway path, unrouted planes are timed by the path, not the sink rate", () => {
+  // 1,275 ft sinking 832 fpm reads as ~1.5 min, but 22 km of approach at 138 kts is ~5 min.
+  var noPath = core.scoreArrivalCandidate({ altFt: 1275, distKm: 22, spdKts: 138, vRate: -832 / 60 });
+  var withPath = core.scoreArrivalCandidate({ altFt: 1275, distKm: 22, spdKts: 138, vRate: -832 / 60, pathKm: 22 });
+  assert.ok(noPath.etaMin < 3, "was " + noPath.etaMin);
+  assert.ok(withPath.etaMin > 4.5, "was " + withPath.etaMin);
+});
