@@ -645,6 +645,8 @@ function planeRecordProps(a, isSelected) {
     radiusPx: style.radiusPx,
     track: a.track || 0,
     selected: isSelected,
+    // Lower keys are placed first, so airborne labels win collisions with planes parked at the gate.
+    labelRank: a.ground ? 1 : 0,
     label: a.callsign || a.icao24,
     // In ems of the 10px label text: clear of the silhouette, plus the chip's 2px padding.
     labelOffset: (style.radiusPx + 6) / 10
@@ -709,8 +711,13 @@ function setSelectedAircraft(id) {
   renderMap();
 }
 
+function groundPlanesShown() {
+  return !!map && viewZoom() >= GROUND_PLANES_MIN_ZOOM;
+}
+
 function isFiltered(a) {
   if (!filters.ground && a.ground) return true;
+  if (a.ground && a.icao24 !== selectedAircraftId && !groundPlanesShown()) return true;
   if (!filters.private && a.private) return true;
   if (!isLatLngInView(a.lat, a.lng, VIEW_FILTER_PAD)) return true;
   return false;
@@ -718,6 +725,7 @@ function isFiltered(a) {
 
 function markerAnimationIntervalMs(markerCount) {
   if (!markerCount) return 250;
+  if (markerCount > 1500) return 100;
   if (markerCount > 320) return 50;
   if (markerCount > 200) return 33;
   return MARKER_TARGET_INTERVAL_MS;

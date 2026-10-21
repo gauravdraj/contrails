@@ -9,6 +9,7 @@ import http from "node:http";
 import { readFile } from "node:fs/promises";
 import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
+import { BUNDLE_FILE, buildBundle } from "./build-bundle.mjs";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const STATIC_PORT = Number(process.env.STATIC_PORT || 8766);
@@ -81,6 +82,12 @@ const TYPES = {
 
 http.createServer(async (req, res) => {
   const path = decodeURIComponent(new URL(req.url, "http://localhost").pathname);
+  // Built fresh each time so edits to js/*.js show up on reload without rerunning the bundler.
+  if (path === "/" + BUNDLE_FILE) {
+    res.writeHead(200, { "Content-Type": TYPES[".js"], "Cache-Control": "no-store" });
+    res.end(await buildBundle());
+    return;
+  }
   const file = normalize(join(ROOT, path === "/" ? "index.html" : path));
   if (!file.startsWith(ROOT) || file.includes(`${ROOT}worker`) || file.includes("/.")) {
     res.writeHead(404).end("Not found");

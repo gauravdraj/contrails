@@ -554,6 +554,7 @@ function refreshViewportUi(options) {
   renderAirports();
   renderRunways();
   renderMap();
+  updateCoverageHint();
   updateStatus();
   updateAlerts();
   updateReferenceNote();

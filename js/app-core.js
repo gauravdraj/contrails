@@ -25,7 +25,10 @@ const parseDatisActiveRunways = core.parseDatisActiveRunways;
 const projectLatLng = core.projectLatLng;
 const roundTenths = core.roundTenths;
 const scoreArrivalCandidate = core.scoreArrivalCandidate;
-const sortAirportArrivalRows = core.sortAirportArrivalRows;
+const sortAirportInboundRows = core.sortAirportInboundRows;
+const sortAirportLandedRows = core.sortAirportLandedRows;
+const buildCoverageCircles = core.buildCoverageCircles;
+const countGroundByAirport = core.countGroundByAirport;
 const sortAirportDepartureRows = core.sortAirportDepartureRows;
 const describeAirportDepartureStatus = core.describeAirportDepartureStatus;
 const classifyGroundDepartureStatus = core.classifyGroundDepartureStatus;
@@ -50,16 +53,16 @@ if (!airlineName || !angleDiffDeg || !bearingDegrees || !buildViewPolicy || !bui
     !callsignVariants || !computePlaybackDelayMs || !escapeHtml || !formatDistanceMiles || !formatSpeedMph ||
     !getAirportNextRow || !haversineKm || !interpolatePlaybackPose || !interpolateTimedPose || !isLikelyPrivateCallsign ||
     !normalizeAircraftHex || !normalizeFlightQuery || !normalizeSearchText || !parseCoordinate || !parseDatisActiveRunways || !projectLatLng ||
-    !scoreArrivalCandidate || !sortAirportArrivalRows || !sortAirportDepartureRows || !describeAirportDepartureStatus ||
+    !scoreArrivalCandidate || !sortAirportInboundRows || !sortAirportLandedRows || !sortAirportDepartureRows || !describeAirportDepartureStatus ||
     !classifyGroundDepartureStatus ||
     !findFlightStartIndex || !matchRunwayDesignator || !deriveActiveRunways || !greatCirclePoints || !pointOnRunway ||
     !roundTenths || !slantKm || !elevationDeg || !SQUAWK_ALERT ||
     !sizeFromCategory || !sizeClass || !isLikelyPrivateClass || !dimColor || !declutterLabels || !updateClockOffset ||
-    !viewBounds || !alphaToSdf) {
+    !viewBounds || !alphaToSdf || !buildCoverageCircles || !countGroundByAirport) {
   throw new Error("Contrails core helpers failed to load.");
 }
 
-const APP_VERSION = "2.36";
+const APP_VERSION = "2.37";
 const isLocal = location.hostname === "localhost" || location.hostname === "127.0.0.1";
 const isIOSDevice = /iP(ad|hone|od)/.test(navigator.userAgent) ||
   (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
@@ -186,10 +189,19 @@ const VIEW_FILTER_PAD = 0.08;
 const AIRPORT_VIEW_PAD = 0.16;
 // Screen footprint of an airport dot plus its IATA tag, for label decluttering.
 const AIRPORT_LABEL_BOX = { w: 60, h: 24 };
+// Wider while the label also carries a ground-plane count.
+const AIRPORT_LABEL_BOX_COUNTED = { w: 80, h: 24 };
+const AIRPORT_GROUND_KM = 5;
 const TRAIL_VIEW_PAD = 0.18;
 const FETCH_RADIUS_PAD = 1.22;
 const MIN_VIEW_FETCH_KM = 18;
 const MAX_VIEW_FETCH_KM = 460;
+// Wider views are fetched as up to this many circles (fewer on phones, whose views are narrower); past that,
+// planes far from the center are left out.
+const MAX_COVERAGE_CIRCLES = 12;
+const MAX_COVERAGE_CIRCLES_NARROW = 7;
+// Below this zoom, ground planes are hidden and counted on their airport's label instead.
+const GROUND_PLANES_MIN_ZOOM = 12;
 const WIDE_VIEW_FETCH_KM = 220;
 const ROUTE_FETCH_MAX_KM = 220;
 const ROUTE_FETCH_MIN_ZOOM = 9.25;

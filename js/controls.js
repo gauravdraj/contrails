@@ -473,6 +473,7 @@
       updateFilterButtons();
       saveFilters();
       renderMap();
+      updateAirportGroundCounts();
       updateStatus();
       updateAlerts();
       updateViewHint(visibleAircraftCount());

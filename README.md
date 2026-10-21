@@ -51,8 +51,9 @@ The normal Safari tab keeps browser chrome visible, so the Home Screen launch is
 The app stays GitHub Pages-friendly. The static frontend lives at the repo root, while a small Cloudflare Worker handles API proxying, caching, and third-party lookups that should not happen directly in the browser:
 
 - `index.html` is the HTML shell; `styles.css` holds the styles.
-- `js/*.js` contains the browser-side application logic as plain scripts loaded in order (they share one global scope; no build step).
+- `js/*.js` contains the browser-side application logic as plain scripts that share one global scope.
 - `contrails-core.js` contains shared pure helpers for viewport policy, geometry, airline lookups, and HTML escaping.
+- `app.bundle.js` is those scripts concatenated in load order (`node scripts/build-bundle.mjs`), so the page loads one file instead of ten. It is committed, because Pages serves the repo as-is; regenerate it after editing any source script. The dev server builds it fresh on each request.
 - A [Cloudflare Worker](worker/) handles API proxying, with the nearby, FR24, ADSBDB, and HTTP response helpers split into focused modules under `worker/src/`.
 
 | Worker endpoint | Proxies to | Purpose |
@@ -91,7 +92,7 @@ These checks run automatically via GitHub Actions on every push and pull request
 ```bash
 node --test contrails-core.test.js
 node --test worker/src/*.test.js
-node smoke-boot.mjs
+node smoke-boot.mjs   # also fails if app.bundle.js is stale
 ```
 
 To probe the live deployed Worker and catch silent upstream breakage (for
@@ -191,6 +192,8 @@ green) rather than failing every push.
 | `vendor/maplibre-gl-<version>/` | Self-hosted MapLibre GL JS, the only map library (needs WebGL) |
 | `contrails-core.js` | Shared pure helpers (geometry, policy, airlines, escaping) used by the app and tests |
 | `contrails-core.test.js` | Unit tests for shared helper logic |
+| `app.bundle.js` | Generated: `contrails-core.js` + `js/*.js` concatenated in load order (the only app script the page loads) |
+| `scripts/build-bundle.mjs` | Rebuilds `app.bundle.js`; `--check` exits non-zero if it is stale |
 | `smoke-boot.mjs` | Local smoke check for page boot with fixed coordinates |
 | `scripts/healthcheck.mjs` | Live Worker endpoint health check (catches silent upstream breakage) |
 | `scripts/dev-server.mjs` | Local dev: static server + the real Worker under Node |

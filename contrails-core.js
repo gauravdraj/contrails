@@ -207,6 +207,61 @@
     };
   }
 
+  // Circles that together cover a view too wide for one feed request (the feed caps the radius). Centers sit
+  // on a fixed lattice, so panning reuses the same requests and edge-cache entries: rows `latStepDeg` tall,
+  // columns as wide in km as the row's poleward edge, which keeps every cell corner within `radiusKm` of its
+  // center up to ~70° latitude. Nearest-to-center cells win when more than `maxCircles` are needed.
+  function buildCoverageCircles(center, bounds, options) {
+    options = options || {};
+    var radiusKm = options.radiusKm || 460;
+    var latStep = options.latStepDeg || 5;
+    var maxCircles = options.maxCircles || 7;
+    var south = clamp(bounds.south, -85, 85);
+    var north = clamp(bounds.north, -85, 85);
+    var cells = [];
+    for (var r = Math.floor(south / latStep); r * latStep < north; r++) {
+      var poleEdge = Math.min(80, Math.max(Math.abs(r * latStep), Math.abs((r + 1) * latStep)));
+      var lngStep = latStep / Math.cos(poleEdge * Math.PI / 180);
+      var rowLat = (r + 0.5) * latStep;
+      for (var c = Math.floor((bounds.west + 180) / lngStep); -180 + c * lngStep < bounds.east; c++) {
+        var lng = -180 + (c + 0.5) * lngStep;
+        var wrapped = ((lng + 180) % 360 + 360) % 360 - 180;
+        cells.push({
+          lat: roundTo(rowLat, 4),
+          lng: roundTo(wrapped, 4),
+          km: radiusKm,
+          dist: haversineKm(center.lat, center.lng, rowLat, lng)
+        });
+      }
+    }
+    cells.sort(function(a, b) { return a.dist - b.dist; });
+    var circles = cells.slice(0, maxCircles).map(function(cell) {
+      return { lat: cell.lat, lng: cell.lng, km: cell.km };
+    });
+    return { circles: circles, total: cells.length, complete: cells.length <= maxCircles };
+  }
+
+  // Ground planes per airport: each plane counts toward the nearest airport within `maxKm`.
+  function countGroundByAirport(planes, airports, maxKm) {
+    var counts = {};
+    var latPad = maxKm / 111;
+    for (var i = 0; i < planes.length; i++) {
+      var p = planes[i];
+      var best = null, bestKm = maxKm;
+      for (var j = 0; j < airports.length; j++) {
+        var ap = airports[j];
+        if (Math.abs(ap.lat - p.lat) > latPad) continue;
+        var d = haversineKm(p.lat, p.lng, ap.lat, ap.lng);
+        if (d <= bestKm) {
+          bestKm = d;
+          best = ap.code;
+        }
+      }
+      if (best) counts[best] = (counts[best] || 0) + 1;
+    }
+    return counts;
+  }
+
   function buildViewPolicy(input, options) {
     options = options || {};
     var zoom = input.zoom;
@@ -769,25 +824,48 @@
     return ((a && a.callsign) || "").localeCompare((b && b.callsign) || "");
   }
 
-  function sortAirportArrivalRows(landed, taxiingIn, inbound, options) {
+  // The board's "Landed" tab: planes on the runway after touchdown (most recent first), then taxiing in,
+  // then stopped at the gate.
+  function sortAirportLandedRows(landed, taxiingIn, options) {
     options = options || {};
-    var landedLimit = options.landedLimit == null ? 5 : options.landedLimit;
-    var taxiingLimit = options.taxiingLimit == null ? 5 : options.taxiingLimit;
     var totalLimit = options.totalLimit == null ? 15 : options.totalLimit;
-    var landedRows = dedupeAirportRows(copyAirportRows(landed).sort(compareAirportLandedEntries));
-    var taxiingRows = dedupeAirportRows(copyAirportRows(taxiingIn).sort(function(a, b) {
+    var landedRows = copyAirportRows(landed).sort(compareAirportLandedEntries);
+    var taxiingRows = copyAirportRows(taxiingIn).sort(function(a, b) {
+      if (!!a.parked !== !!b.parked) return a.parked ? 1 : -1;
       var distA = a && a.distKm != null ? a.distKm : Infinity;
       var distB = b && b.distKm != null ? b.distKm : Infinity;
       if (distA !== distB) return distA - distB;
       return ((a && a.callsign) || "").localeCompare((b && b.callsign) || "");
-    }));
-    var inboundRows = dedupeAirportRows(copyAirportRows(inbound).sort(compareAirportArrivalEntries));
-    limitAirportRows(landedRows, landedLimit);
-    limitAirportRows(taxiingRows, taxiingLimit);
-    var rows = dedupeAirportRows(landedRows.concat(taxiingRows, inboundRows));
+    });
+    var rows = dedupeAirportRows(landedRows.concat(taxiingRows));
     limitAirportRows(rows, totalLimit);
     for (var i = 0; i < rows.length; i++) delete rows[i]._rolloutDist;
     return rows;
+  }
+
+  // The board's "Landings" tab: airborne inbound planes in ETA order, soonest first. Rows for planes
+  // already listed in `options.exclude` (the Landed tab) are dropped.
+  function sortAirportInboundRows(inbound, options) {
+    options = options || {};
+    var totalLimit = options.totalLimit == null ? 15 : options.totalLimit;
+    var rows = copyAirportRows(inbound).sort(function(a, b) {
+      var etaA = a && a.etaMin != null && isFinite(a.etaMin) ? a.etaMin : Infinity;
+      var etaB = b && b.etaMin != null && isFinite(b.etaMin) ? b.etaMin : Infinity;
+      if (etaA !== etaB) return etaA - etaB;
+      return compareAirportArrivalEntries(a, b);
+    });
+    var excludedKeys = {};
+    var excluded = options.exclude || [];
+    for (var e = 0; e < excluded.length; e++) {
+      var keys = airportRowDedupeKeys(excluded[e]);
+      for (var k = 0; k < keys.length; k++) excludedKeys[keys[k]] = true;
+    }
+    rows = dedupeAirportRows(rows).filter(function(row) {
+      var rowKeys = airportRowDedupeKeys(row);
+      for (var i = 0; i < rowKeys.length; i++) if (excludedKeys[rowKeys[i]]) return false;
+      return true;
+    });
+    return limitAirportRows(rows, totalLimit);
   }
 
   function airportDepartureStatusOrder(status) {
@@ -989,9 +1067,8 @@
   }
 
   function getAirportNextRow(liveData, dir) {
-    var rows = dir === "departures"
-      ? liveData && liveData.departures
-      : liveData && liveData.arrivals;
+    var key = dir === "departures" || dir === "landed" ? dir : "arrivals";
+    var rows = liveData && liveData[key];
     return rows && rows.length ? rows[0] : null;
   }
 
@@ -1192,9 +1269,11 @@
     compareAirportDepartureEntries: compareAirportDepartureEntries,
     classifyGroundDepartureStatus: classifyGroundDepartureStatus,
     describeAirportDepartureStatus: describeAirportDepartureStatus,
+    buildCoverageCircles: buildCoverageCircles,
     buildViewPolicy: buildViewPolicy,
     buildViewportFetchSpec: buildViewportFetchSpec,
     cardinalDir: cardinalDir,
+    countGroundByAirport: countGroundByAirport,
     elevationDeg: elevationDeg,
     escapeHtml: escapeHtml,
     findFlightStartIndex: findFlightStartIndex,
@@ -1220,7 +1299,8 @@
     projectLatLng: projectLatLng,
     roundTenths: roundTenths,
     scoreArrivalCandidate: scoreArrivalCandidate,
-    sortAirportArrivalRows: sortAirportArrivalRows,
+    sortAirportInboundRows: sortAirportInboundRows,
+    sortAirportLandedRows: sortAirportLandedRows,
     sortAirportDepartureRows: sortAirportDepartureRows,
     slantKm: slantKm,
     sizeFromCategory: sizeFromCategory,

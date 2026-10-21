@@ -688,6 +688,33 @@ body.noscroll { touch-action: none; }
   letter-spacing: 0.05em;
   white-space: nowrap;
 }
+.airport-ground {
+  margin-left: 5px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: rgba(138, 160, 184, 0.22);
+  color: #d5e0eb;
+  font-size: 10px;
+  letter-spacing: 0;
+}
+.airport-ground[hidden] { display: none; }
+#coverage-hint {
+  position: fixed;
+  left: 50%;
+  bottom: calc(26px + env(safe-area-inset-bottom, 0px));
+  transform: translateX(-50%);
+  z-index: 1001;
+  max-width: calc(100% - 32px);
+  padding: 6px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  background: rgba(8, 16, 28, 0.86);
+  color: var(--text-muted);
+  font-size: 12px;
+  text-align: center;
+  pointer-events: none;
+}
+#coverage-hint[hidden] { display: none; }
 .maplibregl-popup.runway-label { pointer-events: none; }
 .maplibregl-popup.runway-label .maplibregl-popup-tip { display: none; }
 .maplibregl-popup.runway-label .maplibregl-popup-content {
@@ -796,15 +823,18 @@ body.noscroll { touch-action: none; }
 .popup-photo img { max-width: 280px; }
 .popup-photo { min-height: 0; }
 
-#airport-panel {
+#airport-panel,
+#plane-panel {
   position: fixed;
   inset: 0;
   z-index: 1200;
   display: none;
   pointer-events: none;
 }
-#airport-panel.open { display: block; }
-#airport-panel-sheet {
+#airport-panel.open,
+#plane-panel.open { display: block; }
+#airport-panel-sheet,
+#plane-panel-sheet {
   position: absolute;
   left: max(10px, env(safe-area-inset-left, 0px));
   right: max(10px, env(safe-area-inset-right, 0px));
@@ -819,7 +849,8 @@ body.noscroll { touch-action: none; }
   overflow: hidden;
   pointer-events: auto;
 }
-#airport-panel-close {
+#airport-panel-close,
+#plane-panel-close {
   position: absolute;
   top: 8px;
   right: 8px;
@@ -838,7 +869,8 @@ body.noscroll { touch-action: none; }
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
 }
-#airport-panel-close:hover { color: var(--text-strong); }
+#airport-panel-close:hover,
+#plane-panel-close:hover { color: var(--text-strong); }
 #airport-panel-content {
   padding: 16px 14px calc(16px + env(safe-area-inset-bottom, 0px));
   overflow: hidden;
@@ -855,6 +887,23 @@ body.noscroll { touch-action: none; }
 }
 #airport-panel-content .sched-rows { max-height: none; }
 #airport-panel-content .sched-row { padding: 7px 0; }
+#plane-panel-sheet { max-height: min(46dvh, 400px); }
+#plane-panel-content {
+  max-height: min(46dvh, 400px);
+  overflow-y: auto;
+  padding: 14px 16px calc(14px + env(safe-area-inset-bottom, 0px));
+  color: var(--text-main);
+  font-size: 13px;
+  line-height: 1.6;
+  overscroll-behavior: contain;
+}
+#plane-panel-content strong { color: var(--accent); font-size: 15px; }
+#plane-panel-content .popup-header { padding-right: 40px; }
+#plane-panel-content .popup-photo img {
+  max-width: 100%;
+  max-height: min(22dvh, 170px);
+  object-fit: cover;
+}
 
 .sched-card {
   width: 280px;
@@ -893,6 +942,17 @@ body.noscroll { touch-action: none; }
   transition: color 0.15s, background 0.15s, border-color 0.15s;
   -webkit-tap-highlight-color: transparent;
 }
+.sched-toggle-count {
+  display: inline-block;
+  min-width: 15px;
+  margin-left: 2px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  font-size: 10px;
+  line-height: 15px;
+}
+.sched-toggle-btn.active .sched-toggle-count { background: rgba(255, 255, 255, 0.24); }
 .sched-toggle-btn.active {
   color: #fff;
   background: var(--accent);
@@ -937,6 +997,11 @@ body.noscroll { touch-action: none; }
 .sched-next-flight { color: var(--text-strong); font-size: 16px; font-weight: 800; }
 .sched-next-status { color: var(--accent); font-size: 12px; font-weight: 700; white-space: nowrap; }
 .sched-next.departure .sched-next-status { color: #fde68a; }
+.sched-next.landed {
+  border-color: rgba(74, 222, 128, 0.24);
+  background: linear-gradient(180deg, rgba(74, 222, 128, 0.11) 0%, rgba(105, 199, 255, 0.05) 100%);
+}
+.sched-next.landed .sched-next-status { color: #bbf7d0; }
 .sched-next-route,
 .sched-next-empty-text {
   margin-top: 2px;

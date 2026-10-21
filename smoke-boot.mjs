@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import http from "node:http";
 import { readFile } from "node:fs/promises";
+import { BUNDLE_FILE, buildBundle } from "./scripts/build-bundle.mjs";
 
 const root = new URL(".", import.meta.url);
 const html = await readFile(new URL("index.html", root), "utf8");
@@ -23,7 +24,11 @@ try {
   const page = await resp.text();
   assert.match(page, /id="map"/);
   assert.match(page, /id="map-controls"/);
-  assert.match(page, /contrails-core\.js/);
+  assert.match(page, /src="app\.bundle\.js"/);
+
+  // The committed bundle must match its sources, or the live site runs stale code.
+  const bundle = await readFile(new URL(BUNDLE_FILE, root), "utf8");
+  assert.equal(bundle, await buildBundle(), BUNDLE_FILE + " is out of date: run node scripts/build-bundle.mjs");
 
   // Every local script/stylesheet the page loads must exist and be precached by
   // the service worker, or installed copies boot with a missing file offline.

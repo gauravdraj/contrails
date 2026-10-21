@@ -103,7 +103,7 @@ function initMap(lat, lng) {
     requestAnimationFrame(function() {
       popupCheckRafPending = false;
       var p = activeMapPopup;
-      if (p && !isAirportSchedulePopup(p) && popupPanelLeavingView(p)) closeMapPopup();
+      if (p && !p._isSheet && !isAirportSchedulePopup(p) && popupPanelLeavingView(p)) closeMapPopup();
     });
   });
   map.on("moveend", function() {
@@ -120,7 +120,7 @@ function initMap(lat, lng) {
     }
     if (_popupJustOpened || _autoPanning) { _autoPanning = false; return; }
     var p = activeMapPopup;
-    if (p && !isAirportSchedulePopup(p)) {
+    if (p && !p._isSheet && !isAirportSchedulePopup(p)) {
       var ll = p.getLngLat();
       if (popupPanelLeavingView(p) || !mapViewBounds().contains(ll.lat, ll.lng)) closeMapPopup();
     }
@@ -179,6 +179,7 @@ function addAppLayers() {
     id: "plane-labels", type: "symbol", source: "planes",
     layout: {
       visibility: "none",
+      "symbol-sort-key": ["get", "labelRank"],
       "text-field": ["get", "label"],
       "text-font": PLANE_LABEL_FONT,
       "text-size": 10,
@@ -305,6 +306,7 @@ function afterPopupOpened(popup, options) {
   _popupJustOpened = true;
   setTimeout(function() { _popupJustOpened = false; }, 600);
   bindPopupActions(popup.getElement());
+  if (popup._isSheet) return;
   var padding = options && options.padding;
   setTimeout(function() {
     var el = popup.getElement();
@@ -332,7 +334,10 @@ function openPlanePopup(hex) {
   var rec = markerMap[hex];
   if (!a || !rec) return;
   var html = buildPopup(a);
-  var popup = new maplibregl.Popup({
+  // Phones get a bottom sheet, like the airport board, so the card doesn't cover the plane.
+  var docked = isAirportPanelDocked();
+  if (docked && _activeAirportPopup) closeActiveAirportPanel({ restoreFocus: false });
+  var popup = docked ? planeSheet() : new maplibregl.Popup({
     closeButton: false,
     closeOnClick: false,
     anchor: "bottom",
@@ -340,10 +345,127 @@ function openPlanePopup(hex) {
     maxWidth: "300px",
     className: "plane-popup",
     focusAfterOpen: false
-  }).setLngLat([rec.lng, rec.lat]).setHTML(html);
+  }).setLngLat([rec.lng, rec.lat]);
+  popup.setHTML(html);
   if (extraState[hex]) extraState[hex].popupHtml = html;
   showMapPopup(popup, { planeHex: hex });
   onPlanePopupOpened(hex, popup.getElement());
+}
+
+// --- Plane bottom sheet (phones) ---
+// Same surface as a map popup (setHTML / setLngLat / getLngLat / getElement / on("close") / addTo / remove),
+// so the one-popup-at-a-time code doesn't care which it has. While open, the map's bottom padding equals the
+// sheet's height, so centering (follow mode, fly-to) lands the plane in the strip above the sheet.
+var _planeSheetObserver = null;
+var _insetPending = false;
+
+function planeSheet() {
+  var panel = document.getElementById("plane-panel");
+  var sheet = document.getElementById("plane-panel-sheet");
+  var content = document.getElementById("plane-panel-content");
+  if (!panel.__contrailsBound) {
+    panel.__contrailsBound = true;
+    document.getElementById("plane-panel-close").addEventListener("click", function(e) {
+      e.preventDefault();
+      closeMapPopup();
+      setSelectedAircraft(null);
+    });
+  }
+  var closeHandlers = [];
+  var open = false;
+  var pendingHtml = "";
+  var api = {
+    _isSheet: true,
+    setHTML: function(html) {
+      pendingHtml = html;
+      if (open) content.innerHTML = html;
+      return api;
+    },
+    setLngLat: function() { return api; },
+    getLngLat: function() {
+      var rec = planePopupHex && markerMap[planePopupHex];
+      return rec ? { lat: rec.lat, lng: rec.lng } : map.getCenter();
+    },
+    getElement: function() { return sheet; },
+    on: function(eventName, handler) {
+      if (eventName === "close") closeHandlers.push(handler);
+      return api;
+    },
+    addTo: function() {
+      open = true;
+      content.innerHTML = pendingHtml;
+      panel.classList.add("open");
+      panel.setAttribute("aria-hidden", "false");
+      if (typeof ResizeObserver === "function") {
+        _planeSheetObserver = new ResizeObserver(function() { if (open) syncPlaneSheetInset(); });
+        _planeSheetObserver.observe(sheet);
+      }
+      return api;
+    },
+    remove: function() {
+      if (!open) return api;
+      open = false;
+      if (_planeSheetObserver) _planeSheetObserver.disconnect();
+      _planeSheetObserver = null;
+      panel.classList.remove("open");
+      panel.setAttribute("aria-hidden", "true");
+      content.innerHTML = "";
+      setMapBottomInset(0);
+      for (var i = 0; i < closeHandlers.length; i++) closeHandlers[i]();
+      return api;
+    }
+  };
+  return api;
+}
+
+function planeSheetInset() {
+  var panel = document.getElementById("plane-panel");
+  if (!map || !panel || !panel.classList.contains("open")) return 0;
+  var mapRect = map.getContainer().getBoundingClientRect();
+  var sheetRect = document.getElementById("plane-panel-sheet").getBoundingClientRect();
+  return Math.max(0, Math.round(mapRect.bottom - sheetRect.top));
+}
+
+function syncPlaneSheetInset() {
+  setMapBottomInset(planeSheetInset());
+  panSelectedPlaneAboveSheet();
+}
+
+// Changes the map's bottom padding without moving the picture: the new center is whatever is already drawn at
+// the middle of the new padded area. Waits out a running fly/ease, which a jump would cancel. That wait polls
+// rather than listening for "moveend": a tap still in progress counts as moving but never ends a move.
+function setMapBottomInset(px) {
+  if (!map) return;
+  if (map.isMoving()) {
+    if (_insetPending) return;
+    _insetPending = true;
+    setTimeout(function() {
+      _insetPending = false;
+      setMapBottomInset(planeSheetInset());
+      panSelectedPlaneAboveSheet();
+    }, 150);
+    return;
+  }
+  var current = map.getPadding().bottom || 0;
+  if (Math.abs(current - px) < 2) return;
+  var sz = mapSize();
+  var center = map.unproject([sz.x / 2, (sz.y - px) / 2]);
+  map.jumpTo({ center: center, padding: { top: 0, right: 0, bottom: px, left: 0 } });
+}
+
+// Eases the selected plane into the strip between the controls dock and the sheet when it's hidden.
+function panSelectedPlaneAboveSheet() {
+  if (!map || map.isMoving() || !activeMapPopup || !activeMapPopup._isSheet) return;
+  var rec = planePopupHex && markerMap[planePopupHex];
+  if (!rec) return;
+  var mapRect = map.getContainer().getBoundingClientRect();
+  var ctrl = document.getElementById("map-controls");
+  var top = (ctrl ? ctrl.getBoundingClientRect().bottom - mapRect.top : 0) + 16;
+  var bottom = mapSize().y - planeSheetInset() - 24;
+  var pt = screenPoint(rec.lat, rec.lng);
+  if (pt.y >= top && pt.y <= bottom && pt.x >= 16 && pt.x <= mapSize().x - 16) return;
+  _autoPanning = true;
+  map.easeTo({ center: [rec.lng, rec.lat], duration: 350 });
 }
 
 function setPlanePopupHtml(hex, html) {

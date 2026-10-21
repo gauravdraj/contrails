@@ -12,6 +12,35 @@
 <link id="app-touch-icon" rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
 <link rel="icon" type="image/png" sizes="64x64" href="favicon-64.png">
 <link rel="manifest" href="manifest.json">
+<link rel="preconnect" href="https://contrails-api.therealgraj.workers.dev" crossorigin>
+<link rel="preconnect" href="https://basemaps.cartocdn.com" crossorigin>
+<link rel="preconnect" href="https://tiles.basemaps.cartocdn.com" crossorigin>
+<link rel="preload" href="airports.json" as="fetch" crossorigin>
+<script>
+// A shared-link view (lat/lng in the URL) is known before any script loads, so its first traffic request starts
+// here, in parallel with the map library; fetchAircraft adopts it (takeBootPrefetch in js/data.js).
+(function() {
+  try {
+    var q = new URLSearchParams(location.search);
+    var lat = parseFloat(q.get("lat")), lng = parseFloat(q.get("lng")), zoom = parseFloat(q.get("zoom"));
+    if (!isFinite(lat) || !isFinite(lng) || Math.abs(lat) > 85) return;
+    zoom = Math.max(5, Math.min(18, isFinite(zoom) ? zoom : 11));
+    // Center-to-corner distance on a 256-px-tile Web Mercator map, padded like the app's own estimate plus 10%.
+    var metersPerPx = 156543.03 * Math.cos(lat * Math.PI / 180) / Math.pow(2, zoom);
+    var km = Math.hypot(innerWidth, innerHeight) / 2 * metersPerPx / 1000 * 1.22;
+    if (km > 460) return;
+    var nm = Math.ceil(Math.max(18, km) * 1.1 / 1.852);
+    var local = location.hostname === "localhost" || location.hostname === "127.0.0.1";
+    var worker = local ? location.protocol + "//" + location.hostname + ":8791" : "https://contrails-api.therealgraj.workers.dev";
+    var promise = fetch(worker + "/adsb/lat/" + lat.toFixed(4) + "/lon/" + lng.toFixed(4) + "/dist/" + nm).then(function(r) {
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return r.json();
+    });
+    promise.catch(function() {});
+    window.__contrailsPrefetch = { lat: lat, lng: lng, nm: nm, at: Date.now(), promise: promise };
+  } catch (e) {}
+})();
+</script>
 <link rel="stylesheet" href="vendor/maplibre-gl-5.24.0/maplibre-gl.css">
 <link rel="stylesheet" href="styles.css">
 </head>
@@ -38,6 +67,7 @@
   <div id="map"></div>
 </div>
 <div id="alert-bar"></div>
+<div id="coverage-hint" role="status" hidden>Showing planes near the center &middot; zoom in to see the rest</div>
 <div id="map-controls" class="collapsed">
   <button id="controls-toggle" type="button" aria-expanded="false" aria-controls="controls-body">
     <span id="controls-toggle-brand">
@@ -90,17 +120,14 @@
     <div id="airport-panel-content"></div>
   </div>
 </div>
-<script src="contrails-core.js"></script>
+<div id="plane-panel" aria-hidden="true">
+  <div id="plane-panel-sheet" role="dialog" aria-modal="false" aria-label="Plane details">
+    <button id="plane-panel-close" type="button" aria-label="Close plane details">&times;</button>
+    <div id="plane-panel-content"></div>
+  </div>
+</div>
 <script src="vendor/maplibre-gl-5.24.0/maplibre-gl.js"></script>
-<!-- Classic scripts sharing one global scope: load order matters, boot.js last. -->
-<script src="js/app-core.js"></script>
-<script src="js/map.js"></script>
-<script src="js/features.js"></script>
-<script src="js/data.js"></script>
-<script src="js/render.js"></script>
-<script src="js/geolocation.js"></script>
-<script src="js/airport-board.js"></script>
-<script src="js/controls.js"></script>
-<script src="js/boot.js"></script>
+<!-- contrails-core.js + js/*.js joined in load order by scripts/build-bundle.mjs. -->
+<script src="app.bundle.js"></script>
 </body>
 </html>

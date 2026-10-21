@@ -808,7 +808,7 @@ function inboundArrival(callsign, input) {
   };
 }
 
-test("airport arrival rows: inbound next landing summary stays short-final", () => {
+test("airport inbound rows: soonest ETA first, so the next landing is the short-final plane", () => {
   var shortFinal = inboundArrival("UAL100", {
     altFt: 3500, vRate: -10, distKm: 10, spdKts: 160, destinationMatch: true
   });
@@ -819,82 +819,99 @@ test("airport arrival rows: inbound next landing summary stays short-final", () 
     altFt: 8000, vRate: -10, distKm: 30, spdKts: 280, destinationMatch: true
   });
 
-  var rows = core.sortAirportArrivalRows([], [], [descendingInbound, approach, shortFinal]);
+  var rows = core.sortAirportInboundRows([descendingInbound, approach, shortFinal]);
   var next = core.getAirportNextRow({ arrivals: rows }, "arrivals");
 
   assert.deepEqual(callsigns(rows), ["UAL100", "DAL200", "AAL300"]);
   assert.equal(next.callsign, "UAL100", "top next landing summary row should be the short-final aircraft");
 });
 
-test("airport arrival rows: landed and taxiing-in aircraft stay ahead of airborne arrivals", () => {
-  var landedFartherDownRunway = {
-    callsign: "SWA202",
-    landed: true,
-    distKm: 0.8,
-    arrivalScore: 0,
-    _rolloutDist: 1.2
-  };
-  var mostRecentTouchdown = {
-    callsign: "ASA101",
-    landed: true,
-    distKm: 1.1,
-    arrivalScore: 0,
-    _rolloutDist: 0.2
-  };
-  var taxiingIn = {
-    callsign: "JBU303",
-    taxiingIn: true,
-    distKm: 0.1,
-    arrivalScore: 0
-  };
-  var airborneShortFinal = {
-    callsign: "DAL404",
-    distKm: 2,
-    arrivalScore: 0.01,
-    etaMin: 1
-  };
+test("airport inbound rows: ETA order wins over the arrival score", () => {
+  var rows = core.sortAirportInboundRows([
+    { callsign: "SIX", etaMin: 6, arrivalScore: 1, distKm: 30 },
+    { callsign: "THREE", etaMin: 3, arrivalScore: 9, distKm: 12 },
+    { callsign: "NONE", etaMin: null, arrivalScore: 0, distKm: 5 }
+  ]);
+  assert.deepEqual(callsigns(rows), ["THREE", "SIX", "NONE"]);
+});
 
-  var rows = core.sortAirportArrivalRows(
-    [landedFartherDownRunway, mostRecentTouchdown],
-    [taxiingIn],
-    [airborneShortFinal]
+test("airport inbound rows: planes already on the Landed tab are left off", () => {
+  var rows = core.sortAirportInboundRows(
+    [{ hex: "a1b2c3", callsign: "UAL100", etaMin: 0.5 }, { callsign: "DAL200", etaMin: 4 }],
+    { exclude: [{ hex: "A1B2C3", callsign: "UAL100", landed: true }] }
   );
-  var next = core.getAirportNextRow({ arrivals: rows }, "arrivals");
+  assert.deepEqual(callsigns(rows), ["DAL200"]);
+});
 
-  assert.deepEqual(callsigns(rows), ["ASA101", "SWA202", "JBU303", "DAL404"]);
-  assert.equal(next.callsign, "ASA101", "top next landing summary row should stay the most recent landed aircraft");
+test("airport landed rows: runway rollout first, then taxiing in, then parked", () => {
+  var landedFartherDownRunway = { callsign: "SWA202", landed: true, distKm: 0.8, _rolloutDist: 1.2 };
+  var mostRecentTouchdown = { callsign: "ASA101", landed: true, distKm: 1.1, _rolloutDist: 0.2 };
+  var taxiingIn = { callsign: "JBU303", taxiingIn: true, distKm: 0.4 };
+  var parked = { callsign: "UAL505", taxiingIn: true, parked: true, distKm: 0.1 };
+
+  var rows = core.sortAirportLandedRows([landedFartherDownRunway, mostRecentTouchdown], [parked, taxiingIn]);
+  var next = core.getAirportNextRow({ landed: rows }, "landed");
+
+  assert.deepEqual(callsigns(rows), ["ASA101", "SWA202", "JBU303", "UAL505"]);
+  assert.equal(next.callsign, "ASA101", "the summary card shows the most recent touchdown");
   assert.equal("_rolloutDist" in next, false, "internal rollout distance should not leak to display rows");
 });
 
-test("airport arrival rows: suppress duplicate aircraft across landing buckets", () => {
-  var landed = {
-    hex: "A1B2C3",
-    callsign: "UAL100",
-    landed: true,
-    distKm: 0.4,
-    arrivalScore: 0,
-    _rolloutDist: 0.2
-  };
-  var taxiingDuplicate = {
-    hex: "a1b2c3",
-    callsign: "UAL100",
-    taxiingIn: true,
-    distKm: 0.8,
-    arrivalScore: 0
-  };
-  var inboundDuplicate = inboundArrival("UAL100", {
-    altFt: 3500, vRate: -10, distKm: 10, spdKts: 160, destinationMatch: true
-  });
-  var otherInbound = inboundArrival("DAL200", {
-    altFt: 5000, vRate: -10, distKm: 18, spdKts: 200, destinationMatch: true
-  });
+test("airport landed rows: suppress duplicate aircraft across landed buckets", () => {
+  var landed = { hex: "A1B2C3", callsign: "UAL100", landed: true, distKm: 0.4, _rolloutDist: 0.2 };
+  var taxiingDuplicate = { hex: "a1b2c3", callsign: "UAL100", taxiingIn: true, distKm: 0.8 };
+  var other = { hex: "d4e5f6", callsign: "DAL200", taxiingIn: true, distKm: 1.2 };
 
-  var rows = core.sortAirportArrivalRows([landed], [taxiingDuplicate], [inboundDuplicate, otherInbound]);
-  var next = core.getAirportNextRow({ arrivals: rows }, "arrivals");
-
+  var rows = core.sortAirportLandedRows([landed], [taxiingDuplicate, other]);
   assert.deepEqual(callsigns(rows), ["UAL100", "DAL200"]);
-  assert.equal(next.landed, true, "duplicate suppression should keep the highest-priority landed row");
-  assert.equal("_rolloutDist" in next, false, "internal rollout distance should not leak after dedupe");
+  assert.equal(rows[0].landed, true, "duplicate suppression should keep the runway row");
+});
+
+test("coverage circles: a wide view gets several lattice circles, nearest to the center first", () => {
+  var bounds = core.viewBounds(48, 30, -100, -125);
+  var center = { lat: 39, lng: -112.5 };
+  var cov = core.buildCoverageCircles(center, bounds, { radiusKm: 460, maxCircles: 50 });
+  assert.equal(cov.complete, true);
+  assert.ok(cov.circles.length > 4);
+  for (var i = 1; i < cov.circles.length; i++) {
+    var prev = core.haversineKm(center.lat, center.lng, cov.circles[i - 1].lat, cov.circles[i - 1].lng);
+    var cur = core.haversineKm(center.lat, center.lng, cov.circles[i].lat, cov.circles[i].lng);
+    assert.ok(prev <= cur + 1e-6, "sorted by distance from the view center");
+  }
+  // Every point in the view is inside some circle.
+  for (var lat = 30; lat <= 48; lat += 1.5) {
+    for (var lng = -125; lng <= -100; lng += 1.5) {
+      var covered = cov.circles.some(function(c) { return core.haversineKm(lat, lng, c.lat, c.lng) <= c.km; });
+      assert.ok(covered, "point " + lat + "," + lng + " is covered");
+    }
+  }
+});
+
+test("coverage circles: centers stay put when the view pans slightly", () => {
+  var a = core.buildCoverageCircles({ lat: 39, lng: -100 }, core.viewBounds(45, 33, -90, -110), { maxCircles: 50 });
+  var b = core.buildCoverageCircles({ lat: 39.2, lng: -100.3 }, core.viewBounds(45.2, 33.2, -90.3, -110.3), { maxCircles: 50 });
+  var key = function(c) { return c.lat + "," + c.lng; };
+  var aKeys = a.circles.map(key);
+  var shared = b.circles.filter(function(c) { return aKeys.indexOf(key(c)) !== -1; });
+  assert.ok(shared.length >= a.circles.length - 3, "most circles are reused after a small pan");
+});
+
+test("coverage circles: capped views report incomplete coverage", () => {
+  var cov = core.buildCoverageCircles({ lat: 39, lng: -95 }, core.viewBounds(50, 25, -65, -125), { maxCircles: 7 });
+  assert.equal(cov.circles.length, 7);
+  assert.equal(cov.complete, false);
+  assert.ok(cov.total > 7);
+});
+
+test("countGroundByAirport assigns each plane to its nearest airport in range", () => {
+  var airports = [{ code: "SFO", lat: 37.619, lng: -122.375 }, { code: "OAK", lat: 37.721, lng: -122.221 }];
+  var planes = [
+    { lat: 37.615, lng: -122.39 },
+    { lat: 37.62, lng: -122.37 },
+    { lat: 37.72, lng: -122.22 },
+    { lat: 38.5, lng: -121.5 }
+  ];
+  assert.deepEqual(core.countGroundByAirport(planes, airports, 6), { SFO: 2, OAK: 1 });
 });
 
 test("airport departure rows: runway rolling beats holding and taxiing for next takeoff", () => {

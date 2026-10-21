@@ -12,7 +12,9 @@ async function fetchAircraft(options) {
     return;
   }
   syncUrlState();
-  var url = adsbUrl("/lat/" + spec.center.lat.toFixed(4) + "/lon/" + spec.center.lng.toFixed(4) + "/dist/" + spec.fetchKm);
+  var coverage = viewCoverage(spec);
+  var circles = coverage ? coverage.circles : [{ lat: spec.center.lat, lng: spec.center.lng, km: spec.fetchKm }];
+  var url = circles.map(function(c) { return trafficUrl(c.lat, c.lng, c.km); }).join(" ");
   if (fetchAbortController && activeFetchUrl === url) return;
   var requestSeq = ++fetchRequestSeq;
   if (fetchAbortController && !options.skipAbort) fetchAbortController.abort();
@@ -21,9 +23,7 @@ async function fetchAircraft(options) {
   activeFetchUrl = url;
 
   try {
-    var resp = await fetch(url, { signal: controller.signal });
-    if (!resp.ok) throw new Error("HTTP " + resp.status);
-    var data = await resp.json();
+    var data = await fetchTrafficCircles(circles, controller.signal);
     if (requestSeq !== fetchRequestSeq) return;
     var prevSource = trafficSource;
     trafficFetchOk = true;
@@ -57,6 +57,83 @@ async function fetchAircraft(options) {
     }
     if (map) scheduleRefreshTimer(adaptiveRefreshMs());
   }
+}
+
+// Both feeds take the radius in nautical miles.
+function trafficUrl(lat, lng, km) {
+  return adsbUrl("/lat/" + lat.toFixed(4) + "/lon/" + lng.toFixed(4) + "/dist/" + Math.ceil(km / 1.852));
+}
+
+// Shown while the view is too wide for MAX_COVERAGE_CIRCLES, so empty edges don't read as empty sky.
+function updateCoverageHint() {
+  var el = document.getElementById("coverage-hint");
+  if (!el || !map) return;
+  var spec = currentViewportFetchSpec();
+  var coverage = spec ? viewCoverage(spec) : null;
+  el.hidden = !(coverage && !coverage.complete);
+}
+
+// Views wider than one request can reach are covered by several lattice circles (see buildCoverageCircles).
+function viewCoverage(spec) {
+  if (Math.ceil(spec.visibleKm * FETCH_RADIUS_PAD) <= MAX_VIEW_FETCH_KM) return null;
+  return buildCoverageCircles(spec.center, spec.bounds, {
+    radiusKm: MAX_VIEW_FETCH_KM,
+    maxCircles: isAirportPanelDocked() ? MAX_COVERAGE_CIRCLES_NARROW : MAX_COVERAGE_CIRCLES
+  });
+}
+
+// One merged payload from several circle requests. Planes in overlapping circles repeat, and
+// buildAircraftSnapshot keeps the first copy of each. Fails only when every request fails.
+async function fetchTrafficCircles(circles, signal) {
+  var results = await Promise.all(circles.map(function(c, i) {
+    function live() {
+      return fetch(trafficUrl(c.lat, c.lng, c.km), { signal: signal }).then(function(resp) {
+        if (!resp.ok) throw new Error("HTTP " + resp.status);
+        return resp.json();
+      });
+    }
+    var pending = i === 0 ? takeBootPrefetch(c) : null;
+    var request = pending ? pending.catch(function() { return null; }).then(function(r) { return r || live(); }) : live();
+    return request.catch(function(err) {
+      if (err && err.name === "AbortError") throw err;
+      return null;
+    });
+  }));
+  var ok = results.filter(function(r) { return r && Array.isArray(r.ac); });
+  if (!ok.length) throw new Error("Traffic feed unavailable");
+  if (ok.length === 1) return ok[0];
+  // Each response's seen/seen_pos count back from its own `now`; restate them against the newest one.
+  var newest = null;
+  for (var i = 0; i < ok.length; i++) {
+    if (Number.isFinite(ok[i].now) && (newest == null || ok[i].now > newest)) newest = ok[i].now;
+  }
+  var merged = { ac: [], now: newest, source: null };
+  for (var j = 0; j < ok.length; j++) {
+    var r = ok[j];
+    var lagS = newest != null && Number.isFinite(r.now) ? (newest - r.now) / 1000 : 0;
+    for (var k = 0; k < r.ac.length; k++) {
+      var s = r.ac[k];
+      if (lagS) {
+        if (s.seen != null) s.seen += lagS;
+        if (s.seen_pos != null) s.seen_pos += lagS;
+      }
+      merged.ac.push(s);
+    }
+    if (r.source && merged.source !== "backup") merged.source = r.source;
+  }
+  return merged;
+}
+
+// The head of index.html starts the first traffic request for a shared-link view before the map library
+// loads. The boot fetch adopts it when it covers this circle and is still fresh.
+function takeBootPrefetch(circle) {
+  var pre = window.__contrailsPrefetch;
+  if (!pre) return null;
+  window.__contrailsPrefetch = null;
+  var needNm = Math.ceil(circle.km / 1.852);
+  var offsetNm = haversineKm(pre.lat, pre.lng, circle.lat, circle.lng) / 1.852;
+  if (Date.now() - pre.at > 4000 || pre.nm < needNm + offsetNm || pre.nm > needNm * 2 + 25) return null;
+  return pre.promise;
 }
 
 function buildAircraftSnapshot(ac, options) {
@@ -183,6 +260,8 @@ function processAircraft(ac, feedNow) {
   pruneStaleHistoryEntries(activeIds, now);
 
   renderMap();
+  updateAirportGroundCounts();
+  updateCoverageHint();
   if (refreshSearchUi) refreshSearchUi();
   if (!tryResolvePendingPlaneFocus()) maybeLookupPendingPlaneFocus();
   updateStatus();
@@ -792,7 +871,7 @@ function renderAirports() {
     candidates.push({ x: pt.x, y: pt.y, rank: ap[5] || 0, ap: ap });
   }
   // When zoomed out, busier airports win and smaller ones whose labels would collide are left off.
-  var kept = declutterLabels(candidates, AIRPORT_LABEL_BOX);
+  var kept = declutterLabels(candidates, groundPlanesShown() ? AIRPORT_LABEL_BOX : AIRPORT_LABEL_BOX_COUNTED);
   var inBounds = {};
   for (var c = 0; c < kept.length; c++) inBounds[kept[c].ap[0]] = kept[c].ap;
   for (var old in airportMarkers) {
@@ -808,7 +887,8 @@ function renderAirports() {
     (function(code, apName, lat, lng) {
       var el = document.createElement("div");
       el.className = "airport-marker";
-      el.innerHTML = '<span class="airport-dot"></span><span class="airport-label">' + buildAirportLabelHtml(code) + "</span>";
+      el.innerHTML = '<span class="airport-dot"></span><span class="airport-label">' + buildAirportLabelHtml(code) +
+        '<span class="airport-ground" hidden></span></span>';
       el.querySelector(".airport-label").addEventListener("click", function(e) {
         // Keep the map's own click handler from closing the popup this opens.
         e.stopPropagation();
@@ -816,8 +896,42 @@ function renderAirports() {
       });
       // The element's left edge is offset so the dot, not the label, sits on the airport.
       var m = new maplibregl.Marker({ element: el, anchor: "left", offset: [-7, 0] }).setLngLat([lng, lat]).addTo(map);
-      airportMarkers[code] = { marker: m, lat: lat, lng: lng };
+      airportMarkers[code] = { marker: m, lat: lat, lng: lng, countEl: el.querySelector(".airport-ground"), count: 0 };
     })(iata, name, ap[1], ap[2]);
+  }
+  updateAirportGroundCounts();
+}
+
+// While ground planes are hidden (zoomed out), each airport label shows how many are on the ground there.
+// Planes are matched against every airport in view, not just labeled ones, so a decluttered small field's
+// traffic isn't credited to its big neighbor.
+function updateAirportGroundCounts() {
+  var counts = {};
+  if (airportData && filters.ground && !groundPlanesShown()) {
+    var planes = [];
+    for (var i = 0; i < aircraft.length; i++) {
+      var a = aircraft[i];
+      if (!a.ground || (!filters.private && a.private) || !isLatLngInView(a.lat, a.lng, AIRPORT_VIEW_PAD)) continue;
+      planes.push(a);
+    }
+    if (planes.length) {
+      var bounds = currentViewBounds(AIRPORT_VIEW_PAD);
+      var airports = [];
+      for (var j = 0; j < airportData.length; j++) {
+        var ap = airportData[j];
+        if (bounds.contains(ap[1], ap[2])) airports.push({ code: ap[0], lat: ap[1], lng: ap[2] });
+      }
+      counts = countGroundByAirport(planes, airports, AIRPORT_GROUND_KM);
+    }
+  }
+  for (var code in airportMarkers) {
+    var rec = airportMarkers[code];
+    var n = counts[code] || 0;
+    if (n === rec.count) continue;
+    rec.count = n;
+    rec.countEl.hidden = !n;
+    rec.countEl.textContent = n ? String(n) : "";
+    rec.countEl.parentNode.title = n ? n + (n === 1 ? " plane" : " planes") + " on the ground \u2014 zoom in to see them" : "";
   }
 }
 
