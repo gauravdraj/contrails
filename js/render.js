@@ -144,21 +144,29 @@ function buildPopupSubheader(a, routeEntry) {
   return html;
 }
 
+// 400/404/410 are a definite answer for this plane; anything else (5xx, 429, a network error) is not, so it
+// isn't cached and the next popup open asks again.
+function popupLookupJson(r) {
+  if (r.ok) return r.json();
+  if (r.status === 400 || r.status === 404 || r.status === 410) return null;
+  throw new Error("HTTP " + r.status);
+}
+
 function loadPopupPhoto(container) {
   var hex = container.getAttribute("data-hex");
-  if (!hex) return;
+  if (!hex || !isIcaoHex(hex)) return;
   if (photoCache[hex] === null) return;
   if (photoCache[hex]) return;
   if (photoPending[hex]) return;
   photoPending[hex] = true;
-  fetch(photoUrl(hex))
-    .then(function(r) { return r.json(); })
+  fetchWithTimeout(photoUrl(hex))
+    .then(popupLookupJson)
     .then(function(data) {
       if (!data || !data.src) { photoCache[hex] = null; return; }
       photoCache[hex] = data;
       renderPhoto(container, data);
     })
-    .catch(function() { photoCache[hex] = null; })
+    .catch(function() {})
     .finally(function() {
       delete photoPending[hex];
     });
@@ -197,20 +205,20 @@ function renderAircraftInfo(container, info) {
 
 function loadPopupAircraftInfo(container) {
   var hex = container.getAttribute("data-hex");
-  if (!hex) return;
+  if (!hex || !isIcaoHex(hex)) return;
   if (aircraftInfoCache[hex] !== undefined) {
     renderAircraftInfo(container, aircraftInfoCache[hex]);
     return;
   }
   if (aircraftInfoPending[hex]) return;
   aircraftInfoPending[hex] = true;
-  fetch(aircraftUrl(hex))
-    .then(function(r) { return r.json(); })
+  fetchWithTimeout(aircraftUrl(hex))
+    .then(popupLookupJson)
     .then(function(data) {
       aircraftInfoCache[hex] = data || null;
       renderAircraftInfo(container, aircraftInfoCache[hex]);
     })
-    .catch(function() { aircraftInfoCache[hex] = null; })
+    .catch(function() {})
     .finally(function() { delete aircraftInfoPending[hex]; });
 }
 
@@ -291,20 +299,30 @@ function runOriginDetection(hex, data) {
   }
 }
 
+// trackExtended is set only once the Worker has answered (a 200 with no path included), so a failed fetch is
+// retried on the next popup open.
+var trackPending = {};
 function loadPopupTrack(hex) {
-  if (!hex || trackExtended[hex]) return;
-  trackExtended[hex] = true;
-  fetch(trackUrl(hex))
-    .then(function(r) { return r.json(); })
-    .then(function(data) { ingestTrackPath(hex, data); })
-    .catch(function() {});
+  if (!hex || !isIcaoHex(hex) || trackExtended[hex] || trackPending[hex]) return;
+  trackPending[hex] = true;
+  fetchWithTimeout(trackUrl(hex))
+    .then(function(r) {
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return r.json();
+    })
+    .then(function(data) {
+      trackExtended[hex] = true;
+      if (data) ingestTrackPath(hex, data);
+    })
+    .catch(function() {})
+    .finally(function() { delete trackPending[hex]; });
 }
 
 function fetchScheduleData(iata) {
   var cached = scheduleDataCache[iata];
   if (cached && Date.now() - cached.ts < SCHEDULE_CACHE_TTL) return Promise.resolve(cached.data);
   var url = WORKER_URL + "/schedule/" + encodeURIComponent(iata);
-  return fetch(url).then(function(r) {
+  return fetchWithTimeout(url).then(function(r) {
     if (!r.ok) return null;
     return r.json();
   }).then(function(data) {
@@ -797,7 +815,10 @@ function renderMarkers(now, displayPoses) {
     }
   }
   if (selectedAircraftId && !seen[selectedAircraftId]) {
+    // setSelectedAircraft(null)'s cleanup (follow mode, route line) without its re-render: we are mid-render.
     selectedAircraftId = null;
+    if (followMode) setFollowMode(false);
+    clearRouteLine();
     syncUrlState();
   }
   setPlaneLabelsShown(!!policy.showLabels);

@@ -239,10 +239,9 @@ async function fetchRainviewerFrame() {
   var resp = await fetch(RAINVIEWER_INDEX_URL, { cache: "no-store" });
   if (!resp.ok) throw new Error("HTTP " + resp.status);
   var data = await resp.json();
+  // The newest observed frame. `nowcast` frames are forecasts, which would be shown unlabelled as current radar.
   var past = (data && data.radar && data.radar.past) || [];
-  var nowcast = (data && data.radar && data.radar.nowcast) || [];
-  var frames = past.concat(nowcast);
-  var latest = frames.length ? frames[frames.length - 1] : null;
+  var latest = past.length ? past[past.length - 1] : null;
   if (!latest || !latest.path) throw new Error("no radar frames");
   _rvRadar = { host: (data && data.host) || "https://tilecache.rainviewer.com", path: latest.path };
   return _rvRadar;
@@ -262,9 +261,25 @@ function weatherSourceLabel(source) {
   return source === "iem" ? "US radar \u00b7 NWS NEXRAD" : "Global radar \u00b7 RainViewer";
 }
 
+// While radar is on it refreshes every few minutes; maybeRefreshWeather keeps its own 5-minute throttle.
+var _weatherRefreshInterval = 0;
+function startWeatherRefreshTimer() {
+  if (_weatherRefreshInterval) return;
+  _weatherRefreshInterval = setInterval(function() {
+    if (!weatherOn) { stopWeatherRefreshTimer(); return; }
+    if (!document.hidden) maybeRefreshWeather();
+  }, 60 * 1000);
+}
+function stopWeatherRefreshTimer() {
+  if (!_weatherRefreshInterval) return;
+  clearInterval(_weatherRefreshInterval);
+  _weatherRefreshInterval = 0;
+}
+
 async function enableWeather(opts) {
   opts = opts || {};
   weatherOn = true;
+  startWeatherRefreshTimer();
   var btn = document.getElementById("toggle-weather");
   if (btn) { btn.classList.add("on"); btn.setAttribute("aria-pressed", "true"); }
   if (!map) return;
@@ -290,6 +305,7 @@ async function enableWeather(opts) {
       } catch (e2) {}
     }
     weatherOn = false;
+    stopWeatherRefreshTimer();
     if (btn) { btn.classList.remove("on"); btn.setAttribute("aria-pressed", "false"); }
     if (!opts.silent) setControlsFeedback("Weather radar unavailable right now.", "info", { timeoutMs: 4000 });
   }
@@ -297,6 +313,7 @@ async function enableWeather(opts) {
 
 function disableWeather() {
   weatherOn = false;
+  stopWeatherRefreshTimer();
   var btn = document.getElementById("toggle-weather");
   if (btn) { btn.classList.remove("on"); btn.setAttribute("aria-pressed", "false"); }
   removeWeatherLayer();
@@ -320,10 +337,20 @@ function maybeSwapWeatherSource() {
   applyWeatherLayer();
 }
 
+// A failed refresh keeps the radar that is already showing rather than turning weather off.
 function maybeRefreshWeather() {
   if (!weatherOn || !map) return;
   if (Date.now() - _weatherRefreshTs < 5 * 60 * 1000) return;
-  enableWeather({ silent: true });
+  _weatherRefreshTs = Date.now();
+  var prevPath = _rvRadar && _rvRadar.path;
+  fetchRainviewerFrame()
+    .catch(function() { return null; })
+    .then(function() {
+      if (!weatherOn) return;
+      // Re-adding an unchanged RainViewer frame would only make the radar blink.
+      if (_weatherSource === "rainviewer" && _rvRadar && _rvRadar.path === prevPath) return;
+      applyWeatherLayer();
+    });
 }
 
 // --- Saved places panel ---
@@ -443,7 +470,8 @@ function currentViewBounds(padRatio) {
 }
 
 function currentViewCenter() {
-  if (map) return map.getCenter();
+  // After panning across the antimeridian the map's center longitude runs past ±180; requests need it wrapped.
+  if (map) return map.getCenter().wrap();
   if (userLat != null && userLng != null) return { lat: userLat, lng: userLng };
   return null;
 }

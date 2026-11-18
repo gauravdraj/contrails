@@ -1475,3 +1475,149 @@ test("scoreArrivalCandidate: with a runway path, unrouted planes are timed by th
   assert.ok(noPath.etaMin < 3, "was " + noPath.etaMin);
   assert.ok(withPath.etaMin > 4.5, "was " + withPath.etaMin);
 });
+
+// --- review fixes (v2.44) ---
+
+test("scoreArrivalCandidate: a null pathKm doesn't count as a path; descending planes use the descent blend", () => {
+  // The board always passes pathKm, often null. 3,000 ft at -900 fpm, 10 km out at 150 kts:
+  // descent 3.33 min blended 80/20 with 2.16 min of distance = 3.10 min (the path-only formula gives 2.16).
+  var scored = core.scoreArrivalCandidate({ altFt: 3000, distKm: 10, spdKts: 150, vRate: -900 / 60, pathKm: null });
+  var omitted = core.scoreArrivalCandidate({ altFt: 3000, distKm: 10, spdKts: 150, vRate: -900 / 60 });
+  assert.equal(scored.etaMin, omitted.etaMin);
+  assert.ok(Math.abs(scored.etaMin - 3.1) < 0.05, "was " + scored.etaMin);
+});
+
+test("scoreArrivalCandidate: a null altitude stays unknown instead of reading as 0 ft", () => {
+  var scored = core.scoreArrivalCandidate({ altFt: null, distKm: 5, spdKts: 140, vRate: -800 / 60, pathKm: null });
+  // Unknown altitude is ineligible for an unrouted arrival (0 ft would have made it the top candidate).
+  assert.equal(scored.eligible, false);
+});
+
+test("interpolatePlaybackPose: a null track doesn't extrapolate north", () => {
+  var pose = core.interpolatePlaybackPose([
+    { lat: 10, lng: 20, ts: 0, spdMs: 200, trackDeg: null },
+    { lat: 10, lng: 20.01, ts: 1000, spdMs: 200, trackDeg: null }
+  ], 1500, { maxExtrapolationMs: 1000 });
+  assert.equal(pose.mode, "extrapolate");
+  assert.equal(pose.lat, 10);
+  assert.ok(pose.lng > 20.01);
+});
+
+test("sizeClass: helicopter codes stay helicopters", () => {
+  ["EC35", "EC45", "H60", "H160", "AS50", "AS65", "B06", "B06T", "B407", "B429", "B412", "B212", "B47G", "B505",
+    "MD52", "MD60", "A109", "A119", "A139", "A169", "A189", "BK17", "KA32", "R44", "S76", "MI8", "NH90"].forEach(function(t) {
+    assert.equal(core.sizeClass(t, null), "heli", t);
+  });
+});
+
+test("sizeClass: airliners that share helicopter prefixes are not helicopters", () => {
+  ["MD81", "MD82", "MD83", "MD87", "MD88", "MD90", "B461", "B462", "B463", "A124", "A148", "KC10", "K35R"].forEach(function(t) {
+    assert.notEqual(core.sizeClass(t, null), "heli", t);
+  });
+  assert.equal(core.sizeClass("MD88", null), "narrowbody");
+  assert.equal(core.sizeClass("MD90", null), "narrowbody");
+  assert.equal(core.sizeClass("B462", null), "narrowbody");
+  assert.equal(core.sizeClass("A148", null), "narrowbody");
+  assert.equal(core.sizeClass("A124", null), "quadjet");
+  assert.equal(core.sizeClass("K35R", null), "quadjet");
+  assert.equal(core.sizeClass("KC10", null), "widebody");
+});
+
+test("isLikelyPrivateCallsign: JA/HL registrations are private, JAL airline flights are not", () => {
+  assert.equal(core.isLikelyPrivateCallsign("JAL123"), false);
+  assert.equal(core.isLikelyPrivateCallsign("JAL5"), false);
+  assert.equal(core.isLikelyPrivateCallsign("JA123A"), true);
+  assert.equal(core.isLikelyPrivateCallsign("JA01KZ"), true);
+  assert.equal(core.isLikelyPrivateCallsign("HL7782"), true);
+  assert.equal(core.isLikelyPrivateCallsign("C-FABC"), true);
+  assert.equal(core.isLikelyPrivateCallsign("C-GABC"), true);
+});
+
+test("normalizeAircraftHex keeps the non-ICAO '~' so it can't collide with a real ICAO address", () => {
+  assert.equal(core.normalizeAircraftHex("~ABCDEF"), "~abcdef");
+  assert.equal(core.normalizeAircraftHex("abcdef"), "abcdef");
+  assert.notEqual(core.normalizeAircraftHex("~abcdef"), core.normalizeAircraftHex("abcdef"));
+  assert.equal(core.normalizeAircraftHex("~abc"), null);
+  // A typed hex search still finds the ICAO form.
+  assert.equal(core.normalizeFlightQuery("~a1b2c3").value, "a1b2c3");
+});
+
+test("isIcaoHex accepts only plain ICAO addresses", () => {
+  assert.equal(core.isIcaoHex("abcdef"), true);
+  assert.equal(core.isIcaoHex("~abcdef"), false);
+  assert.equal(core.isIcaoHex(null), false);
+});
+
+test("interpolateTimedPose crosses the antimeridian the short way", () => {
+  var mid = core.interpolateTimedPose({ lat: 0, lng: 179.9, ts: 0 }, { lat: 0, lng: -179.9, ts: 1000 }, 500);
+  assert.ok(Math.abs(Math.abs(mid.lng) - 180) < 1e-9, "was " + mid.lng);
+  var quarter = core.interpolateTimedPose({ lat: 0, lng: 179.9, ts: 0 }, { lat: 0, lng: -179.9, ts: 1000 }, 250);
+  assert.ok(Math.abs(quarter.lng - 179.95) < 1e-9, "was " + quarter.lng);
+  var back = core.interpolateTimedPose({ lat: 0, lng: -179.9, ts: 0 }, { lat: 0, lng: 179.9, ts: 1000 }, 250);
+  assert.ok(Math.abs(back.lng + 179.95) < 1e-9, "was " + back.lng);
+  // Ordinary steps are unchanged.
+  assert.equal(core.interpolateTimedPose({ lat: 0, lng: 10, ts: 0 }, { lat: 0, lng: 20, ts: 1000 }, 500).lng, 15);
+});
+
+test("interpolatePlaybackPose extrapolates across the antimeridian without a world-wide jump", () => {
+  var pose = core.interpolatePlaybackPose([
+    { lat: 0, lng: -179.95, ts: 0 },
+    { lat: 0, lng: 179.95, ts: 1000 }
+  ], 1500, { maxExtrapolationMs: 1000 });
+  assert.equal(pose.mode, "extrapolate");
+  assert.ok(Math.abs(pose.lng - 179.9) < 1e-9, "was " + pose.lng);
+});
+
+test("unwrapLngNear moves a longitude next to its reference", () => {
+  assert.ok(Math.abs(core.unwrapLngNear(-179.9, 179.9) - 180.1) < 1e-9);
+  assert.ok(Math.abs(core.unwrapLngNear(179.9, -179.9) + 180.1) < 1e-9);
+  assert.equal(core.unwrapLngNear(10, 20), 10);
+});
+
+test("trafficRetryDelayMs backs off exponentially after failures, capped", () => {
+  assert.equal(core.trafficRetryDelayMs(5000, 0, 60000), 5000);
+  assert.equal(core.trafficRetryDelayMs(5000, 1, 60000), 5000);
+  assert.equal(core.trafficRetryDelayMs(5000, 2, 60000), 10000);
+  assert.equal(core.trafficRetryDelayMs(5000, 3, 60000), 20000);
+  assert.equal(core.trafficRetryDelayMs(5000, 6, 60000), 60000);
+});
+
+test("trafficOutage: two failures in a row, or one with no good data for 30 s", () => {
+  assert.equal(core.trafficOutage(0, 0, 100000), false);
+  assert.equal(core.trafficOutage(1, 95000, 100000), false);
+  assert.equal(core.trafficOutage(1, 60000, 100000), true);
+  assert.equal(core.trafficOutage(1, 0, 100000), true);
+  assert.equal(core.trafficOutage(2, 99000, 100000), true);
+});
+
+test("routeCacheEntryStale gives every source a TTL (60 min for authoritative destinations)", () => {
+  var now = 10 * 60 * 60 * 1000;
+  var min = 60 * 1000;
+  assert.equal(core.routeCacheEntryStale({ destSource: "fr24-search", fetchedAt: now - 30 * min }, now), false);
+  assert.equal(core.routeCacheEntryStale({ destSource: "fr24-search", fetchedAt: now - 61 * min }, now), true);
+  assert.equal(core.routeCacheEntryStale({ destSource: "schedule", fetchedAt: now - 61 * min }, now), true);
+  assert.equal(core.routeCacheEntryStale({ destSource: "cross-validated", fetchedAt: now - 61 * min }, now), true);
+  assert.equal(core.routeCacheEntryStale({ destSource: "adsbdb", fetchedAt: now - 5 * min }, now), false);
+  assert.equal(core.routeCacheEntryStale({ destSource: "adsbdb", fetchedAt: now - 11 * min }, now), true);
+  assert.equal(core.routeCacheEntryStale(null, now), true);
+  assert.equal(core.isAuthoritativeDestSource("schedule"), true);
+  assert.equal(core.isAuthoritativeDestSource("convergence"), false);
+});
+
+test("selectRouteFetchPlanes skips recent misses so unresolvable planes don't starve the request", () => {
+  var now = 1000000;
+  var planes = [];
+  for (var i = 0; i < 25; i++) planes.push({ callsign: "MISS" + i });
+  planes.push({ callsign: "UAL1" }, { callsign: "N123AB", private: true }, { callsign: null });
+  var retryAt = {};
+  for (var j = 0; j < 25; j++) retryAt["MISS" + j] = now + 60000;
+  var picked = core.selectRouteFetchPlanes(planes, {}, { now: now, retryAt: retryAt, maxPlanes: 20 });
+  assert.deepEqual(picked.map(function(p) { return p.callsign; }), ["UAL1"]);
+  // Once the retry time passes they are asked again.
+  var later = core.selectRouteFetchPlanes(planes, {}, { now: now + 60001, retryAt: retryAt, maxPlanes: 20 });
+  assert.equal(later.length, 20);
+  // Fresh cache entries are skipped; stale ones are re-asked.
+  var cache = { UAL1: { destSource: "adsbdb", fetchedAt: now - 1000 } };
+  assert.equal(core.selectRouteFetchPlanes([{ callsign: "UAL1" }], cache, { now: now }).length, 0);
+  assert.equal(core.selectRouteFetchPlanes([{ callsign: "UAL1" }], cache, { now: now + 11 * 60 * 1000 }).length, 1);
+});
