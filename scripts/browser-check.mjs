@@ -11,9 +11,11 @@
 // No console.error/exception allowlist. SW registration/activation are checked; cache/offline behavior is
 // outside this test (a fresh profile and SW cache writes can vary across headless builds).
 // Outage uses the existing fetchAircraft() twice, then the real retry timer for recovery; no production hooks.
-// Perf wraps processAircraft() externally: processingMs is synchronous CPU work, pollToRenderMs includes
-// mock fetch + processing + the next MapLibre render (not GPU completion). Natural five-second polls build
-// real history/trails. Frame/long-task/heap measurements have no performance pass/fail thresholds.
+// Perf wraps processAircraft() externally: processingMs is synchronous CPU work; fetchAndProcessMs adds the
+// mock fetch. Natural five-second polls build real history/trails. Perf uses the real GPU (Metal on macOS,
+// Chrome's default elsewhere) because SwiftShader frame/long-task numbers measure the software rasterizer, not
+// the app; --swiftshader opts back in. The JSON records the WebGL renderer. Compare medians of >=3 runs on an
+// otherwise idle machine. No performance pass/fail thresholds.
 
 import assert from "node:assert/strict";
 import http from "node:http";
@@ -263,14 +265,11 @@ function startMeasurements() {
       if (poll) {
         poll.processingMs = performance.now() - started;
         poll.aircraft = args[0].length;
-        // Animation continuously queues GeoJSON updates, so isSourceLoaded/idle may never become true.
-        // Measure the next actual map render after processing; this is not a GPU-completion fence.
-        map.once("render", () => { poll.pollToRenderMs = performance.now() - poll.started; });
       }
     }
   };
   fetchAircraft = async function(...args) {
-    const poll = { index: state.polls.length + 1, started: performance.now(), processingMs: null, pollToRenderMs: null };
+    const poll = { index: state.polls.length + 1, started: performance.now(), processingMs: null };
     state.polls.push(poll);
     activePoll = poll;
     try { return await originalFetch.apply(this, args); }
@@ -284,7 +283,12 @@ async function runPerf() {
   report("Measuring 30 seconds of natural polling and animation…");
   await delay(30000);
   // Read heap before the diagnostic feature query allocates its returned GeoJSON objects.
-  const heap = await cdp.send("Runtime.getHeapUsage");
+  await cdp.send("HeapProfiler.collectGarbage");
+  const heap = await cdp.send("Runtime.getHeapUsage"); // main isolate only (not MapLibre's workers)
+  const renderer = await cdp.evaluate(`(() => { const gl = document.createElement("canvas").getContext("webgl");
+    const ext = gl && gl.getExtension("WEBGL_debug_renderer_info");
+    return gl ? String(gl.getParameter(ext ? ext.UNMASKED_RENDERER_WEBGL : gl.RENDERER)) : "none"; })()`);
+  if (/swiftshader/i.test(renderer)) process.stderr.write("WARNING: SwiftShader renderer; frame/long-task numbers measure software rasterization, not the app\n");
   const data = await cdp.evaluate(`(() => {
     const s = window.__browserCheckPerf;
     s.running = false;
@@ -300,7 +304,7 @@ async function runPerf() {
   const version = await cdp.send("Browser.getVersion");
   console.log(JSON.stringify({
     mode: "perf", aircraft: aircraftCount, durationMs: data.durationMs, viewport: VIEW,
-    chrome: version.product, platform: process.platform, node: process.version,
+    chrome: version.product, renderer, platform: process.platform, node: process.version,
     polls: data.polls, frames: data.frames.length, frameMs: { p50: percentile(data.frames, 0.5), p95: percentile(data.frames, 0.95) },
     longTasks: { count: data.longTasks.length, totalMs: data.longTasks.reduce((a, b) => a + b, 0) },
     jsHeapUsedBytes: heap.usedSize, jsHeapTotalBytes: heap.totalSize,
@@ -308,9 +312,18 @@ async function runPerf() {
   }, null, 2));
 }
 
+// Functional checks (and CI) use SwiftShader for a deterministic headless WebGL; perf uses the real GPU.
+function glFlags() {
+  if (!perf || args.includes("--swiftshader")) return ["--use-angle=swiftshader", "--enable-unsafe-swiftshader"];
+  return process.platform === "darwin" ? ["--use-angle=metal"] : [];
+}
+
 async function cleanup() {
   stopping = true;
+  // Keep a short hard stop armed through teardown so a stuck close can't hang the process.
   clearTimeout(watchdog);
+  watchdog = setTimeout(() => { process.stderr.write("cleanup timed out\n"); process.exit(1); }, 15000);
+  watchdog.unref();
   if (browser && browser.exitCode == null && browser.signalCode == null) {
     browser.kill("SIGTERM");
     await Promise.race([new Promise(resolve => browser.once("exit", resolve)), delay(1500)]);
@@ -322,7 +335,8 @@ async function cleanup() {
     server.closeAllConnections();
     await new Promise(resolve => server.close(resolve));
   }
-  if (profile) await rm(profile, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+  if (profile) await rm(profile, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 })
+    .catch(error => report("WARN profile cleanup: " + error.message));
 }
 
 async function main() {
@@ -351,7 +365,7 @@ async function main() {
   await check("Chrome launch", async () => {
     browser = spawn(await findChrome(), [
       "--headless=new", "--no-sandbox", "--remote-debugging-port=0", "--remote-debugging-address=127.0.0.1",
-      "--user-data-dir=" + profile, "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--ignore-gpu-blocklist",
+      "--user-data-dir=" + profile, ...glFlags(), "--ignore-gpu-blocklist",
       "--disable-background-networking", "--disable-component-update", "--disable-sync", "--disable-domain-reliability",
       "--no-first-run", "--no-default-browser-check", "--disable-default-apps", "--disable-extensions",
       "--disable-quic", "--dns-prefetch-disable", "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1",
@@ -376,7 +390,7 @@ async function main() {
     errors.push((session ? "Worker " : "Page ") + (exceptionDetails.exception?.description || exceptionDetails.text));
   });
   cdp.on("Runtime.consoleAPICalled", ({ type, args }, session) => {
-    if (type === "error") errors.push((session ? "Worker " : "Page ") + args.map(a => a.description || a.value || a.type).join(" "));
+    if (type === "error" || (type === "warning" && !/^Background location unavailable/.test(String(args[0]?.value)))) errors.push((session ? "Worker " : "Page ") + args.map(a => a.description || a.value || a.type).join(" "));
   });
   cdp.on("ServiceWorker.workerErrorReported", ({ errorMessage }) => {
     errors.push("Service worker: " + errorMessage.errorMessage + " at " + errorMessage.sourceURL + ":" + errorMessage.lineNumber);
@@ -416,7 +430,7 @@ async function main() {
       return { map: !!map, canvas: !!canvas, context: !!gl, lost: gl ? gl.isContextLost() : true };
     })()`);
     assert.ok(state.map && state.canvas && state.context && !state.lost,
-      "Headless WebGL unavailable: " + JSON.stringify(state) + ". Chrome must support --use-angle=swiftshader --enable-unsafe-swiftshader --ignore-gpu-blocklist");
+      "Headless WebGL unavailable: " + JSON.stringify(state) + ". Chrome flags: " + glFlags().join(" ") + " --ignore-gpu-blocklist");
   });
   const summary = "document.querySelector('#controls-toggle #controls-compact-summary').textContent";
   await check("boots with fixture count", async () => {
@@ -457,6 +471,7 @@ async function main() {
       await until("airport's Worker requests", async () => {
         return workerRequests.has("GET /datis/LHR") && workerRequests.has("GET /schedule/LHR") && workerRequests.has("POST /routeset");
       });
+      await until("board refresh completed", () => cdp.evaluate("(() => { const e = _airportPopupCache.LHR; return !!(e && e.ts && !e.loading && !e.stale && !e.error); })()"));
       // Close through the DOM before testing the main feed so board polling cannot affect its failure count.
       await cdp.evaluate(`(document.querySelector('.airport-schedule-popup .maplibregl-popup-close-button') ||
         document.getElementById('airport-panel-close')).click()`);
@@ -464,10 +479,11 @@ async function main() {
       return landings + " landings";
     });
     await check("outage shown at failure threshold", async () => {
-      await until("settled traffic request", () => cdp.evaluate("clearRefreshTimer(); !fetchAbortController"));
+      await until("settled traffic request", () => cdp.evaluate("clearMapFetchTimer(); clearTimeout(moveEndDebounceTimer); moveEndDebounceTimer = null; clearRefreshTimer(); !fetchAbortController && !map.isMoving()"));
       mock.offline = true;
       await cdp.evaluate("fetchAircraft({ source: 'poll' })");
       assert.equal(await cdp.evaluate("trafficFailStreak"), 1, "First failing poll did not reach the app");
+      assert.equal(await cdp.evaluate(summary), aircraftCount + " planes in view", "Outage shown before the failure threshold");
       await cdp.evaluate("fetchAircraft({ source: 'poll' })");
       assert.equal(await cdp.evaluate("trafficFailStreak"), 2);
       assert.equal(await cdp.evaluate(summary), "Feed offline · retrying");
