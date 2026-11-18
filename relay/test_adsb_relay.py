@@ -241,6 +241,38 @@ class SingleFlightTest(RelayTest):
             time.sleep(1.3)
             self.assertEqual(self.get("/adsb/hex/abc124")[0], 200)
 
+    def test_trickling_loser_frees_slot_by_deadline(self):
+        # Reviewer repro: a losing racer whose body trickles forever must not
+        # hold its upstream slot past the read deadline.
+        stop = threading.Event()
+        self.addCleanup(stop.set)
+
+        class Trickle:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                pass
+
+            def read(self, n=-1):  # a real read(n) blocks until n bytes arrive
+                while not stop.wait(0.05):
+                    pass
+                return b""
+
+            def read1(self, n=-1):
+                return b"" if stop.wait(0.05) else b" "
+
+        def fake_urlopen(req, timeout=None):
+            return Trickle() if req.full_url.startswith(RaceTest.FI) else FakeResp(VALID)
+
+        with mock.patch.object(relay, "_upstream_slots", threading.BoundedSemaphore(2)), \
+                mock.patch.object(relay, "RACE_DEADLINE_S", 0.5), \
+                mock.patch.object(urllib.request, "urlopen", fake_urlopen):
+            self.assertEqual(self.get("/adsb/hex/bbbbb1")[0], 200)
+            self.assertEqual(self.get("/adsb/hex/bbbbb2")[0], 200)
+            time.sleep(1.0)
+            self.assertEqual(self.get("/adsb/hex/bbbbb3")[0], 200, "slot still held by a trickling loser")
+
     def test_slots_exhausted_returns_503_fast(self):
         with mock.patch.object(relay, "_upstream_slots", threading.BoundedSemaphore(1)):
             relay._upstream_slots.acquire()

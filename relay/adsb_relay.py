@@ -43,8 +43,10 @@ FR24_USER_AGENT = (
 )
 CACHE_TTL_S = 3
 TIMEOUT_S = 5
-# Overall bound on one upstream race; urlopen's timeout is per socket op.
+# Overall bound on one upstream race and on each upstream fetch; urlopen's
+# timeout is per socket op, so a trickling body needs its own deadline.
 RACE_DEADLINE_S = 2 * TIMEOUT_S
+READ_CHUNK_BYTES = 64 * 1024
 GZIP_MIN_BYTES = 1024
 # adsb.fi rejects a dist above 250 NM; the Worker clamps to the same range.
 MAX_DIST_NM = 250
@@ -78,11 +80,22 @@ def _log(msg: str) -> None:
     print("contrails-relay: " + msg, file=sys.stderr, flush=True)
 
 
-def _read_capped(resp) -> bytes:
-    body = resp.read(MAX_BODY_BYTES + 1)
-    if len(body) > MAX_BODY_BYTES:
-        raise ValueError(f"upstream body over {MAX_BODY_BYTES} bytes")
-    return body
+def _read_capped(resp, deadline: float) -> bytes:
+    # read1 does at most one socket read (each bounded by the socket timeout),
+    # so checking the monotonic deadline between chunks bounds the whole read:
+    # a trickling loser exits by deadline + TIMEOUT_S and frees its slot.
+    read = getattr(resp, "read1", resp.read)
+    chunks, size = [], 0
+    while True:
+        if time.monotonic() >= deadline:
+            raise TimeoutError("upstream read deadline exceeded")
+        chunk = read(READ_CHUNK_BYTES)
+        if not chunk:
+            return b"".join(chunks)
+        size += len(chunk)
+        if size > MAX_BODY_BYTES:
+            raise ValueError(f"upstream body over {MAX_BODY_BYTES} bytes")
+        chunks.append(chunk)
 
 
 def _check_payload(body: bytes) -> None:
@@ -97,9 +110,10 @@ def _check_payload(body: bytes) -> None:
 
 
 def _fetch_one(url: str) -> bytes:
+    deadline = time.monotonic() + RACE_DEADLINE_S
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(req, timeout=TIMEOUT_S) as resp:
-        return _read_capped(resp)
+        return _read_capped(resp, deadline)
 
 
 def fetch_upstream(path: str, upstreams: tuple[str, ...], on_done=None) -> bytes:
@@ -307,9 +321,10 @@ class Handler(BaseHTTPRequestHandler):
             _log("busy, rejected fr24")
             return self._send(503, b'{"error":"busy"}')
         req = urllib.request.Request(target, headers={"User-Agent": FR24_USER_AGENT})
+        deadline = time.monotonic() + RACE_DEADLINE_S
         try:
             with _fr24_opener.open(req, timeout=TIMEOUT_S) as resp:
-                body = _read_capped(resp)
+                body = _read_capped(resp, deadline)
         except urllib.error.HTTPError as err:
             _log(f"fr24 upstream {err.code}: {target}")
             if 300 <= err.code < 400:
