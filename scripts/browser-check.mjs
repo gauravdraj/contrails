@@ -283,7 +283,9 @@ async function runPerf() {
   report("Measuring 30 seconds of natural polling and animation…");
   await delay(30000);
   // Read heap before the diagnostic feature query allocates its returned GeoJSON objects.
-  await cdp.send("HeapProfiler.collectGarbage");
+  // Best effort: a forced GC with 1,500 aircraft can stall for a long time; don't let it eat the watchdog.
+  const gc = await Promise.race([cdp.send("HeapProfiler.collectGarbage").then(() => true, () => false), delay(5000).then(() => false)]);
+  if (!gc) process.stderr.write("WARNING: forced GC did not finish in 5 s; heap includes garbage\n");
   const heap = await cdp.send("Runtime.getHeapUsage"); // main isolate only (not MapLibre's workers)
   const renderer = await cdp.evaluate(`(() => { const gl = document.createElement("canvas").getContext("webgl");
     const ext = gl && gl.getExtension("WEBGL_debug_renderer_info");
