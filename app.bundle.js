@@ -1163,6 +1163,25 @@ var AIRLINES_DATA = {"airlines":{"AAL":{"name":"American","iata":"AA"},"AAR":{"n
     return hi - lo >= minSpanFt;
   }
 
+  // True when the aircraft lost at least minDropFt between its earliest and latest airborne sample in the window:
+  // an approach, not a takeoff (which only gains altitude). A flare cuts the descent rate, so the rate alone
+  // can't tell a plane about to touch down from one lifting off.
+  function descendedRecently(points, nowMs, options) {
+    if (!points || !points.length) return false;
+    options = options || {};
+    var windowMs = options.windowMs != null ? options.windowMs : 3 * 60 * 1000;
+    var minDropFt = options.minDropFt != null ? options.minDropFt : 500;
+    var earliest = null, latest = null;
+    for (var i = points.length - 1; i >= 0; i--) {
+      var p = points[i];
+      if (!p || p[2] < nowMs - windowMs) break;
+      if (p[6] || p[4] || p[3] == null || !Number.isFinite(p[3])) continue;
+      if (latest == null) latest = p[3];
+      earliest = p[3];
+    }
+    return earliest != null && latest != null && earliest - latest >= minDropFt;
+  }
+
   // How much closer (km) the track got to a target over about `spanMs`; negative when moving away. Null when
   // the track is too short or the earlier point is too old to say.
   function closingKm(points, targetLat, targetLng, spanMs) {
@@ -1640,6 +1659,7 @@ var AIRLINES_DATA = {"airlines":{"AAL":{"name":"American","iata":"AA"},"AAR":{"n
     compareAirportDepartureEntries: compareAirportDepartureEntries,
     classifyGroundDepartureStatus: classifyGroundDepartureStatus,
     landedRecently: landedRecently,
+    descendedRecently: descendedRecently,
     arrivalPathTimeMin: arrivalPathTimeMin,
     approachPathKm: approachPathKm,
     runwayApproachEnds: runwayApproachEnds,
@@ -1745,6 +1765,7 @@ const sortAirportDepartureRows = core.sortAirportDepartureRows;
 const describeAirportDepartureStatus = core.describeAirportDepartureStatus;
 const classifyGroundDepartureStatus = core.classifyGroundDepartureStatus;
 const landedRecently = core.landedRecently;
+const descendedRecently = core.descendedRecently;
 const closingKm = core.closingKm;
 const slantKm = core.slantKm;
 const elevationDeg = core.elevationDeg;
@@ -1791,7 +1812,7 @@ if (!airlineName || !angleDiffDeg || !bearingDegrees || !buildViewPolicy || !bui
   throw new Error("Contrails core helpers failed to load.");
 }
 
-const APP_VERSION = "2.45";
+const APP_VERSION = "2.46";
 const isLocal = location.hostname === "localhost" || location.hostname === "127.0.0.1";
 const isIOSDevice = /iP(ad|hone|od)/.test(navigator.userAgent) ||
   (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
@@ -6720,7 +6741,10 @@ function buildLiveScheduleData(airportIata, airportLat, airportLng, sourceAircra
       var shouldShow = false;
       var depRunwayKm = null;
       var depStatus = "Departing";
-      if (depRwy.on && distKm <= 5 && (aglFt == null || aglFt < 2000)) {
+      // A plane that came down an approach in the last few minutes is landing, even in the flare, where its
+      // descent rate drops to near zero (11-18: UA3911 read "Departing" at SFO as it touched down on 28L).
+      var approaching = descendedRecently(posHistory[a.icao24], nowMs);
+      if (depRwy.on && distKm <= 5 && (aglFt == null || aglFt < 2000) && !approaching) {
         // Over the active departure runway at low altitude — takeoff roll / rotation.
         // Gate on climbing or very low altitude to filter out level transit overflights. A descending plane
         // under 500 ft is landing on a runway shared with departures, not taking off.
@@ -7178,7 +7202,7 @@ async function refreshActiveAirportPopup(options) {
 
       var datisActiveRunways = await datisPromise;
       await fetchRoutesForPlanes(snapshot.aircraft, { sortFn: airportRouteCandidateComparator(lat, lng), waitTurn: true });
-      await schedulePromise;
+      applyAirportScheduleMatches(iata, await schedulePromise, snapshot.aircraft);
       entry.data = buildLiveScheduleData(iata, lat, lng, snapshot.aircraft, datisActiveRunways);
       if (_activeAirportIata === iata && _activeAirportPopup) {
         _lastScheduleHtml = "";
@@ -7202,6 +7226,27 @@ async function refreshActiveAirportPopup(options) {
 
   entry.pending = promise;
   return promise;
+}
+
+// The board lists planes from its own snapshot, which the map's schedule cascade never sees (and the cascade only
+// runs at route-friendly zooms). Its own airport's schedule is the best evidence of where these planes are going,
+// so apply it here: a stale ADSBDB route (11-18: UAL3911 recorded as SYD->LAX while flying HNL->SFO) must not
+// decide which tab a plane lands in.
+function applyAirportScheduleMatches(iata, scheduleData, planes) {
+  if (!scheduleData || !planes || !planes.length) return 0;
+  var sources = [{ iata: iata, data: scheduleData }];
+  var updated = 0;
+  for (var i = 0; i < planes.length; i++) {
+    var a = planes[i];
+    if (!a || !a.callsign || a.private) continue;
+    var rc = routeCache[a.callsign];
+    if (rc && rc.destSource === "schedule") continue;
+    var variants = callsignVariants(a.callsign);
+    if (!variants.length) continue;
+    var match = selectClientScheduleMatch(variants, sources, a);
+    if (match && applyScheduleMatch(a, match)) updated++;
+  }
+  return updated;
 }
 
 // The board's positions stamped on the same clock as the main feed's (see feedPositionClock), so rows can be

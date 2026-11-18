@@ -2302,3 +2302,53 @@ test("hot path: empty animation stops without uploading and restarts when marker
   assert.equal(frames.length, 1);
 });
 
+// 11-18 report: UA3911 (HNL->SFO; ADSBDB's stale record says SYD->LAX) showed "Departing to LAX" in SFO's Takeoffs
+// tab as it touched down on 28L, after being listed under Landings on approach.
+function ua3911Board(extra = {}) {
+  const now = 1_800_000_000_000;
+  const posHistory = {};
+  const context = classicScript("./js/airport-board.js", {
+    runwayData: reviewRunways, airportData: [["SFO", 37.62, -122.375]], posHistory, extraState: {},
+    routeCache: { UAL3911: { origin: { iata: "SYD" }, destination: { iata: "LAX" }, originSource: "adsbdb",
+      destSource: "adsbdb", confidence: "medium", fetchedAt: now } },
+    DEPARTURE_PERIMETER_KM: 15, AIRPORT_POPUP_FETCH_KM: 100,
+    Date: class extends Date { static now() { return now; } }, ...extra,
+  });
+  context.rememberActiveRunways("SFO", { departing_runways: ["28L"], arriving_runways: ["28L"] });
+  return { context, now, posHistory };
+}
+
+test("UA3911: a plane flaring onto a runway after a descent is not 'Departing'", () => {
+  const { context, now, posHistory } = ua3911Board();
+  // Track points are [lat, lng, ts, altFt, ground, breakBefore, synthetic]: 2,500 ft three minutes ago, 120 ft now.
+  posHistory.a1244b = [[37.60, -122.30, now - 170000, 2500, false], [37.61, -122.33, now - 90000, 1200, false],
+    [37.613, -122.36, now - 10000, 120, false]];
+  const plane = onRunwayAircraft("28L", { ground: false, altFt: 40, vRate: -100 / 60, speedKts: 140,
+    callsign: "UAL3911", icao24: "a1244b" });
+  const board = context.buildLiveScheduleData("SFO", 37.62, -122.375, [plane]);
+  assert.equal(board.departures.filter(d => d.hex === "a1244b").length, 0, JSON.stringify(board.departures));
+  // A real takeoff from the same spot (rolling, then climbing off the runway) still shows.
+  posHistory.b00001 = [[37.613, -122.36, now - 60000, 10, true], [37.613, -122.36, now - 5000, 20, false]];
+  const takeoff = onRunwayAircraft("28L", { ground: false, altFt: 150, vRate: 1500 / 60, speedKts: 150,
+    callsign: "UAL1", icao24: "b00001" });
+  assert.equal(context.buildLiveScheduleData("SFO", 37.62, -122.375, [takeoff]).departures.length, 1);
+});
+
+test("UA3911: the board applies its own airport's schedule over a stale ADSBDB route", () => {
+  const { context, now } = ua3911Board();
+  const render = classicScript("./js/render.js", { routeCache: context.routeCache,
+    airportData: [["SFO", 37.62, -122.375]], formatClientRouteLabel: (o, d) => o.iata + " to " + d.iata,
+    Date: class extends Date { static now() { return now; } } });
+  context.selectClientScheduleMatch = render.selectClientScheduleMatch;
+  context.applyScheduleMatch = render.applyScheduleMatch;
+  const row = { flight: "UA3911", callsign: "UAL3911", status: "Estimated", live: true, from_iata: "HNL",
+    from_name: "Honolulu", est_arr: now / 1000 + 300, sched_arr: now / 1000 + 600 };
+  const plane = { callsign: "UAL3911", icao24: "a1244b", lat: 37.60, lng: -122.30, altFt: 1500, vRate: -700 / 60,
+    ground: false, speedKts: 150, track: 280 };
+  assert.equal(typeof context.applyAirportScheduleMatches, "function", "board has no schedule-apply step");
+  context.applyAirportScheduleMatches("SFO", { arrivals: [row], departures: [] }, [plane]);
+  assert.equal(context.routeCache.UAL3911.destination.iata, "SFO");
+  assert.equal(context.routeCache.UAL3911.origin.iata, "HNL");
+  assert.equal(context.routeCache.UAL3911.destSource, "schedule");
+});
+
