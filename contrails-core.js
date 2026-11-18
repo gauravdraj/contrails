@@ -466,8 +466,11 @@
         for (var i = 0; i < rows.length; i++) {
           var row = rows[i];
           var status = String(row.status || "").toLowerCase();
-          var recentArrival = aircraft.ground && dir === "arrival" && Number.isFinite(row.actual_arr) &&
+          var recentArrival = near && aircraft.ground && dir === "arrival" && Number.isFinite(row.actual_arr) &&
             row.actual_arr > 0 && row.actual_arr <= nowSec && nowSec - row.actual_arr <= 90 * 60;
+          // A plane on the ground here is between its arrival and its next departure: rank both by how close
+          // each event is (a departure counts as live), so taxi-in keeps the arrival and taxi-out gets the departure.
+          var groundDeparture = near && aircraft.ground && dir === "departure";
           if (/cancel/.test(status) || (!recentArrival && (/landed|arrived/.test(status) || row.actual_arr > 0))) continue;
           var time = null;
           ["actual_", "est_", "sched_"].some(function(key) {
@@ -483,8 +486,8 @@
           var match = { dir: dir, airport: source.iata, airportName: data.name || source.iata, row: row };
           if (dir === "arrival") match.from = row.from_iata || null;
           else match.to = row.to_iata || null;
-          candidates.push({ match: match, directionRank: recentArrival ? -1 : (direction ? 0 : 1),
-            score: distance + (live || recentArrival ? 0 : 3600),
+          candidates.push({ match: match, directionRank: (recentArrival || groundDeparture) ? -1 : (direction ? 0 : 1),
+            score: distance + (live || recentArrival || groundDeparture ? 0 : 3600),
             route: (dir === "arrival" ? [match.from || "", source.iata] : [source.iata, match.to || ""]).join(":") });
         }
       });
