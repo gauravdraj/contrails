@@ -2081,11 +2081,53 @@ test("review 5: grounded SWA1234 at MDW keeps BWI arrival over DEN departure in 
   assert.equal(context.routeCache.SWA1234.destSource, "schedule");
   // Actual arrival, not row order or an older schedule, orders recent landed instances.
   assert.equal(select([{ ...arrival, from_iata: "ORD", actual_arr: SCHEDULE_SEC - 3600 }, arrival]).from, "BWI");
-  assert.equal(select([{ ...arrival, actual_arr: SCHEDULE_SEC - 89 * 60 }]).dir, "arrival");
+  // Between legs the nearer event wins: landed 30 min ago vs departing in 45 -> arrival; 89 min ago -> departure.
+  assert.equal(select([{ ...arrival, actual_arr: SCHEDULE_SEC - 30 * 60 }]).dir, "arrival");
+  assert.equal(select([{ ...arrival, actual_arr: SCHEDULE_SEC - 89 * 60 }]).dir, "departure");
   for (const overrides of [{ actual_arr: SCHEDULE_SEC - 91 * 60 }, { actual_arr: null }, { status: "Cancelled" }]) {
     assert.equal(select([{ ...arrival, ...overrides }]).dir, "departure");
   }
   assert.equal(select([arrival], { ...plane, ground: false }).dir, "departure");
+});
+
+test("re-check N2: FR24 search falls back to the ICAO callsign when the IATA query has no live match", async () => {
+  const queries = [];
+  const live = { type: "live", id: "x", detail: { callsign: "ENY3456", flight: "AA3456", schd_from: "DFW", schd_to: "AUS" } };
+  const context = classicScript("./js/render.js", {
+    WORKER_URL: "https://w", routeCache: {}, AIRLINE_ICAO_TO_IATA: { ENY: "MQ" },
+    callsignVariants: () => ["ENY3456", "MQ3456"], refreshPlanePopup() {},
+    formatClientRouteLabel: (o, d) => o.iata + " to " + d.iata,
+    fetch: async (url) => { queries.push(decodeURIComponent(url.split("/").pop()));
+      return { ok: true, json: async () => ({ results: url.endsWith("ENY3456") ? [live] : [] }) }; },
+  });
+  await context.tryFr24Search({ callsign: "ENY3456", icao24: "a1b2c3", private: false, ground: false, altFt: 30000, vRate: 0 });
+  assert.deepEqual(queries, ["MQ3456", "ENY3456"]);
+  assert.equal(context.routeCache.ENY3456.iata, "DFW to AUS");
+  // A hit on the first (IATA) query makes no second request.
+  queries.length = 0; context.routeCache = {};
+  const hit = { ...live, detail: { ...live.detail, callsign: "MQ3456" } };
+  context.fetch = async (url) => { queries.push(url); return { ok: true, json: async () => ({ results: [hit] }) }; };
+  await context.tryFr24Search({ callsign: "ENY3456", icao24: "a1b2c3", private: false, ground: false, altFt: 30000, vRate: 0 });
+  assert.equal(queries.length, 1);
+});
+
+test("re-check N1: a grounded through-flight taxiing out gets its departure, not the previous leg", () => {
+  const plane = { callsign: "SWA1234", lat: 41.7868, lng: -87.7522, ground: true, altFt: null, vRate: 0 };
+  const sources = (arrivals, departures) => [scheduleSource({ arrivals, departures }, "MDW", plane.lat, plane.lng)];
+  const select = (arrivals, departures, aircraft = plane) =>
+    core.selectScheduleMatch(["SWA1234", "WN1234"], sources(arrivals, departures), aircraft, SCHEDULE_NOW);
+  const landed = (minsAgo) => ({ callsign: "SWA1234", from_iata: "BWI", status: "Landed", actual_arr: SCHEDULE_SEC - minsAgo * 60 });
+  const dep = (extra) => ({ callsign: "SWA1234", to_iata: "DEN", status: "Scheduled", sched_dep: SCHEDULE_SEC + 5 * 60, ...extra });
+  // Landed 40 min ago, departing in 5: taxi-out.
+  assert.equal(select([landed(40)], [dep()]).to, "DEN");
+  // Already pushed / rolling (actual_dep set, departed status) beats a 50-min-old arrival.
+  assert.equal(select([landed(50)], [dep({ status: "Departed", actual_dep: SCHEDULE_SEC - 60 })]).to, "DEN");
+  // Just landed (5 min ago), next departure in 40: taxi-in keeps the arrival.
+  assert.equal(select([landed(5)], [dep({ sched_dep: SCHEDULE_SEC + 40 * 60 })]).from, "BWI");
+  // A landed row at another airport's schedule is not this plane's recent arrival.
+  const far = core.selectScheduleMatch(["SWA1234", "WN1234"],
+    [scheduleSource({ arrivals: [landed(10)], departures: [] }, "LAX", 33.9425, -118.4081)], plane, SCHEDULE_NOW);
+  assert.equal(far, null);
 });
 
 test("review 6: a gate gap clears the prior destination when it becomes the new SFO origin", () => {

@@ -470,8 +470,11 @@ var AIRLINES_DATA = {"airlines":{"AAL":{"name":"American","iata":"AA"},"AAR":{"n
         for (var i = 0; i < rows.length; i++) {
           var row = rows[i];
           var status = String(row.status || "").toLowerCase();
-          var recentArrival = aircraft.ground && dir === "arrival" && Number.isFinite(row.actual_arr) &&
+          var recentArrival = near && aircraft.ground && dir === "arrival" && Number.isFinite(row.actual_arr) &&
             row.actual_arr > 0 && row.actual_arr <= nowSec && nowSec - row.actual_arr <= 90 * 60;
+          // A plane on the ground here is between its arrival and its next departure: rank both by how close
+          // each event is (a departure counts as live), so taxi-in keeps the arrival and taxi-out gets the departure.
+          var groundDeparture = near && aircraft.ground && dir === "departure";
           if (/cancel/.test(status) || (!recentArrival && (/landed|arrived/.test(status) || row.actual_arr > 0))) continue;
           var time = null;
           ["actual_", "est_", "sched_"].some(function(key) {
@@ -487,8 +490,8 @@ var AIRLINES_DATA = {"airlines":{"AAL":{"name":"American","iata":"AA"},"AAR":{"n
           var match = { dir: dir, airport: source.iata, airportName: data.name || source.iata, row: row };
           if (dir === "arrival") match.from = row.from_iata || null;
           else match.to = row.to_iata || null;
-          candidates.push({ match: match, directionRank: recentArrival ? -1 : (direction ? 0 : 1),
-            score: distance + (live || recentArrival ? 0 : 3600),
+          candidates.push({ match: match, directionRank: (recentArrival || groundDeparture) ? -1 : (direction ? 0 : 1),
+            score: distance + (live || recentArrival || groundDeparture ? 0 : 3600),
             route: (dir === "arrival" ? [match.from || "", source.iata] : [source.iata, match.to || ""]).join(":") });
         }
       });
@@ -5534,30 +5537,32 @@ async function tryFr24Search(a, options) {
   var rc = routeCache[a.callsign];
   if (!force && rc && (rc.destSource === "schedule" || rc.destSource === "fr24-search" || rc.destSource === "cross-validated")) return;
 
-  var iataCs = variants.length > 1 ? variants[1] : variants[0];
-  var url = WORKER_URL + "/fr24search/" + encodeURIComponent(iataCs);
+  // The IATA form stays the first query; regional carriers fly under a marketing carrier's number, so an
+  // IATA operating number (e.g. MQ3456) may not be indexed. On a miss, retry with the ICAO callsign.
+  var queries = variants.length > 1 ? [variants[1], variants[0]] : [variants[0]];
 
   try {
-    var resp = await fetch(url);
-    if (!resp.ok) return;
-    var data = await resp.json();
-    var results = data.results || [];
-    if (!Array.isArray(results)) return;
-
     var variantsUpper = variants.map(function(v) { return v.toUpperCase(); });
     var matched = null;
-    for (var i = 0; i < results.length; i++) {
-      var entry = results[i];
-      if (entry.type !== "live" || !entry.detail) continue;
-      var candidates = [
-        (entry.detail.callsign || "").replace(/\s/g, "").toUpperCase(),
-        (entry.detail.flight || "").replace(/\s/g, "").toUpperCase(),
-        (entry.id || "").replace(/\s/g, "").toUpperCase()
-      ];
-      for (var v = 0; v < variantsUpper.length; v++) {
-        if (candidates.indexOf(variantsUpper[v]) !== -1) { matched = entry; break; }
+    for (var q = 0; q < queries.length && !matched; q++) {
+      var resp = await fetch(WORKER_URL + "/fr24search/" + encodeURIComponent(queries[q]));
+      if (!resp.ok) return;
+      var data = await resp.json();
+      var results = data.results || [];
+      if (!Array.isArray(results)) return;
+      for (var i = 0; i < results.length; i++) {
+        var entry = results[i];
+        if (entry.type !== "live" || !entry.detail) continue;
+        var candidates = [
+          (entry.detail.callsign || "").replace(/\s/g, "").toUpperCase(),
+          (entry.detail.flight || "").replace(/\s/g, "").toUpperCase(),
+          (entry.id || "").replace(/\s/g, "").toUpperCase()
+        ];
+        for (var v = 0; v < variantsUpper.length; v++) {
+          if (candidates.indexOf(variantsUpper[v]) !== -1) { matched = entry; break; }
+        }
+        if (matched) break;
       }
-      if (matched) break;
     }
 
     if (!matched || !matched.detail) return;

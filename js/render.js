@@ -541,30 +541,32 @@ async function tryFr24Search(a, options) {
   var rc = routeCache[a.callsign];
   if (!force && rc && (rc.destSource === "schedule" || rc.destSource === "fr24-search" || rc.destSource === "cross-validated")) return;
 
-  var iataCs = variants.length > 1 ? variants[1] : variants[0];
-  var url = WORKER_URL + "/fr24search/" + encodeURIComponent(iataCs);
+  // The IATA form stays the first query; regional carriers fly under a marketing carrier's number, so an
+  // IATA operating number (e.g. MQ3456) may not be indexed. On a miss, retry with the ICAO callsign.
+  var queries = variants.length > 1 ? [variants[1], variants[0]] : [variants[0]];
 
   try {
-    var resp = await fetch(url);
-    if (!resp.ok) return;
-    var data = await resp.json();
-    var results = data.results || [];
-    if (!Array.isArray(results)) return;
-
     var variantsUpper = variants.map(function(v) { return v.toUpperCase(); });
     var matched = null;
-    for (var i = 0; i < results.length; i++) {
-      var entry = results[i];
-      if (entry.type !== "live" || !entry.detail) continue;
-      var candidates = [
-        (entry.detail.callsign || "").replace(/\s/g, "").toUpperCase(),
-        (entry.detail.flight || "").replace(/\s/g, "").toUpperCase(),
-        (entry.id || "").replace(/\s/g, "").toUpperCase()
-      ];
-      for (var v = 0; v < variantsUpper.length; v++) {
-        if (candidates.indexOf(variantsUpper[v]) !== -1) { matched = entry; break; }
+    for (var q = 0; q < queries.length && !matched; q++) {
+      var resp = await fetch(WORKER_URL + "/fr24search/" + encodeURIComponent(queries[q]));
+      if (!resp.ok) return;
+      var data = await resp.json();
+      var results = data.results || [];
+      if (!Array.isArray(results)) return;
+      for (var i = 0; i < results.length; i++) {
+        var entry = results[i];
+        if (entry.type !== "live" || !entry.detail) continue;
+        var candidates = [
+          (entry.detail.callsign || "").replace(/\s/g, "").toUpperCase(),
+          (entry.detail.flight || "").replace(/\s/g, "").toUpperCase(),
+          (entry.id || "").replace(/\s/g, "").toUpperCase()
+        ];
+        for (var v = 0; v < variantsUpper.length; v++) {
+          if (candidates.indexOf(variantsUpper[v]) !== -1) { matched = entry; break; }
+        }
+        if (matched) break;
       }
-      if (matched) break;
     }
 
     if (!matched || !matched.detail) return;
