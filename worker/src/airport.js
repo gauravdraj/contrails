@@ -1,3 +1,4 @@
+import { airlineName as nearbyAirlineName, isLikelyPrivateCallsign as isLikelyPrivate } from "./airlines.js";
 import { MAJOR_AIRPORTS } from "./airports.js";
 import { enrichRoutes, MAX_ENRICH_PLANES } from "./enrich.js";
 import { haversineKm } from "./geo.js";
@@ -15,38 +16,6 @@ const ARRIVAL_MIN_DESCENT_FPM = 500;
 const DEPARTURE_ROUTE_RADIUS_KM = 8;
 const DEPARTURE_FALLBACK_RADIUS_KM = 5;
 const VERT_RATE_THRESHOLD = 300;
-
-const NEARBY_AIRLINES = {
-  AAL: "American", AAR: "Asiana", ACA: "Air Canada", AFR: "Air France", AIC: "Air India",
-  AIJ: "Interjet", AJX: "Air Japan", AMX: "AeroMexico", ANA: "All Nippon", ANZ: "Air New Zealand",
-  APJ: "Peach", ASA: "Alaska", AUA: "Austrian", AVA: "Avianca", AXM: "AirAsia",
-  AZA: "Alitalia/ITA", BAW: "British Airways", BEL: "Brussels", BER: "Berlinair",
-  BLX: "TUIfly Benelux", BWA: "Caribbean", CAL: "China Airlines", CCA: "Air China",
-  CEB: "Cebu Pacific", CES: "China Eastern", CHH: "Hainan", CKS: "Kalitta", CLX: "Cargolux",
-  CMP: "Copa", CPA: "Cathay Pacific", CPZ: "Compass", CSN: "China Southern", CTN: "Croatia",
-  DAL: "Delta", DLH: "Lufthansa", EIN: "Aer Lingus", EJU: "easyJet Europe",
-  ELY: "El Al", ETD: "Etihad", ETH: "Ethiopian", EVA: "EVA Air", EWG: "Eurowings",
-  EZY: "easyJet", FDX: "FedEx", FIN: "Finnair", FJI: "Fiji Airways", GAL: "GetJet",
-  GEC: "Lufthansa Cargo", GIA: "Garuda", GTI: "Atlas Air", GWI: "Germanwings",
-  HAL: "Hawaiian", HVN: "Vietnam Airlines", IAW: "Iraqi", IBE: "Iberia", ICE: "Icelandair",
-  IGO: "IndiGo", JAL: "Japan Airlines", JBU: "JetBlue", JIA: "PSA Airlines", JST: "Jetstar",
-  KAL: "Korean Air", KLM: "KLM", LAN: "LATAM Chile", LAX: "LATAM", LOT: "LOT Polish",
-  MAU: "Air Mauritius", MAS: "Malaysia", MEA: "Middle East", MSR: "EgyptAir",
-  NAX: "Norwegian", NKS: "Spirit", NPT: "N. Pacific", NWS: "Nordwind", NZM: "Mount Cook",
-  OAL: "Olympic", OMA: "Oman Air", PAC: "Polar Air", PAL: "Philippine", PIA: "Pakistan Intl",
-  QFA: "Qantas", QTR: "Qatar", RAM: "Royal Air Maroc", RJA: "Royal Jordanian",
-  ROT: "TAROM", RPA: "Republic", RYR: "Ryanair", SAS: "SAS", SAA: "South African",
-  SCX: "Sun Country", SEJ: "StarFlyer", SIA: "Singapore", SKW: "SkyWest", SLK: "Silk Way",
-  SVA: "Saudia", SWA: "Southwest", SWR: "Swiss", TAM: "LATAM Brazil", TAP: "TAP Portugal",
-  THA: "Thai", THY: "Turkish", TOM: "TUI UK", TVF: "Transavia France",
-  UAE: "Emirates", UAL: "United", UPS: "UPS", UTA: "UTair", VIR: "Virgin Atlantic",
-  VJC: "VietJet", VOI: "Volaris", VTI: "Vistara", WJA: "WestJet", WZZ: "Wizz Air",
-  XAX: "AirAsia X",
-};
-
-const PRIV_REG = /^(N\d|C-[FGI]|G-|D-|F-|I-|EC-|HB-|OE-|PH-|SE-|OH-|OY-|LN-|EI-|CS-|SX-|TC-|VH-|ZK-|PP-|PT-|PR-|JA\d|B-|HL\d|VT-|9V-|A[267]-|SU-|5[ABHNXY]-|ZS-|VP-|V[5HPQR]-|RP-|HS-|9M-|PK-|XA-|XB-|LV-|CC-|TI-|HP-|HK-|YV-)/i;
-const PRIV_ANON_HEX = /^~[0-9a-f]{4,}$/i;
-const PRIV_HEXLIKE = /^(?:~)?[0-9a-f]{6}$/i;
 
 export function estimateEtaMin(plane) {
   if (plane.vRate != null && plane.vRate < -ARRIVAL_MIN_DESCENT_FPM && plane.altFt > 0) {
@@ -136,18 +105,6 @@ export function filterDepartures(planes, routeMap, airport) {
   });
 
   return departures.slice(0, MAX_RESULTS);
-}
-
-function nearbyAirlineName(callsign) {
-  if (!callsign || callsign.length < 3) return null;
-  return NEARBY_AIRLINES[callsign.substring(0, 3).toUpperCase()] || null;
-}
-
-function isLikelyPrivate(callsign) {
-  if (!callsign) return false;
-  if (PRIV_ANON_HEX.test(callsign)) return true;
-  if (nearbyAirlineName(callsign)) return false;
-  return PRIV_REG.test(callsign) || PRIV_HEXLIKE.test(callsign);
 }
 
 export function resolveAirport(iata) {

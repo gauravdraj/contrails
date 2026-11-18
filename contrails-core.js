@@ -1,8 +1,9 @@
 (function(root, factory) {
-  var api = factory();
+  var data = typeof module !== "undefined" && module.exports ? require("./airlines.json") : root.AIRLINES_DATA;
+  var api = factory(data);
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   root.ContrailsCore = api;
-})(typeof globalThis !== "undefined" ? globalThis : this, function() {
+})(typeof globalThis !== "undefined" ? globalThis : this, function(airlinesData) {
   var CARDINALS = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
 
   function roundTenths(value) {
@@ -305,45 +306,13 @@
       .replace(/"/g, "&quot;");
   }
 
-  var AIRLINES = {
-    AAL:"American",AAR:"Asiana",ACA:"Air Canada",AFR:"Air France",AIC:"Air India",
-    AIJ:"Interjet",AJX:"Air Japan",AMX:"AeroMexico",ANA:"All Nippon",ANZ:"Air New Zealand",
-    APJ:"Peach",ASA:"Alaska",AUA:"Austrian",AVA:"Avianca",AXM:"AirAsia",
-    AZA:"Alitalia/ITA",BAW:"British Airways",BEL:"Brussels",BER:"Berlinair",
-    BLX:"TUIfly Benelux",BWA:"Caribbean",CAL:"China Airlines",CCA:"Air China",
-    CEB:"Cebu Pacific",CES:"China Eastern",CHH:"Hainan",CKS:"Kalitta",CLX:"Cargolux",
-    CMP:"Copa",CPA:"Cathay Pacific",CPZ:"Compass",CSN:"China Southern",CTN:"Croatia",
-    DAL:"Delta",DLH:"Lufthansa",EIN:"Aer Lingus",EJU:"easyJet Europe",
-    ELY:"El Al",ETD:"Etihad",ETH:"Ethiopian",EVA:"EVA Air",EWG:"Eurowings",
-    EZY:"easyJet",FDX:"FedEx",FIN:"Finnair",FJI:"Fiji Airways",GAL:"GetJet",
-    GEC:"Lufthansa Cargo",GIA:"Garuda",GTI:"Atlas Air",GWI:"Germanwings",
-    HAL:"Hawaiian",HVN:"Vietnam Airlines",IAW:"Iraqi",IBE:"Iberia",ICE:"Icelandair",
-    IGO:"IndiGo",JAL:"Japan Airlines",JBU:"JetBlue",JIA:"PSA Airlines",JST:"Jetstar",
-    KAL:"Korean Air",KLM:"KLM",LAN:"LATAM Chile",LAX:"LATAM",LOT:"LOT Polish",
-    MAU:"Air Mauritius",MAS:"Malaysia",MEA:"Middle East",MSR:"EgyptAir",
-    NAX:"Norwegian",NKS:"Spirit",NPT:"N. Pacific",NWS:"Nordwind",NZM:"Mount Cook",
-    OAL:"Olympic",OMA:"Oman Air",PAC:"Polar Air",PAL:"Philippine",PIA:"Pakistan Intl",
-    QFA:"Qantas",QTR:"Qatar",RAM:"Royal Air Maroc",RJA:"Royal Jordanian",
-    ROT:"TAROM",RPA:"Republic",RYR:"Ryanair",SAS:"SAS",SAA:"South African",
-    SCX:"Sun Country",SEJ:"StarFlyer",SIA:"Singapore",SKW:"SkyWest",SLK:"Silk Way",
-    SVA:"Saudia",SWA:"Southwest",SWR:"Swiss",TAM:"LATAM Brazil",TAP:"TAP Portugal",
-    THA:"Thai",THY:"Turkish",TOM:"TUI UK",TVF:"Transavia France",
-    UAE:"Emirates",UAL:"United",UPS:"UPS",UTA:"UTair",VIR:"Virgin Atlantic",
-    VJC:"VietJet",VOI:"Volaris",VTI:"Vistara",WJA:"WestJet",WZZ:"Wizz Air",
-    XAX:"AirAsia X"
-  };
-
-  var AIRLINE_IATA_ALIASES = {
-    AA:"AAL", AC:"ACA", AF:"AFR", AI:"AIC", AS:"ASA", AV:"AVA",
-    AY:"FIN", AZ:"AZA", B6:"JBU", BA:"BAW", BR:"EVA", CI:"CAL",
-    CM:"CMP", CX:"CPA", DL:"DAL", EI:"EIN", EK:"UAE", ET:"ETH",
-    EY:"ETD", FI:"ICE", FR:"RYR", GA:"GIA", HA:"HAL", IB:"IBE",
-    JL:"JAL", KE:"KAL", KL:"KLM", LA:"LAN", LH:"DLH", LO:"LOT",
-    LX:"SWR", MH:"MAS", MS:"MSR", NH:"ANA", NZ:"ANZ", OS:"AUA",
-    OZ:"AAR", PR:"PAL", QF:"QFA", QR:"QTR", SK:"SAS", SQ:"SIA",
-    SV:"SVA", TG:"THA", TK:"THY", TP:"TAP", UA:"UAL", VS:"VIR",
-    WN:"SWA", WS:"WJA"
-  };
+  var AIRLINES = {};
+  var AIRLINE_IATA_ALIASES = {};
+  for (var airlineIcao in airlinesData.airlines) {
+    var airline = airlinesData.airlines[airlineIcao];
+    AIRLINES[airlineIcao] = airline.name;
+    if (airline.iata) AIRLINE_IATA_ALIASES[airline.iata] = airlineIcao;
+  }
   var AIRLINE_ICAO_TO_IATA_ALIASES = {};
   for (var iataAlias in AIRLINE_IATA_ALIASES) {
     var icaoAlias = AIRLINE_IATA_ALIASES[iataAlias];
@@ -385,6 +354,67 @@
       if (aliasPrefix) variants.push(aliasPrefix + normalized.substring(3));
     }
     return variants;
+  }
+
+  // Sources are { iata, data, lat, lng }; schedule times are Unix seconds, aircraft vRate is ft/sec.
+  // Compare every airport/alias together so neither feed row order nor cache insertion order chooses a leg.
+  function selectScheduleMatch(variants, sources, aircraft, nowMs) {
+    var wanted = variants.map(normalizeSearchText);
+    var candidates = [];
+    var nowSec = nowMs / 1000;
+    aircraft = aircraft || {};
+    for (var s = 0; s < sources.length; s++) {
+      var source = sources[s], data = source.data;
+      if (!data) continue;
+      var near = Number.isFinite(aircraft.lat) && Number.isFinite(aircraft.lng) &&
+        Number.isFinite(source.lat) && Number.isFinite(source.lng) &&
+        haversineKm(aircraft.lat, aircraft.lng, source.lat, source.lng) < 80;
+      var direction = null;
+      if (near && aircraft.altFt != null && aircraft.altFt < 18000 && aircraft.vRate != null) {
+        if (aircraft.vRate * 60 > 200) direction = "departure";
+        if (aircraft.vRate * 60 < -200) direction = "arrival";
+      }
+      ["arrival", "departure"].forEach(function(dir) {
+        if (direction && dir !== direction) return;
+        var rows = data[dir === "arrival" ? "arrivals" : "departures"] || [];
+        var suffix = dir === "arrival" ? "arr" : "dep";
+        for (var i = 0; i < rows.length; i++) {
+          var row = rows[i];
+          if (!row || !wanted.some(function(v) {
+            return v && (normalizeSearchText(row.callsign) === v || normalizeSearchText(row.flight) === v);
+          })) continue;
+          var status = String(row.status || "").toLowerCase();
+          if (/cancel|landed|arrived/.test(status) || row.actual_arr > 0) continue;
+          var time = null;
+          ["actual_", "est_", "sched_"].some(function(key) {
+            var value = row[key + suffix];
+            if (!Number.isFinite(value) || value <= 0) return false;
+            time = value;
+            return true;
+          });
+          var distance = time == null ? Infinity : Math.abs(time - nowSec);
+          // A previous day's instance cannot describe this flight; allow long-haul departures up to 18h old.
+          if (time != null && (nowSec - time > 18 * 3600 || time - nowSec > 6 * 3600)) continue;
+          var live = row.live === true || /en.?route|airborne|departed|take.?off/.test(status);
+          var match = { dir: dir, airport: source.iata, airportName: data.name || source.iata, row: row };
+          if (dir === "arrival") match.from = row.from_iata || null;
+          else match.to = row.to_iata || null;
+          candidates.push({ match: match, directionRank: direction ? 0 : 1,
+            score: distance + (live ? 0 : 3600),
+            route: [dir, source.iata, match.from || match.to || ""].join(":") });
+        }
+      });
+    }
+    candidates.sort(function(a, b) { return a.directionRank - b.directionRank || a.score - b.score; });
+    if (!candidates.length) return null;
+    var best = candidates[0];
+    for (var c = 1; c < candidates.length; c++) {
+      var other = candidates[c];
+      // Within a minute is ambiguous when it would produce a different route. Identical duplicates are OK.
+      if (other.directionRank === best.directionRank &&
+          (other.score === best.score || Math.abs(other.score - best.score) <= 60) && other.route !== best.route) return null;
+    }
+    return best.match;
   }
 
   function kmToMiles(km) {
@@ -449,14 +479,26 @@
 
   // Registration-shaped callsigns. Japan (JA) and Korea (HL) write registrations without a dash, so only
   // JA/HL followed by a digit count; JAL123 is an airline flight.
-  var _PRIV_REG = /^(N\d|C-[FGI]|G-|D-|F-|I-|EC-|HB-|OE-|PH-|SE-|OH-|OY-|LN-|EI-|CS-|SX-|TC-|VH-|ZK-|PP-|PT-|PR-|JA\d|B-|HL\d|VT-|9V-|A[267]-|SU-|5[ABHNXY]-|ZS-|VP-|V[5HPQR]-|RP-|HS-|9M-|PK-|XA-|XB-|LV-|CC-|TI-|HP-|HK-|YV-)/i;
+  var _PRIV_REG = new RegExp("^(?:" + airlinesData.privateRegistrationPrefixes.join("|") + ")", "i");
   var _PRIV_ANON_HEX = /^~[0-9a-f]{4,}$/i;
   var _PRIV_HEXLIKE = /^(?:~)?[0-9a-f]{6}$/i;
+
+  function isAirlineCallsign(callsign) {
+    if (!callsign || _PRIV_REG.test(callsign) || _PRIV_ANON_HEX.test(callsign)) return false;
+    // Fractional operators retain the aircraft-size fallback (e.g. EJA on a business jet is private).
+    if (airlinesData.fractionalCallsignPrefixes.indexOf(callsign.substring(0, 3).toUpperCase()) !== -1) return false;
+    return !!airlineName(callsign) || /^[A-Z]{3}\d{1,4}[A-Z]{0,2}$/i.test(callsign);
+  }
 
   function isLikelyPrivateCallsign(callsign) {
     if (!callsign) return false;
     if (_PRIV_REG.test(callsign) || _PRIV_ANON_HEX.test(callsign)) return true;
-    return !airlineName(callsign) && _PRIV_HEXLIKE.test(callsign);
+    return !isAirlineCallsign(callsign) && _PRIV_HEXLIKE.test(callsign);
+  }
+
+  function isPrivateAircraft(callsign, type, category) {
+    if (isLikelyPrivateCallsign(callsign)) return true;
+    return !isAirlineCallsign(callsign) && isLikelyPrivateClass(type, category);
   }
 
   function slantKm(groundKm, altFt) {
@@ -471,20 +513,25 @@
     return Math.atan2(altKm, Math.max(groundKm, 0.001)) * 180 / Math.PI;
   }
 
+  function tracePointOnGround(pt) {
+    return pt[5] === true || pt[5] === 1 || pt[3] === "ground";
+  }
+
+  // Match the Worker's findLegStartIndex: gaps anywhere can start a new leg, including during a
+  // turnaround. Only the ground->air search stops before trailing ground reports; keep the takeoff roll.
   function findFlightStartIndex(path) {
     if (!path || !path.length) return 0;
+    var gapBound = 0;
+    for (var j = path.length - 1; j >= 1; j--) {
+      if (path[j][0] - path[j - 1][0] > 1800) { gapBound = j; break; }
+    }
+
     var scanEnd = path.length - 1;
-    while (scanEnd >= 0 && path[scanEnd][5]) scanEnd--;
-    if (scanEnd < 0) return 0;
+    while (scanEnd >= 0 && tracePointOnGround(path[scanEnd])) scanEnd--;
 
     var groundBound = 0;
     for (var i = scanEnd; i >= 0; i--) {
-      if (path[i][5]) { groundBound = i + 1; break; }
-    }
-
-    var gapBound = 0;
-    for (var j = scanEnd; j >= 1; j--) {
-      if (path[j][0] - path[j - 1][0] > 1800) { gapBound = j; break; }
+      if (tracePointOnGround(path[i])) { groundBound = i; break; }
     }
 
     return Math.max(groundBound, gapBound);
@@ -536,10 +583,8 @@
   }
 
   function deriveActiveRunways(runwayEntries, iata, aircraft, options) {
-    // Infer which runway ends are actively in use for arrivals/departures from
-    // live ADS-B, replacing the defunct runwaysinuse.com feed. Only aircraft
-    // physically on a runway with a clear vertical signal contribute, so
-    // overflights and ambiguous ground rollouts never fabricate active runways.
+    // Departures need a climb on the runway; arrivals can be observed along final, before touchdown.
+    // High overflights, go-arounds and ambiguous ground rollouts do not establish an arrival runway.
     // Returns { departing_runways, arriving_runways } (designator strings) or
     // null when there is no confident signal, in which case callers fall back to
     // pure-geometry classification exactly as before.
@@ -550,15 +595,28 @@
     var prefix = String(iata || "").toUpperCase() + " ";
     var departing = {};
     var arriving = {};
+    var arrivalEnds = [];
+    for (var e = 0; e < runwayEntries.length; e++) {
+      var label = runwayEntries[e] && runwayEntries[e][6];
+      if (typeof label !== "string" || label.toUpperCase().indexOf(prefix) !== 0) continue;
+      label.toUpperCase().substring(prefix.length).split("/").forEach(function(designator) {
+        var end = matchRunwayDesignator(runwayEntries, iata, designator.trim());
+        if (end) arrivalEnds.push(end);
+      });
+    }
 
     for (var i = 0; i < aircraft.length; i++) {
       var a = aircraft[i];
       if (!a || a.lat == null || a.lng == null || a.track == null) continue;
       if (a.altFt != null && a.altFt > maxAltFt) continue;
       var vRateFpm = a.vRate != null ? a.vRate * 60 : null;
+      if (!a.ground && Number.isFinite(a.altFt) && vRateFpm != null && vRateFpm <= 0) {
+        var approach = approachPathKm(a.lat, a.lng, a.track, arrivalEnds);
+        if (approach && approach.onFinal) arriving[approach.runway.designator] = true;
+      }
       if (vRateFpm == null) continue;
       var isDep = vRateFpm >= climbFpm;
-      var isArr = vRateFpm <= -climbFpm;
+      var isArr = !a.ground && vRateFpm <= -climbFpm;
       if (!isDep && !isArr) continue; // level / ground rollout — too ambiguous
 
       for (var r = 0; r < runwayEntries.length; r++) {
@@ -586,6 +644,22 @@
     var arrList = Object.keys(arriving);
     if (!depList.length && !arrList.length) return null;
     return { departing_runways: depList, arriving_runways: arrList };
+  }
+
+  function updateActiveRunwayMemory(memory, derived, nowMs, windowMs) {
+    windowMs = windowMs == null ? 15 * 60 * 1000 : windowMs;
+    var seen = {}, active = {};
+    ["departing_runways", "arriving_runways"].forEach(function(key) {
+      var previous = memory && memory[key] || {};
+      var current = seen[key] = {};
+      Object.keys(previous).forEach(function(runway) {
+        if (nowMs - previous[runway] <= windowMs) current[runway] = previous[runway];
+      });
+      var observed = derived && derived[key] || [];
+      observed.forEach(function(runway) { current[runway] = nowMs; });
+      active[key] = Object.keys(current);
+    });
+    return { seen: seen, active: active.departing_runways.length || active.arriving_runways.length ? active : null };
   }
 
   function parseDatisActiveRunways(datisText) {
@@ -1483,19 +1557,24 @@
     elevationDeg: elevationDeg,
     escapeHtml: escapeHtml,
     findFlightStartIndex: findFlightStartIndex,
+    tracePointOnGround: tracePointOnGround,
     formatDistanceMiles: formatDistanceMiles,
     formatSpeedMph: formatSpeedMph,
     deriveActiveRunways: deriveActiveRunways,
+    updateActiveRunwayMemory: updateActiveRunwayMemory,
     greatCirclePoints: greatCirclePoints,
     haversineKm: haversineKm,
     interpolatePlaybackPose: interpolatePlaybackPose,
     interpolateTimedPose: interpolateTimedPose,
     getAirportNextRow: getAirportNextRow,
     isLikelyPrivateCallsign: isLikelyPrivateCallsign,
+    isAirlineCallsign: isAirlineCallsign,
+    isPrivateAircraft: isPrivateAircraft,
     kmToMiles: kmToMiles,
     knotsToMph: knotsToMph,
     matchRunwayDesignator: matchRunwayDesignator,
     callsignVariants: callsignVariants,
+    selectScheduleMatch: selectScheduleMatch,
     normalizeAircraftHex: normalizeAircraftHex,
     normalizeFlightQuery: normalizeFlightQuery,
     normalizeSearchText: normalizeSearchText,

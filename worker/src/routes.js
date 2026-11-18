@@ -1,3 +1,4 @@
+import { isLikelyPrivateCallsign as classifyPrivateCallsign } from "./airlines.js";
 import { MAJOR_AIRPORTS } from "./airports.js";
 import { haversineKm } from "./geo.js";
 import { findNearestRegion } from "./regions.js";
@@ -69,7 +70,7 @@ function isLowPoint(pt, maxAltM) {
 // Start of the current leg in a whole-day trace: the later of the last gap
 // > 30 min anywhere in the trace (including among trailing ground points, e.g.
 // taxiing out for the next leg after an hour out of coverage) and the last
-// ground->air transition before the final airborne segment. Unlike the client's
+// ground->air transition before the final airborne segment. Like the client's
 // findFlightStartIndex, the ground point itself (the takeoff roll) is kept so
 // the origin scan sees it.
 export function findLegStartIndex(path) {
@@ -158,12 +159,9 @@ export function detectPhase(altFt, vRate, ground) {
   return "cruising";
 }
 
-const _PRIV_REG = /^(N\d|C-[FGI]|G-|D-|F-|I-|EC-|HB-|OE-|PH-|SE-|OH-|OY-|LN-|EI-|CS-|SX-|TC-|VH-|ZK-|PP-|PT-|PR-|JA\d|B-|HL\d|VT-|9V-|A[267]-|SU-|5[ABHNXY]-|ZS-|VP-|V[5HPQR]-|RP-|HS-|9M-|PK-|XA-|XB-|LV-|CC-|TI-|HP-|HK-|YV-)/i;
-const _ANON_HEX = /^~[0-9a-f]{4,}$/i;
-
+// Missing callsigns cannot support a route; bare hex-like strings historically remain eligible here.
 function isLikelyPrivateCallsign(callsign) {
-  if (!callsign) return true;
-  return _PRIV_REG.test(callsign) || _ANON_HEX.test(callsign);
+  return classifyPrivateCallsign(callsign, { missingIsPrivate: true, hexlikeIsPrivate: false });
 }
 
 export function mergeRoutes(trackResult, adsbdbEntry, aircraftInfo) {

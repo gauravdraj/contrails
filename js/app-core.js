@@ -79,7 +79,7 @@ if (!airlineName || !angleDiffDeg || !bearingDegrees || !buildViewPolicy || !bui
   throw new Error("Contrails core helpers failed to load.");
 }
 
-const APP_VERSION = "2.44";
+const APP_VERSION = "2.45";
 const isLocal = location.hostname === "localhost" || location.hostname === "127.0.0.1";
 const isIOSDevice = /iP(ad|hone|od)/.test(navigator.userAgent) ||
   (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
@@ -412,10 +412,7 @@ let pendingPlaneFocus = paramHex ? {
 } : null;
 
 function isPrivate(callsign, type, category) {
-  if (isLikelyPrivateCallsign(callsign)) return true;
-  if (!callsign) return isLikelyPrivateClass(type, category);
-  if (!airlineName(callsign) && isLikelyPrivateClass(type, category)) return true;
-  return false;
+  return core.isPrivateAircraft(callsign, type, category);
 }
 
 // Aircraft silhouettes from tar1090 (GPL-3.0) - top-down SVG paths

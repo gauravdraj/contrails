@@ -372,20 +372,14 @@ function mergeActiveRunways(primary, fallback) {
 }
 
 // Runways seen in use per airport, so a quiet few minutes with no plane on a runway don't drop the active
-// runway and reshuffle the board between refreshes. A newly seen runway replaces the remembered one.
+// runway and reshuffle the board between refreshes. Each runway expires 15 minutes after its last sighting.
 var ACTIVE_RUNWAY_MEMORY_MS = 15 * 60 * 1000;
 var _activeRunwayMemory = {};
 
 function rememberActiveRunways(iata, derived) {
-  var now = Date.now();
-  var mem = _activeRunwayMemory[iata] || (_activeRunwayMemory[iata] = {});
-  var out = {};
-  ["departing_runways", "arriving_runways"].forEach(function(key) {
-    var seen = derived && derived[key];
-    if (seen && seen.length) mem[key] = { list: seen, at: now };
-    out[key] = mem[key] && now - mem[key].at <= ACTIVE_RUNWAY_MEMORY_MS ? mem[key].list : [];
-  });
-  return out.departing_runways.length || out.arriving_runways.length ? out : null;
+  var next = core.updateActiveRunwayMemory(_activeRunwayMemory[iata], derived, Date.now(), ACTIVE_RUNWAY_MEMORY_MS);
+  _activeRunwayMemory[iata] = next.seen;
+  return next.active;
 }
 
 // Feed speed change (kts) across the client's recent samples for this plane; negative when slowing.

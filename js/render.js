@@ -237,14 +237,14 @@ function ingestTrackPath(hex, data) {
     var ts = pt[0], lat = pt[1], lon = pt[2], altM = pt[3];
     var tsMs = ts > 1e12 ? ts : ts * 1000;
     if (tsMs >= earliestLive - 5000) break;
-    var altFt = altM != null ? Math.round(altM * 3.28084) : null;
-    var onGround = altFt != null && altFt <= 0;
+    var altFt = Number.isFinite(altM) ? Math.round(altM * 3.28084) : null;
+    var onGround = core.tracePointOnGround(pt) || (altFt != null && altFt <= 0);
     converted.push([lat, lon, tsMs, onGround ? null : altFt, onGround, i === 0]);
   }
   if (converted.length) {
     posHistory[hex] = converted.concat(history);
-    runOriginDetection(hex, { path: path });
   }
+  runOriginDetection(hex, data);
 }
 
 function runOriginDetection(hex, data) {
@@ -255,14 +255,19 @@ function runOriginDetection(hex, data) {
   }
   if (!cs) return;
   var rc = routeCache[cs];
-  if (rc && rc.origin && (rc.originSource === "track" || rc.originSource === "cross-validated")) return;
   var path = data.path || data;
-  if (!path || path.length < 5) return;
+  if (!path || path.length < 2) return;
+  var flightStart = findFlightStartIndex(path);
+  // A partial arrival trace is not evidence of a new origin. Only a leg boundary or takeoff ground
+  // reports can replace an origin already established by the trace.
+  if (!flightStart && !core.tracePointOnGround(path[0]) && rc && rc.origin &&
+      (rc.originSource === "track" || rc.originSource === "cross-validated")) return;
+  path = path.slice(flightStart);
   var scanEnd = Math.max(20, Math.floor(path.length * 0.25));
   var originPt = null;
   for (var i = 0; i < scanEnd && i < path.length; i++) {
     var altM = path[i][3];
-    if (altM != null && altM <= 2500) { originPt = path[i]; break; }
+    if (core.tracePointOnGround(path[i]) || (Number.isFinite(altM) && altM <= 2500)) { originPt = path[i]; break; }
   }
   if (!originPt) return;
   var bestDist = Infinity, bestApt = null;
@@ -273,6 +278,8 @@ function runOriginDetection(hex, data) {
   }
   if (!bestApt || bestDist > 15) return;
   var origin = { iata: bestApt[0], name: bestApt[3] };
+  if (rc && rc.origin && rc.origin.iata === origin.iata &&
+      (rc.originSource === "track" || rc.originSource === "cross-validated")) return;
   if (rc) {
     if (rc.originSource === "adsbdb" && rc.origin && rc.origin.iata === origin.iata &&
         rc.destSource === "adsbdb" && rc.destination) {
@@ -331,27 +338,15 @@ function fetchScheduleData(iata) {
   }).catch(function() { return null; });
 }
 
-function findScheduleMatch(variants, schedData, iata) {
-  var arrs = schedData.arrivals || [];
-  var deps = schedData.departures || [];
-  for (var v = 0; v < variants.length; v++) {
-    var vUpper = variants[v].toUpperCase();
-    for (var ai = 0; ai < arrs.length; ai++) {
-      var row = arrs[ai];
-      if ((row.callsign || "").toUpperCase() === vUpper ||
-          (row.flight || "").replace(/\s/g, "").toUpperCase() === vUpper) {
-        return { dir: "arrival", airport: iata, airportName: schedData.name || iata, row: row, from: row.from_iata || null };
-      }
+function selectClientScheduleMatch(variants, sources, a) {
+  var located = sources.map(function(source) {
+    var lat = null, lng = null;
+    for (var i = 0; airportData && i < airportData.length; i++) {
+      if (airportData[i][0] === source.iata) { lat = airportData[i][1]; lng = airportData[i][2]; break; }
     }
-    for (var di = 0; di < deps.length; di++) {
-      var row = deps[di];
-      if ((row.callsign || "").toUpperCase() === vUpper ||
-          (row.flight || "").replace(/\s/g, "").toUpperCase() === vUpper) {
-        return { dir: "departure", airport: iata, airportName: schedData.name || iata, row: row, to: row.to_iata || null };
-      }
-    }
-  }
-  return null;
+    return { iata: source.iata, data: source.data, lat: lat, lng: lng };
+  });
+  return core.selectScheduleMatch(variants, located, a, Date.now());
 }
 
 function applyScheduleMatch(a, match) {
@@ -359,45 +354,23 @@ function applyScheduleMatch(a, match) {
   var currentRc = routeCache[a.callsign];
   var origin = null, destination = null, originSource = null, destSource = null;
 
-  var descending = a.altFt != null && a.altFt < 18000 && a.vRate != null && a.vRate * 60 < -200;
-  var climbing = a.altFt != null && a.altFt < 18000 && a.vRate != null && a.vRate * 60 > 200;
-  var nearAirport = airportData && (function() {
-    for (var i = 0; i < airportData.length; i++) {
-      if (airportData[i][0] === match.airport &&
-          haversineKm(a.lat, a.lng, airportData[i][1], airportData[i][2]) < 80) return true;
-    }
-    return false;
-  })();
-
-  var dir = match.dir;
-  if (dir === "departure" && descending && nearAirport) {
-    dir = "arrival-flipped";
-  } else if (dir === "arrival" && climbing && nearAirport) {
-    dir = "departure-flipped";
-  }
-
-  var flipped = dir === "arrival-flipped" || dir === "departure-flipped";
-
-  if (dir === "arrival" || dir === "arrival-flipped") {
+  // The selector has already checked direction; an arrival row cannot be reversed into an onward leg.
+  if (match.dir === "arrival") {
     destination = { iata: match.airport, name: match.airportName };
-    destSource = flipped ? "convergence" : "schedule";
-    var counterIata = dir === "arrival" ? match.from : match.to;
-    var counterName = dir === "arrival" ? (match.row.from_name || match.from) : (match.row.to_name || match.to);
-    if (counterIata) {
-      origin = { iata: counterIata, name: counterName || counterIata };
-      originSource = flipped ? "schedule-inferred" : "schedule";
+    destSource = "schedule";
+    if (match.from) {
+      origin = { iata: match.from, name: match.row.from_name || match.from };
+      originSource = "schedule";
     } else if (currentRc && currentRc.origin) {
       origin = currentRc.origin;
       originSource = currentRc.originSource;
     }
   } else {
     origin = { iata: match.airport, name: match.airportName };
-    originSource = flipped ? "convergence" : "schedule";
-    var counterIata = dir === "departure" ? match.to : match.from;
-    var counterName = dir === "departure" ? (match.row.to_name || match.to) : (match.row.from_name || match.from);
-    if (counterIata) {
-      destination = { iata: counterIata, name: counterName || counterIata };
-      destSource = flipped ? "schedule-inferred" : "schedule";
+    originSource = "schedule";
+    if (match.to) {
+      destination = { iata: match.to, name: match.row.to_name || match.to };
+      destSource = "schedule";
     } else if (currentRc && currentRc.destination) {
       destination = currentRc.destination;
       destSource = currentRc.destSource;
@@ -415,7 +388,7 @@ function applyScheduleMatch(a, match) {
     destination: destination,
     originSource: originSource || (currentRc ? currentRc.originSource : null),
     destSource: destSource || (currentRc ? currentRc.destSource : null),
-    confidence: flipped ? "medium" : "high",
+    confidence: "high",
     phase: phase,
     airline_iata: match.row.airline_iata || "",
     airline_icao: match.row.airline_icao || "",
@@ -462,15 +435,14 @@ function cascadeScheduleMatches() {
     if (rc && rc.destSource === "schedule") continue;
     var variants = callsignVariants(a.callsign);
     if (!variants.length) continue;
+    var sources = [];
     for (var iata in scheduleDataCache) {
       var cached = scheduleDataCache[iata];
       if (!cached || Date.now() - cached.ts > SCHEDULE_CACHE_TTL) continue;
-      var match = findScheduleMatch(variants, cached.data, iata);
-      if (match && applyScheduleMatch(a, match)) {
-        updated++;
-        break;
-      }
+      sources.push({ iata: iata, data: cached.data });
     }
+    var match = selectClientScheduleMatch(variants, sources, a);
+    if (match && applyScheduleMatch(a, match)) updated++;
   }
   return updated;
 }
@@ -631,18 +603,10 @@ function matchScheduleRoute(hex) {
 
   var fetches = unique.map(function(iata) { return fetchScheduleData(iata); });
   Promise.all(fetches).then(function(results) {
-    var matched = false;
-    for (var r = 0; r < results.length; r++) {
-      if (!results[r]) continue;
-      var match = findScheduleMatch(variants, results[r], unique[r]);
-      if (match) {
-        applyScheduleMatch(a, match);
-        matched = true;
-        break;
-      }
-    }
-
-    if (!matched) tryFr24Search(a);
+    var sources = results.map(function(data, index) { return { iata: unique[index], data: data }; });
+    var match = selectClientScheduleMatch(variants, sources, a);
+    if (match) applyScheduleMatch(a, match);
+    else tryFr24Search(a);
 
     cascadeScheduleMatches();
 
