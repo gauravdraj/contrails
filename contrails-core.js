@@ -1329,6 +1329,21 @@
     return now - entry.fetchedAt > ttlMs;
   }
 
+  // Whether a route answer from `incomingDestSource` may replace the cached entry: a fresh authoritative
+  // destination (FR24, schedule, cross-validated) is only replaced by another authoritative one.
+  function routeEntryReplaceable(current, incomingDestSource, now) {
+    if (!current || !current.destination || !isAuthoritativeDestSource(current.destSource)) return true;
+    if (routeCacheEntryStale(current, now)) return true;
+    return isAuthoritativeDestSource(incomingDestSource);
+  }
+
+  // A feed row worth reading at all: an object with a numeric, finite position.
+  function isUsableTrafficRow(row) {
+    return !!row && typeof row === "object" &&
+      typeof row.lat === "number" && Number.isFinite(row.lat) &&
+      typeof row.lon === "number" && Number.isFinite(row.lon);
+  }
+
   // The planes to send in one /routeset request: public callsigns with no fresh cached route, skipping ones
   // the server recently could not resolve (retryAt[callsign] is when they may be asked again).
   function selectRouteFetchPlanes(planes, cache, options) {
@@ -1507,6 +1522,8 @@
     trafficOutage: trafficOutage,
     isAuthoritativeDestSource: isAuthoritativeDestSource,
     routeCacheEntryStale: routeCacheEntryStale,
-    selectRouteFetchPlanes: selectRouteFetchPlanes
+    selectRouteFetchPlanes: selectRouteFetchPlanes,
+    routeEntryReplaceable: routeEntryReplaceable,
+    isUsableTrafficRow: isUsableTrafficRow
   };
 });

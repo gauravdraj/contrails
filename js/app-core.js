@@ -62,6 +62,8 @@ const trafficOutage = core.trafficOutage;
 const isAuthoritativeDestSource = core.isAuthoritativeDestSource;
 const routeCacheEntryStale = core.routeCacheEntryStale;
 const selectRouteFetchPlanes = core.selectRouteFetchPlanes;
+const routeEntryReplaceable = core.routeEntryReplaceable;
+const isUsableTrafficRow = core.isUsableTrafficRow;
 if (!airlineName || !angleDiffDeg || !bearingDegrees || !buildViewPolicy || !buildViewportFetchSpec || !cardinalDir ||
     !callsignVariants || !computePlaybackDelayMs || !escapeHtml || !formatDistanceMiles || !formatSpeedMph ||
     !getAirportNextRow || !haversineKm || !interpolatePlaybackPose || !interpolateTimedPose || !isLikelyPrivateCallsign ||
@@ -73,7 +75,7 @@ if (!airlineName || !angleDiffDeg || !bearingDegrees || !buildViewPolicy || !bui
     !sizeFromCategory || !sizeClass || !isLikelyPrivateClass || !dimColor || !declutterLabels || !updateClockOffset ||
     !viewBounds || !alphaToSdf || !buildCoverageCircles || !countGroundByAirport ||
     !isIcaoHex || !unwrapLngNear || !trafficRetryDelayMs || !trafficOutage || !isAuthoritativeDestSource ||
-    !routeCacheEntryStale || !selectRouteFetchPlanes) {
+    !routeCacheEntryStale || !selectRouteFetchPlanes || !routeEntryReplaceable || !isUsableTrafficRow) {
   throw new Error("Contrails core helpers failed to load.");
 }
 
@@ -187,8 +189,10 @@ function aircraftUrl(hex) {
 }
 // fetch has no timeout of its own, and a request that never settles stalls whatever awaits it. The timer is left
 // running after the headers arrive so a stalled body read is cut off too (aborting a finished request is a no-op).
-// An outer options.signal still aborts the request.
-const FETCH_TIMEOUT_MS = 10000;
+// An outer options.signal still aborts the request. This is a hang guard, not a latency target: Worker endpoints
+// chain upstream fallbacks (traffic: primary 6 s, backup 6 s, then the relay; schedule: FR24 8 s, then the relay
+// 12 s; traces: two providers at 8 s each), and a slow answer that arrives is still a good one.
+const FETCH_TIMEOUT_MS = 25000;
 function fetchWithTimeout(url, options, timeoutMs) {
   options = options || {};
   var controller = new AbortController();

@@ -47,6 +47,15 @@ async function fetchAircraft(options) {
       return;
     }
     if (requestSeq !== fetchRequestSeq) return;
+    // The feed counts as healthy only once its payload has been processed; a payload that can't be processed
+    // is a failure like any other, or the map would freeze with no outage shown and no backoff.
+    try {
+      processAircraft(Array.isArray(data.ac) ? data.ac : [], data.now);
+    } catch (procErr) {
+      console.warn("Traffic payload could not be processed:", procErr);
+      noteTrafficFetchFailure();
+      return;
+    }
     var prevSource = trafficSource;
     trafficFetchOk = true;
     trafficFailStreak = 0;
@@ -60,7 +69,9 @@ async function fetchAircraft(options) {
       }
     }
     setTrafficStale(false);
-    processAircraft(data.ac || [], data.now);
+    // processAircraft drew the summary and hint while the previous (possibly failed) state was still set.
+    updateControlsCompactSummary();
+    updateViewHint(visibleAircraftCount());
   } catch (err) {
     console.warn("Traffic refresh failed:", err);
   } finally {
@@ -73,7 +84,8 @@ async function fetchAircraft(options) {
   }
 }
 
-var TRAFFIC_FETCH_TIMEOUT_MS = 10000;
+// Budgets the Worker's whole failover chain (see FETCH_TIMEOUT_MS); only a request that hangs past it fails.
+var TRAFFIC_FETCH_TIMEOUT_MS = FETCH_TIMEOUT_MS;
 // Consecutive failures back the poll off exponentially up to this.
 var TRAFFIC_RETRY_MAX_MS = 60000;
 
@@ -161,6 +173,7 @@ async function fetchTrafficCircles(circles, signal) {
     var lagS = newest != null && Number.isFinite(r.now) ? (newest - r.now) / 1000 : 0;
     for (var k = 0; k < r.ac.length; k++) {
       var s = r.ac[k];
+      if (!isUsableTrafficRow(s)) continue;
       if (lagS) {
         if (s.seen != null) s.seen += lagS;
         if (s.seen_pos != null) s.seen_pos += lagS;
@@ -193,22 +206,25 @@ function buildAircraftSnapshot(ac, options) {
   var activeIds = {};
   for (var i = 0; i < ac.length; i++) {
     var s = ac[i];
+    // One malformed row (null, non-numeric position) is skipped rather than failing the whole poll.
+    if (!isUsableTrafficRow(s)) continue;
     var hex = normalizeAircraftHex(s.hex);
     var isGround = s.alt_baro === "ground";
+    var typeCode = typeof s.t === "string" ? s.t : null;
     if (!hex) continue;
     if (!isGround && s.alt_baro == null) continue;
     if (s.lat == null || s.lon == null) continue;
     if (s.category && /^C/.test(s.category)) continue;
-    if (sizeClass(s.t || null, s.category || null) === "heli") continue;
+    if (sizeClass(typeCode, s.category || null) === "heli") continue;
     if (s.seen != null && s.seen > 15) continue;
     var heading = s.track != null ? s.track : (s.true_heading != null ? s.true_heading : s.mag_heading);
     if (isGround && heading == null) continue;
     if (activeIds[hex]) continue;
 
-    var callsign = (s.flight || "").trim() || null;
-    var priv = isPrivate(callsign, s.t || null, s.category || null);
+    var callsign = (typeof s.flight === "string" ? s.flight.trim() : "") || null;
+    var priv = isPrivate(callsign, typeCode, s.category || null);
     var squawk = s.squawk || null;
-    var emerg = s.emergency && s.emergency !== "none" ? s.emergency : null;
+    var emerg = typeof s.emergency === "string" && s.emergency && s.emergency !== "none" ? s.emergency : null;
     var baseBearing = s.dir != null ? s.dir : (heading != null ? heading : 0);
     var metrics = includeProximity ? proximityMetrics(s.lat, s.lon, baseBearing) : null;
     var viewDistKm = includeProximity ? viewportDistanceKm(s.lat, s.lon) : null;
@@ -220,7 +236,7 @@ function buildAircraftSnapshot(ac, options) {
     snapshot.push({
       icao24: hex,
       callsign: callsign,
-      aircraftType: s.t || null,
+      aircraftType: typeCode,
       category: s.category || null,
       registration: s.r || null,
       lat: s.lat, lng: s.lon,
@@ -389,6 +405,8 @@ function mergeRoutesetEntries(routes, sourcePlanes) {
   for (var j = 0; j < routes.length; j++) {
     var r = routes[j];
     if (!r.callsign || (!r.origin && !r.destination)) continue;
+    // FR24 or the schedule may have resolved this flight while the request was out.
+    if (!routeEntryReplaceable(routeCache[r.callsign], r.destSource, fetchedAt)) continue;
     var dest = r.destination;
     var destIata = dest ? (dest.region ? dest.display : dest.iata) : null;
     var iataParts = [r.origin ? r.origin.iata : null, destIata].filter(Boolean);
@@ -451,7 +469,7 @@ async function postRouteset(needed, candidates) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ planes: needed })
-    }, 15000);
+    });
     if (!resp.ok) return false;
     var routes = await resp.json();
     if (!Array.isArray(routes)) return false;

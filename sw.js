@@ -73,7 +73,10 @@ self.addEventListener("fetch", (event) => {
         .then(async (resp) => {
           const type = (resp && resp.headers.get("content-type")) || "";
           if (resp && resp.ok && isAppEntry(url) && type.includes("text/html")) {
-            await cache.put("./index.html", resp.clone());
+            // A failed write (e.g. storage quota) must not turn a good page into an error.
+            try {
+              await cache.put("./index.html", resp.clone());
+            } catch (_) {}
           }
           return resp;
         })
