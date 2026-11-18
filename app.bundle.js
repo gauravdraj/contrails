@@ -1332,12 +1332,13 @@
     return now - entry.fetchedAt > ttlMs;
   }
 
-  // Whether a route answer from `incomingDestSource` may replace the cached entry: a fresh authoritative
-  // destination (FR24, schedule, cross-validated) is only replaced by another authoritative one.
-  function routeEntryReplaceable(current, incomingDestSource, now) {
-    if (!current || !current.destination || !isAuthoritativeDestSource(current.destSource)) return true;
-    if (routeCacheEntryStale(current, now)) return true;
-    return isAuthoritativeDestSource(incomingDestSource);
+  // Whether a /routeset answer may replace the cached entry. A destination FR24 or the schedule resolved is
+  // never replaced while fresh, whatever the answer's source: the Worker's "cross-validated" only means the
+  // trace origin matched ADSBDB, which says nothing about the destination.
+  function routeEntryReplaceable(current, now) {
+    if (!current || !current.destination) return true;
+    if (current.destSource !== "fr24-search" && current.destSource !== "schedule") return true;
+    return routeCacheEntryStale(current, now);
   }
 
   // A feed row worth reading at all: an object with a numeric, finite position.
@@ -4017,7 +4018,7 @@ function mergeRoutesetEntries(routes, sourcePlanes) {
     var r = routes[j];
     if (!r.callsign || (!r.origin && !r.destination)) continue;
     // FR24 or the schedule may have resolved this flight while the request was out.
-    if (!routeEntryReplaceable(routeCache[r.callsign], r.destSource, fetchedAt)) continue;
+    if (!routeEntryReplaceable(routeCache[r.callsign], fetchedAt)) continue;
     var dest = r.destination;
     var destIata = dest ? (dest.region ? dest.display : dest.iata) : null;
     var iataParts = [r.origin ? r.origin.iata : null, destIata].filter(Boolean);
