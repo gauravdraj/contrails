@@ -257,30 +257,6 @@
     return { circles: circles, total: cells.length, complete: cells.length <= maxCircles };
   }
 
-  // Prove that the whole rectangle is covered, not just its corners (a union can have holes).
-  // Each subrectangle fits inside a conservative spherical cap: latitude then longitude along a parallel.
-  function trafficCirclesCoverBounds(circles, bounds) {
-    if (!circles || !circles.length || !bounds) return false;
-    function covered(south, north, west, east, depth) {
-      var lat = (south + north) / 2, lng = (west + east) / 2;
-      var latKm = (north - south) * Math.PI / 180 * 6371 / 2;
-      var lngKm = (east - west) * Math.PI / 180 * 6371 / 2 * Math.cos(lat * Math.PI / 180);
-      var radius = latKm + lngKm;
-      var centerCovered = false;
-      for (var i = 0; i < circles.length; i++) {
-        var c = circles[i];
-        var distance = haversineKm(lat, lng, c.lat, c.lng);
-        if (distance + radius <= c.km) return true;
-        if (distance <= c.km) centerCovered = true;
-      }
-      if (!centerCovered || depth === 10) return false;
-      return latKm > lngKm
-        ? covered(south, lat, west, east, depth + 1) && covered(lat, north, west, east, depth + 1)
-        : covered(south, north, west, lng, depth + 1) && covered(south, north, lng, east, depth + 1);
-    }
-    return covered(Math.max(-90, bounds.south), Math.min(90, bounds.north), bounds.west, bounds.east, 0);
-  }
-
   // One-degree cells; store catalog positions so queries retain its order for equal-distance ties.
   function buildAirportGrid(airports) {
     var cells = {};
@@ -1669,7 +1645,6 @@
     closingKm: closingKm,
     describeAirportDepartureStatus: describeAirportDepartureStatus,
     buildCoverageCircles: buildCoverageCircles,
-    trafficCirclesCoverBounds: trafficCirclesCoverBounds,
     buildAirportGrid: buildAirportGrid,
     airportGridCandidates: airportGridCandidates,
     buildViewPolicy: buildViewPolicy,

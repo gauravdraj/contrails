@@ -1,7 +1,6 @@
 // Traffic, route, airport, and runway data fetching.
 
 // --- Data fetching ---
-var activeFetchCircles = null;
 async function fetchAircraft(options) {
   options = options || {};
   if (!map) return;
@@ -19,11 +18,10 @@ async function fetchAircraft(options) {
     var coverage = viewCoverage(spec);
     var circles = coverage ? coverage.circles : [{ lat: spec.center.lat, lng: spec.center.lng, km: spec.fetchKm }];
     var url = circles.map(function(c) { return trafficUrl(c.lat, c.lng, c.km); }).join(" ");
-    // Keep a slow request through pans inside its coverage, including the renderer's padded view.
-    // A resumed or timed-out request must still be replaced even when its coverage matches.
-    if (fetchAbortController && options.source !== "resume" &&
-        Date.now() - activeFetchStartedAt < TRAFFIC_FETCH_TIMEOUT_MS &&
-        (activeFetchUrl === url || core.trafficCirclesCoverBounds(activeFetchCircles, spec.bounds.pad(VIEW_FILTER_PAD)))) {
+    // A same-URL request already in flight is adopted, unless the page just resumed (it may be a request the
+    // OS froze) or it has outlived the timeout; then it is aborted and replaced.
+    if (fetchAbortController && activeFetchUrl === url && options.source !== "resume" &&
+        Date.now() - activeFetchStartedAt < TRAFFIC_FETCH_TIMEOUT_MS) {
       reschedule = false;
       return;
     }
@@ -32,9 +30,6 @@ async function fetchAircraft(options) {
     controller = new AbortController();
     fetchAbortController = controller;
     activeFetchUrl = url;
-    activeFetchCircles = circles.map(function(c) {
-      return { lat: +c.lat.toFixed(4), lng: +c.lng.toFixed(4), km: Math.ceil(c.km / 1.852) * 1.852 };
-    });
     activeFetchStartedAt = Date.now();
     var timedOut = false;
     timeoutId = setTimeout(function() {
@@ -84,7 +79,6 @@ async function fetchAircraft(options) {
     if (controller && fetchAbortController === controller) {
       fetchAbortController = null;
       activeFetchUrl = null;
-      activeFetchCircles = null;
     }
     if (map && reschedule) scheduleRefreshTimer(trafficRetryDelayMs(adaptiveRefreshMs(), trafficFailStreak, TRAFFIC_RETRY_MAX_MS));
   }
