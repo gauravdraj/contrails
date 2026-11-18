@@ -261,30 +261,6 @@ var AIRLINES_DATA = {"airlines":{"AAL":{"name":"American","iata":"AA"},"AAR":{"n
     return { circles: circles, total: cells.length, complete: cells.length <= maxCircles };
   }
 
-  // Prove that the whole rectangle is covered, not just its corners (a union can have holes).
-  // Each subrectangle fits inside a conservative spherical cap: latitude then longitude along a parallel.
-  function trafficCirclesCoverBounds(circles, bounds) {
-    if (!circles || !circles.length || !bounds) return false;
-    function covered(south, north, west, east, depth) {
-      var lat = (south + north) / 2, lng = (west + east) / 2;
-      var latKm = (north - south) * Math.PI / 180 * 6371 / 2;
-      var lngKm = (east - west) * Math.PI / 180 * 6371 / 2 * Math.cos(lat * Math.PI / 180);
-      var radius = latKm + lngKm;
-      var centerCovered = false;
-      for (var i = 0; i < circles.length; i++) {
-        var c = circles[i];
-        var distance = haversineKm(lat, lng, c.lat, c.lng);
-        if (distance + radius <= c.km) return true;
-        if (distance <= c.km) centerCovered = true;
-      }
-      if (!centerCovered || depth === 10) return false;
-      return latKm > lngKm
-        ? covered(south, lat, west, east, depth + 1) && covered(lat, north, west, east, depth + 1)
-        : covered(south, north, west, lng, depth + 1) && covered(south, north, lng, east, depth + 1);
-    }
-    return covered(Math.max(-90, bounds.south), Math.min(90, bounds.north), bounds.west, bounds.east, 0);
-  }
-
   // One-degree cells; store catalog positions so queries retain its order for equal-distance ties.
   function buildAirportGrid(airports) {
     var cells = {};
@@ -1673,7 +1649,6 @@ var AIRLINES_DATA = {"airlines":{"AAL":{"name":"American","iata":"AA"},"AAR":{"n
     closingKm: closingKm,
     describeAirportDepartureStatus: describeAirportDepartureStatus,
     buildCoverageCircles: buildCoverageCircles,
-    trafficCirclesCoverBounds: trafficCirclesCoverBounds,
     buildAirportGrid: buildAirportGrid,
     airportGridCandidates: airportGridCandidates,
     buildViewPolicy: buildViewPolicy,
@@ -3824,7 +3799,6 @@ function pruneStaleHistoryEntries(activeIds, now) {
 // Traffic, route, airport, and runway data fetching.
 
 // --- Data fetching ---
-var activeFetchCircles = null;
 async function fetchAircraft(options) {
   options = options || {};
   if (!map) return;
@@ -3842,11 +3816,10 @@ async function fetchAircraft(options) {
     var coverage = viewCoverage(spec);
     var circles = coverage ? coverage.circles : [{ lat: spec.center.lat, lng: spec.center.lng, km: spec.fetchKm }];
     var url = circles.map(function(c) { return trafficUrl(c.lat, c.lng, c.km); }).join(" ");
-    // Keep a slow request through pans inside its coverage, including the renderer's padded view.
-    // A resumed or timed-out request must still be replaced even when its coverage matches.
-    if (fetchAbortController && options.source !== "resume" &&
-        Date.now() - activeFetchStartedAt < TRAFFIC_FETCH_TIMEOUT_MS &&
-        (activeFetchUrl === url || core.trafficCirclesCoverBounds(activeFetchCircles, spec.bounds.pad(VIEW_FILTER_PAD)))) {
+    // A same-URL request already in flight is adopted, unless the page just resumed (it may be a request the
+    // OS froze) or it has outlived the timeout; then it is aborted and replaced.
+    if (fetchAbortController && activeFetchUrl === url && options.source !== "resume" &&
+        Date.now() - activeFetchStartedAt < TRAFFIC_FETCH_TIMEOUT_MS) {
       reschedule = false;
       return;
     }
@@ -3855,9 +3828,6 @@ async function fetchAircraft(options) {
     controller = new AbortController();
     fetchAbortController = controller;
     activeFetchUrl = url;
-    activeFetchCircles = circles.map(function(c) {
-      return { lat: +c.lat.toFixed(4), lng: +c.lng.toFixed(4), km: Math.ceil(c.km / 1.852) * 1.852 };
-    });
     activeFetchStartedAt = Date.now();
     var timedOut = false;
     timeoutId = setTimeout(function() {
@@ -3907,7 +3877,6 @@ async function fetchAircraft(options) {
     if (controller && fetchAbortController === controller) {
       fetchAbortController = null;
       activeFetchUrl = null;
-      activeFetchCircles = null;
     }
     if (map && reschedule) scheduleRefreshTimer(trafficRetryDelayMs(adaptiveRefreshMs(), trafficFailStreak, TRAFFIC_RETRY_MAX_MS));
   }
