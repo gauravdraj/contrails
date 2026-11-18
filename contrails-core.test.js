@@ -1621,3 +1621,27 @@ test("selectRouteFetchPlanes skips recent misses so unresolvable planes don't st
   assert.equal(core.selectRouteFetchPlanes([{ callsign: "UAL1" }], cache, { now: now }).length, 0);
   assert.equal(core.selectRouteFetchPlanes([{ callsign: "UAL1" }], cache, { now: now + 11 * 60 * 1000 }).length, 1);
 });
+
+test("routeEntryReplaceable: a late non-authoritative answer can't replace a fresh FR24/schedule destination", () => {
+  var now = 10 * 60 * 60 * 1000;
+  var fr24 = { destination: { iata: "SFO" }, destSource: "fr24-search", fetchedAt: now - 1000 };
+  assert.equal(core.routeEntryReplaceable(fr24, "convergence", now), false);
+  assert.equal(core.routeEntryReplaceable(fr24, "adsbdb", now), false);
+  assert.equal(core.routeEntryReplaceable(fr24, null, now), false);
+  assert.equal(core.routeEntryReplaceable({ destination: { iata: "SFO" }, destSource: "schedule", fetchedAt: now }, "track", now), false);
+  // Another authoritative answer may replace it, and so may anything once it has gone stale.
+  assert.equal(core.routeEntryReplaceable(fr24, "cross-validated", now), true);
+  assert.equal(core.routeEntryReplaceable({ destination: { iata: "SFO" }, destSource: "fr24-search", fetchedAt: now - 61 * 60 * 1000 }, "convergence", now), true);
+  // Non-authoritative or empty entries are always replaceable.
+  assert.equal(core.routeEntryReplaceable({ destination: { iata: "OAK" }, destSource: "convergence", fetchedAt: now }, "adsbdb", now), true);
+  assert.equal(core.routeEntryReplaceable(undefined, "adsbdb", now), true);
+});
+
+test("isUsableTrafficRow skips malformed feed rows", () => {
+  assert.equal(core.isUsableTrafficRow({ hex: "abcdef", lat: 37.6, lon: -122.4 }), true);
+  assert.equal(core.isUsableTrafficRow(null), false);
+  assert.equal(core.isUsableTrafficRow("abcdef"), false);
+  assert.equal(core.isUsableTrafficRow({ lat: "37.6", lon: -122.4 }), false);
+  assert.equal(core.isUsableTrafficRow({ lat: 37.6, lon: null }), false);
+  assert.equal(core.isUsableTrafficRow({ lat: NaN, lon: 1 }), false);
+});

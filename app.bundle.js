@@ -1332,6 +1332,21 @@
     return now - entry.fetchedAt > ttlMs;
   }
 
+  // Whether a route answer from `incomingDestSource` may replace the cached entry: a fresh authoritative
+  // destination (FR24, schedule, cross-validated) is only replaced by another authoritative one.
+  function routeEntryReplaceable(current, incomingDestSource, now) {
+    if (!current || !current.destination || !isAuthoritativeDestSource(current.destSource)) return true;
+    if (routeCacheEntryStale(current, now)) return true;
+    return isAuthoritativeDestSource(incomingDestSource);
+  }
+
+  // A feed row worth reading at all: an object with a numeric, finite position.
+  function isUsableTrafficRow(row) {
+    return !!row && typeof row === "object" &&
+      typeof row.lat === "number" && Number.isFinite(row.lat) &&
+      typeof row.lon === "number" && Number.isFinite(row.lon);
+  }
+
   // The planes to send in one /routeset request: public callsigns with no fresh cached route, skipping ones
   // the server recently could not resolve (retryAt[callsign] is when they may be asked again).
   function selectRouteFetchPlanes(planes, cache, options) {
@@ -1510,7 +1525,9 @@
     trafficOutage: trafficOutage,
     isAuthoritativeDestSource: isAuthoritativeDestSource,
     routeCacheEntryStale: routeCacheEntryStale,
-    selectRouteFetchPlanes: selectRouteFetchPlanes
+    selectRouteFetchPlanes: selectRouteFetchPlanes,
+    routeEntryReplaceable: routeEntryReplaceable,
+    isUsableTrafficRow: isUsableTrafficRow
   };
 });
 
@@ -1579,6 +1596,8 @@ const trafficOutage = core.trafficOutage;
 const isAuthoritativeDestSource = core.isAuthoritativeDestSource;
 const routeCacheEntryStale = core.routeCacheEntryStale;
 const selectRouteFetchPlanes = core.selectRouteFetchPlanes;
+const routeEntryReplaceable = core.routeEntryReplaceable;
+const isUsableTrafficRow = core.isUsableTrafficRow;
 if (!airlineName || !angleDiffDeg || !bearingDegrees || !buildViewPolicy || !buildViewportFetchSpec || !cardinalDir ||
     !callsignVariants || !computePlaybackDelayMs || !escapeHtml || !formatDistanceMiles || !formatSpeedMph ||
     !getAirportNextRow || !haversineKm || !interpolatePlaybackPose || !interpolateTimedPose || !isLikelyPrivateCallsign ||
@@ -1590,7 +1609,7 @@ if (!airlineName || !angleDiffDeg || !bearingDegrees || !buildViewPolicy || !bui
     !sizeFromCategory || !sizeClass || !isLikelyPrivateClass || !dimColor || !declutterLabels || !updateClockOffset ||
     !viewBounds || !alphaToSdf || !buildCoverageCircles || !countGroundByAirport ||
     !isIcaoHex || !unwrapLngNear || !trafficRetryDelayMs || !trafficOutage || !isAuthoritativeDestSource ||
-    !routeCacheEntryStale || !selectRouteFetchPlanes) {
+    !routeCacheEntryStale || !selectRouteFetchPlanes || !routeEntryReplaceable || !isUsableTrafficRow) {
   throw new Error("Contrails core helpers failed to load.");
 }
 
@@ -1704,8 +1723,10 @@ function aircraftUrl(hex) {
 }
 // fetch has no timeout of its own, and a request that never settles stalls whatever awaits it. The timer is left
 // running after the headers arrive so a stalled body read is cut off too (aborting a finished request is a no-op).
-// An outer options.signal still aborts the request.
-const FETCH_TIMEOUT_MS = 10000;
+// An outer options.signal still aborts the request. This is a hang guard, not a latency target: Worker endpoints
+// chain upstream fallbacks (traffic: primary 6 s, backup 6 s, then the relay; schedule: FR24 8 s, then the relay
+// 12 s; traces: two providers at 8 s each), and a slow answer that arrives is still a good one.
+const FETCH_TIMEOUT_MS = 25000;
 function fetchWithTimeout(url, options, timeoutMs) {
   options = options || {};
   var controller = new AbortController();
@@ -2610,15 +2631,16 @@ function pickLiveAircraft(acList) {
   var best = null;
   for (var i = 0; i < acList.length; i++) {
     var snapshot = acList[i];
-    var hex = normalizeAircraftHex(snapshot && snapshot.hex);
-    if (!hex || snapshot.lat == null || snapshot.lon == null) continue;
+    if (!isUsableTrafficRow(snapshot)) continue;
+    var hex = normalizeAircraftHex(snapshot.hex);
+    if (!hex) continue;
     if (snapshot.seen != null && snapshot.seen > 60) continue;
     if (!best || snapshot.seen == null || snapshot.seen < best.seen) {
       best = {
         hex: hex,
         lat: snapshot.lat,
         lng: snapshot.lon,
-        callsign: (snapshot.flight || "").trim().toUpperCase() || null,
+        callsign: (typeof snapshot.flight === "string" ? snapshot.flight.trim().toUpperCase() : "") || null,
         seen: snapshot.seen == null ? 0 : snapshot.seen
       };
     }
@@ -3636,6 +3658,15 @@ async function fetchAircraft(options) {
       return;
     }
     if (requestSeq !== fetchRequestSeq) return;
+    // The feed counts as healthy only once its payload has been processed; a payload that can't be processed
+    // is a failure like any other, or the map would freeze with no outage shown and no backoff.
+    try {
+      processAircraft(Array.isArray(data.ac) ? data.ac : [], data.now);
+    } catch (procErr) {
+      console.warn("Traffic payload could not be processed:", procErr);
+      noteTrafficFetchFailure();
+      return;
+    }
     var prevSource = trafficSource;
     trafficFetchOk = true;
     trafficFailStreak = 0;
@@ -3649,7 +3680,9 @@ async function fetchAircraft(options) {
       }
     }
     setTrafficStale(false);
-    processAircraft(data.ac || [], data.now);
+    // processAircraft drew the summary and hint while the previous (possibly failed) state was still set.
+    updateControlsCompactSummary();
+    updateViewHint(visibleAircraftCount());
   } catch (err) {
     console.warn("Traffic refresh failed:", err);
   } finally {
@@ -3662,7 +3695,8 @@ async function fetchAircraft(options) {
   }
 }
 
-var TRAFFIC_FETCH_TIMEOUT_MS = 10000;
+// Budgets the Worker's whole failover chain (see FETCH_TIMEOUT_MS); only a request that hangs past it fails.
+var TRAFFIC_FETCH_TIMEOUT_MS = FETCH_TIMEOUT_MS;
 // Consecutive failures back the poll off exponentially up to this.
 var TRAFFIC_RETRY_MAX_MS = 60000;
 
@@ -3750,6 +3784,7 @@ async function fetchTrafficCircles(circles, signal) {
     var lagS = newest != null && Number.isFinite(r.now) ? (newest - r.now) / 1000 : 0;
     for (var k = 0; k < r.ac.length; k++) {
       var s = r.ac[k];
+      if (!isUsableTrafficRow(s)) continue;
       if (lagS) {
         if (s.seen != null) s.seen += lagS;
         if (s.seen_pos != null) s.seen_pos += lagS;
@@ -3782,22 +3817,25 @@ function buildAircraftSnapshot(ac, options) {
   var activeIds = {};
   for (var i = 0; i < ac.length; i++) {
     var s = ac[i];
+    // One malformed row (null, non-numeric position) is skipped rather than failing the whole poll.
+    if (!isUsableTrafficRow(s)) continue;
     var hex = normalizeAircraftHex(s.hex);
     var isGround = s.alt_baro === "ground";
+    var typeCode = typeof s.t === "string" ? s.t : null;
     if (!hex) continue;
     if (!isGround && s.alt_baro == null) continue;
     if (s.lat == null || s.lon == null) continue;
     if (s.category && /^C/.test(s.category)) continue;
-    if (sizeClass(s.t || null, s.category || null) === "heli") continue;
+    if (sizeClass(typeCode, s.category || null) === "heli") continue;
     if (s.seen != null && s.seen > 15) continue;
     var heading = s.track != null ? s.track : (s.true_heading != null ? s.true_heading : s.mag_heading);
     if (isGround && heading == null) continue;
     if (activeIds[hex]) continue;
 
-    var callsign = (s.flight || "").trim() || null;
-    var priv = isPrivate(callsign, s.t || null, s.category || null);
+    var callsign = (typeof s.flight === "string" ? s.flight.trim() : "") || null;
+    var priv = isPrivate(callsign, typeCode, s.category || null);
     var squawk = s.squawk || null;
-    var emerg = s.emergency && s.emergency !== "none" ? s.emergency : null;
+    var emerg = typeof s.emergency === "string" && s.emergency && s.emergency !== "none" ? s.emergency : null;
     var baseBearing = s.dir != null ? s.dir : (heading != null ? heading : 0);
     var metrics = includeProximity ? proximityMetrics(s.lat, s.lon, baseBearing) : null;
     var viewDistKm = includeProximity ? viewportDistanceKm(s.lat, s.lon) : null;
@@ -3809,7 +3847,7 @@ function buildAircraftSnapshot(ac, options) {
     snapshot.push({
       icao24: hex,
       callsign: callsign,
-      aircraftType: s.t || null,
+      aircraftType: typeCode,
       category: s.category || null,
       registration: s.r || null,
       lat: s.lat, lng: s.lon,
@@ -3978,6 +4016,8 @@ function mergeRoutesetEntries(routes, sourcePlanes) {
   for (var j = 0; j < routes.length; j++) {
     var r = routes[j];
     if (!r.callsign || (!r.origin && !r.destination)) continue;
+    // FR24 or the schedule may have resolved this flight while the request was out.
+    if (!routeEntryReplaceable(routeCache[r.callsign], r.destSource, fetchedAt)) continue;
     var dest = r.destination;
     var destIata = dest ? (dest.region ? dest.display : dest.iata) : null;
     var iataParts = [r.origin ? r.origin.iata : null, destIata].filter(Boolean);
@@ -4040,7 +4080,7 @@ async function postRouteset(needed, candidates) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ planes: needed })
-    }, 15000);
+    });
     if (!resp.ok) return false;
     var routes = await resp.json();
     if (!Array.isArray(routes)) return false;

@@ -559,15 +559,16 @@ function pickLiveAircraft(acList) {
   var best = null;
   for (var i = 0; i < acList.length; i++) {
     var snapshot = acList[i];
-    var hex = normalizeAircraftHex(snapshot && snapshot.hex);
-    if (!hex || snapshot.lat == null || snapshot.lon == null) continue;
+    if (!isUsableTrafficRow(snapshot)) continue;
+    var hex = normalizeAircraftHex(snapshot.hex);
+    if (!hex) continue;
     if (snapshot.seen != null && snapshot.seen > 60) continue;
     if (!best || snapshot.seen == null || snapshot.seen < best.seen) {
       best = {
         hex: hex,
         lat: snapshot.lat,
         lng: snapshot.lon,
-        callsign: (snapshot.flight || "").trim().toUpperCase() || null,
+        callsign: (typeof snapshot.flight === "string" ? snapshot.flight.trim().toUpperCase() : "") || null,
         seen: snapshot.seen == null ? 0 : snapshot.seen
       };
     }
