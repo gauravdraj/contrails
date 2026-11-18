@@ -1159,6 +1159,25 @@
     return hi - lo >= minSpanFt;
   }
 
+  // True when the aircraft lost at least minDropFt between its earliest and latest airborne sample in the window:
+  // an approach, not a takeoff (which only gains altitude). A flare cuts the descent rate, so the rate alone
+  // can't tell a plane about to touch down from one lifting off.
+  function descendedRecently(points, nowMs, options) {
+    if (!points || !points.length) return false;
+    options = options || {};
+    var windowMs = options.windowMs != null ? options.windowMs : 3 * 60 * 1000;
+    var minDropFt = options.minDropFt != null ? options.minDropFt : 500;
+    var earliest = null, latest = null;
+    for (var i = points.length - 1; i >= 0; i--) {
+      var p = points[i];
+      if (!p || p[2] < nowMs - windowMs) break;
+      if (p[6] || p[4] || p[3] == null || !Number.isFinite(p[3])) continue;
+      if (latest == null) latest = p[3];
+      earliest = p[3];
+    }
+    return earliest != null && latest != null && earliest - latest >= minDropFt;
+  }
+
   // How much closer (km) the track got to a target over about `spanMs`; negative when moving away. Null when
   // the track is too short or the earlier point is too old to say.
   function closingKm(points, targetLat, targetLng, spanMs) {
@@ -1636,6 +1655,7 @@
     compareAirportDepartureEntries: compareAirportDepartureEntries,
     classifyGroundDepartureStatus: classifyGroundDepartureStatus,
     landedRecently: landedRecently,
+    descendedRecently: descendedRecently,
     arrivalPathTimeMin: arrivalPathTimeMin,
     approachPathKm: approachPathKm,
     runwayApproachEnds: runwayApproachEnds,
