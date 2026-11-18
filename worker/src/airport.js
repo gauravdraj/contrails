@@ -308,10 +308,16 @@ function formatDepartureJson(plane) {
 }
 
 // Only planes that could appear on the requested board are worth a route
-// lookup: ground planes near the field (departures) and airborne planes that are
-// not climbing out (arrivals, lowest first, matching the arrivals sort). With
-// dir=both each list is guaranteed half the budget and any unused share goes
-// to the other, so neither list starves.
+// lookup: ground planes near the field (departures) and airborne planes
+// (arrivals, lowest first, matching the arrivals sort). Climbing planes sort
+// last rather than being dropped, so spare capacity still covers a go-around
+// whose route is the only thing keeping it on the board. With dir=both each
+// list is guaranteed half the budget and any unused share goes to the other,
+// so neither list starves.
+function isClimbing(plane) {
+  return plane.vRate != null && plane.vRate >= VERT_RATE_THRESHOLD ? 1 : 0;
+}
+
 export function selectEnrichCandidates(planes, dir) {
   const wantArrivals = dir === "arrivals" || dir === "both";
   const wantDepartures = dir === "departures" || dir === "both";
@@ -324,8 +330,9 @@ export function selectEnrichCandidates(planes, dir) {
     : [];
   const arrivals = wantArrivals
     ? routable
-      .filter((p) => !p.ground && !(p.vRate != null && p.vRate >= VERT_RATE_THRESHOLD))
-      .sort((a, b) => ((a.altFt ?? Infinity) - (b.altFt ?? Infinity)) || (a.distKm - b.distKm))
+      .filter((p) => !p.ground)
+      .sort((a, b) => (isClimbing(a) - isClimbing(b)) ||
+        ((a.altFt ?? Infinity) - (b.altFt ?? Infinity)) || (a.distKm - b.distKm))
     : [];
 
   const depBudget = wantArrivals

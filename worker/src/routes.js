@@ -66,24 +66,26 @@ function isLowPoint(pt, maxAltM) {
   return typeof pt[3] === "number" && Number.isFinite(pt[3]) && pt[3] <= maxAltM;
 }
 
-// Start of the current leg in a whole-day trace, mirroring the client's
-// findFlightStartIndex: skip trailing ground points, then take the later of the
-// last ground->air transition and the last gap > 30 min. Unlike the client, the
-// ground point itself (the takeoff roll) is kept so the origin scan sees it.
+// Start of the current leg in a whole-day trace: the later of the last gap
+// > 30 min anywhere in the trace (including among trailing ground points, e.g.
+// taxiing out for the next leg after an hour out of coverage) and the last
+// ground->air transition before the final airborne segment. Unlike the client's
+// findFlightStartIndex, the ground point itself (the takeoff roll) is kept so
+// the origin scan sees it.
 export function findLegStartIndex(path) {
   if (!path || !path.length) return 0;
+
+  let gapBound = 0;
+  for (let j = path.length - 1; j >= 1; j--) {
+    if (path[j][0] - path[j - 1][0] > LEG_GAP_SEC) { gapBound = j; break; }
+  }
+
   let scanEnd = path.length - 1;
   while (scanEnd >= 0 && path[scanEnd][5] === true) scanEnd--;
-  if (scanEnd < 0) return 0;
 
   let groundBound = 0;
   for (let i = scanEnd; i >= 0; i--) {
     if (path[i][5] === true) { groundBound = i; break; }
-  }
-
-  let gapBound = 0;
-  for (let j = scanEnd; j >= 1; j--) {
-    if (path[j][0] - path[j - 1][0] > LEG_GAP_SEC) { gapBound = j; break; }
   }
 
   return Math.max(groundBound, gapBound);

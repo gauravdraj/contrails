@@ -282,6 +282,32 @@ async function handleDatis(url, ctx) {
   }
 }
 
+// Reads the body chunk by chunk and cancels the stream as soon as it passes
+// maxBytes (a missing Content-Length can't be trusted). Returns null when too big.
+async function readBodyCapped(request, maxBytes) {
+  if (!request.body) return new Uint8Array(0);
+  const reader = request.body.getReader();
+  const chunks = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => {});
+      return null;
+    }
+    chunks.push(value);
+  }
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out;
+}
+
 async function handleRouteset(request, env, ctx) {
   if (request.method !== "POST") return json(405, { error: "POST required" });
 
@@ -290,8 +316,8 @@ async function handleRouteset(request, env, ctx) {
 
   let planes;
   try {
-    const buf = await request.arrayBuffer();
-    if (buf.byteLength > ROUTESET_MAX_BODY_BYTES) return json(413, { error: "Body too large" });
+    const buf = await readBodyCapped(request, ROUTESET_MAX_BODY_BYTES);
+    if (!buf) return json(413, { error: "Body too large" });
     const body = JSON.parse(new TextDecoder().decode(buf));
     planes = body.planes;
   } catch (_) {

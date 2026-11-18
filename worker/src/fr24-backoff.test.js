@@ -367,6 +367,50 @@ test("fr24Fetch rethrows the network error when the relay is off", async (t) => 
   await assert.rejects(fr24Fetch("https://api.flightradar24.com/common/v1/airport.json?code=SFO"), /network down/);
 });
 
+// Two Worker isolates = two instances of the module sharing one cache.
+async function twoIsolates() {
+  const a = await import("./fr24-backoff.js?isolate=a" + Math.random());
+  const b = await import("./fr24-backoff.js?isolate=b" + Math.random());
+  return { a, b };
+}
+
+test("cross-isolate: a stale success does not clear another isolate's newer shared backoff, even after importing it", async (t) => {
+  fullReset();
+  t.after(fullReset);
+  const { a, b } = await twoIsolates();
+
+  const startA = a.fr24BackoffGeneration(); // isolate A sends a request
+  const ctxB = makeMockCtx();
+  b.fr24TriggerBackoff(ctxB); // isolate B gets a 429 meanwhile
+  await Promise.all(ctxB._pending);
+  assert.equal(await a.fr24CheckBackoff(), true, "A imports B's window");
+
+  const ctxA = makeMockCtx();
+  a.fr24ResetBackoff(ctxA, startA); // A's request then succeeds
+  await Promise.all(ctxA._pending);
+
+  assert.equal(await a.fr24CheckBackoff(), true, "A must stay in the imported window");
+  assert.ok(mockCache._store.has("https://fr24-backoff-state/global"), "the shared marker must survive");
+});
+
+test("cross-isolate: a success never deletes an active shared marker it has not seen", async (t) => {
+  fullReset();
+  t.after(fullReset);
+  const { a, b } = await twoIsolates();
+
+  const startA = a.fr24BackoffGeneration();
+  const ctxB = makeMockCtx();
+  b.fr24TriggerBackoff(ctxB);
+  await Promise.all(ctxB._pending);
+
+  const ctxA = makeMockCtx();
+  a.fr24ResetBackoff(ctxA, startA);
+  await Promise.all(ctxA._pending);
+
+  assert.ok(await mockCache.match(new Request("https://fr24-backoff-state/global")), "marker still cached");
+  assert.equal(await a.fr24CheckBackoff(), true);
+});
+
 test("fr24Fetch returns the direct 403 when no relay is configured", async (t) => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => new Response("", { status: 403 });
