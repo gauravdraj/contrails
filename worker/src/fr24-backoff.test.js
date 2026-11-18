@@ -253,6 +253,120 @@ test("fr24Fetch retries a 403 through the relay", async (t) => {
   assert.equal(relayed, target);
 });
 
+async function cachedBackoffMs(ctx) {
+  await Promise.all(ctx._pending);
+  const entry = await mockCache.match(new Request("https://fr24-backoff-state/global"));
+  if (!entry) return null;
+  const { until } = await entry.clone().json();
+  return until - Date.now();
+}
+
+test("concurrent 429s in one burst do not each double the backoff", async (t) => {
+  fullReset();
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    return new Response("", { status: 429 });
+  };
+  t.after(() => { globalThis.fetch = origFetch; fullReset(); });
+
+  const ctx = makeMockCtx();
+  await Promise.all(["AAA1", "AAA2", "AAA3", "AAA4", "AAA5"].map((cs) => fr24CachedSearch(cs, ctx)));
+  const ms = await cachedBackoffMs(ctx);
+  assert.ok(ms != null && ms > 0);
+  assert.ok(ms <= 20000, `one burst should escalate once (<= 20 s), got ${ms} ms`);
+});
+
+test("a success that began before a fresh 429 does not clear that backoff", async (t) => {
+  fullReset();
+  const origFetch = globalThis.fetch;
+  let releaseA;
+  globalThis.fetch = async (url) => {
+    const q = new URL(String(url)).searchParams.get("query");
+    if (q === "SLOW1") {
+      await new Promise((resolve) => { releaseA = resolve; });
+      return new Response(JSON.stringify({ results: [] }), { status: 200 });
+    }
+    return new Response("", { status: 429 });
+  };
+  t.after(() => { globalThis.fetch = origFetch; fullReset(); });
+
+  const pendingA = fr24CachedSearch("SLOW1", makeMockCtx());
+  await new Promise((resolve) => setTimeout(resolve, 1));
+  assert.equal(await fr24CachedSearch("FAST1", makeMockCtx()), null);
+  assert.equal(await fr24CheckBackoff(), true);
+  releaseA();
+  await pendingA;
+  assert.equal(await fr24CheckBackoff(), true, "the stale success must not clear the new backoff");
+});
+
+test("a 200 with an invalid body does not reset the backoff escalation", async (t) => {
+  fullReset();
+  const origFetch = globalThis.fetch;
+  const origNow = Date.now;
+  let now = origNow.call(Date);
+  Date.now = () => now;
+  t.after(() => { globalThis.fetch = origFetch; Date.now = origNow; fullReset(); });
+
+  const ctx1 = makeMockCtx();
+  fr24TriggerBackoff(ctx1); // 20 s window
+  assert.equal(await cachedBackoffMs(ctx1), 20000);
+  now += 21000; // window expired
+  mockCache._store.clear();
+
+  globalThis.fetch = async () => new Response("<html>challenge</html>", { status: 200 });
+  assert.equal(await fr24CachedSearch("BAD1", makeMockCtx()), null);
+
+  const ctx2 = makeMockCtx();
+  fr24TriggerBackoff(ctx2);
+  assert.equal(await cachedBackoffMs(ctx2), 40000, "escalation should continue, not restart at 20 s");
+});
+
+test("fr24Fetch passes a timeout signal to the direct FR24 fetch", async (t) => {
+  const originalFetch = globalThis.fetch;
+  let init = null;
+  globalThis.fetch = async (_url, i) => { init = i; return new Response("{}", { status: 200 }); };
+  t.after(() => { globalThis.fetch = originalFetch; });
+  await fr24Fetch("https://api.flightradar24.com/common/v1/airport.json?code=SFO");
+  assert.ok(init?.signal instanceof AbortSignal, "direct FR24 fetch must have a deadline");
+});
+
+test("fr24Fetch tries the relay on network errors and 5xx, not on other 4xx", async (t) => {
+  const originalFetch = globalThis.fetch;
+  let direct;
+  let relayCalls = 0;
+  globalThis.fetch = async (url) => {
+    if (String(url).startsWith("https://relay.test/fr24?u=")) {
+      relayCalls++;
+      return new Response("{\"ok\":1}", { status: 200 });
+    }
+    return direct();
+  };
+  configureRelay({ ADSB_RELAY_URL: "https://relay.test", ADSB_RELAY_KEY: "k" });
+  t.after(() => { globalThis.fetch = originalFetch; configureRelay({}); });
+  const target = "https://api.flightradar24.com/common/v1/airport.json?code=SFO";
+
+  direct = async () => { throw new TypeError("network down"); };
+  assert.equal((await fr24Fetch(target)).status, 200);
+  direct = async () => { throw new DOMException("timed out", "TimeoutError"); };
+  assert.equal((await fr24Fetch(target)).status, 200);
+  direct = async () => new Response("", { status: 503 });
+  assert.equal((await fr24Fetch(target)).status, 200);
+  assert.equal(relayCalls, 3);
+
+  direct = async () => new Response("", { status: 404 });
+  assert.equal((await fr24Fetch(target)).status, 404);
+  assert.equal(relayCalls, 3, "a plain 404 is not retried through the relay");
+});
+
+test("fr24Fetch rethrows the network error when the relay is off", async (t) => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => { throw new TypeError("network down"); };
+  configureRelay({});
+  t.after(() => { globalThis.fetch = originalFetch; });
+  await assert.rejects(fr24Fetch("https://api.flightradar24.com/common/v1/airport.json?code=SFO"), /network down/);
+});
+
 test("fr24Fetch returns the direct 403 when no relay is configured", async (t) => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => new Response("", { status: 403 });

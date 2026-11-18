@@ -5,6 +5,7 @@ import {
   nearestAirport,
   convergenceScore,
   extractOriginDest,
+  findLegStartIndex,
   detectPhase,
   mergeRoutes,
   formatRouteLabel,
@@ -906,5 +907,98 @@ test("mergeRoutes regional fallback does not trigger for various private registr
   for (const cs of ["G-ABCD", "D-EFGH", "VH-ABC", "C-FABC", "F-GABC"]) {
     const result = mergeRoutes(track, adsbdb, { ...base, callsign: cs });
     assert.equal(result.destination, null, `should not trigger for ${cs}`);
+  }
+});
+
+// --- leg segmentation / unknown altitude ---
+
+function makeLaxSfoThenDepartSfoPath({ groundAtSfo, gapSec }) {
+  const pts = [];
+  let t = 1000;
+  const push = (lat, lon, alt, gnd = false, dt = 60) => { pts.push([t, lat, lon, alt, 330, gnd]); t += dt; };
+  // Leg 1: LAX -> SFO.
+  push(33.943, -118.408, 0, true);
+  push(33.96, -118.43, 300);
+  for (let i = 0; i < 40; i++) {
+    const f = i / 39;
+    push(34.0 + f * 3.3, -118.5 - f * 3.6, 10000);
+  }
+  for (let i = 0; i < 12; i++) push(37.35 + i * 0.022, -122.1 - i * 0.022, 2500 - i * 200);
+  // On the ground at SFO (or simply out of coverage) between legs.
+  if (groundAtSfo) {
+    for (let i = 0; i < 5; i++) push(37.62, -122.375, 0, true, 600);
+  } else {
+    t += gapSec;
+  }
+  // Leg 2: just departed SFO northbound, only a handful of points so far.
+  push(37.63, -122.38, 150);
+  push(37.65, -122.39, 300);
+  push(37.70, -122.42, 800);
+  push(37.76, -122.45, 1500);
+  push(37.83, -122.48, 2500);
+  push(37.90, -122.50, 3500);
+  return pts;
+}
+
+test("findLegStartIndex starts at the last ground->air transition", () => {
+  const path = [
+    [0, 0, 0, 0, 0, true],
+    [10, 0, 0, 500, 0, false],
+    [20, 0, 0, 0, 0, true],
+    [30, 0, 0, 500, 0, false],
+    [40, 0, 0, 900, 0, false],
+  ];
+  assert.equal(findLegStartIndex(path), 2);
+});
+
+test("extractOriginDest labels a later leg with that leg's origin (ground transition)", () => {
+  const result = extractOriginDest({ path: makeLaxSfoThenDepartSfoPath({ groundAtSfo: true }) });
+  assert.equal(result.origin?.iata, "SFO", "origin should be the current leg's departure airport");
+  assert.notEqual(result.destination?.iata, "SFO", "previous leg's arrival is not the destination");
+});
+
+test("extractOriginDest labels a later leg with that leg's origin (gap > 30 min, no ground points)", () => {
+  const result = extractOriginDest({ path: makeLaxSfoThenDepartSfoPath({ groundAtSfo: false, gapSec: 45 * 60 }) });
+  assert.equal(result.origin?.iata, "SFO");
+  assert.notEqual(result.destination?.iata, "SFO");
+});
+
+test("mergeRoutes does not let a previous leg's track origin override ADSBDB", () => {
+  const track = { path: makeLaxSfoThenDepartSfoPath({ groundAtSfo: true }) };
+  const adsbdb = { origin: { iata: "SFO", name: "San Francisco" }, destination: { iata: "SEA", name: "Seattle" } };
+  const result = mergeRoutes(track, adsbdb, { callsign: "ASA123", altFt: 11000, vRate: 1500 });
+  assert.equal(result.origin.iata, "SFO");
+});
+
+test("extractOriginDest treats unknown (null) altitude as unknown, not low", () => {
+  // Cruising past SFO with no altitude in the first points: must not be read as a departure.
+  const path = [
+    [1000, 37.62, -122.375, null, 330, false],
+    [1060, 37.63, -122.38, null, 330, false],
+  ];
+  for (let i = 0; i < 20; i++) path.push([1120 + i * 60, 37.7 + i * 0.1, -122.4, 10500, 330, false]);
+  assert.equal(extractOriginDest({ path }).origin, null);
+});
+
+test("extractOriginDest skips destination when the tail has only unknown or high altitudes", () => {
+  const path = [];
+  for (let i = 0; i < 20; i++) {
+    path.push([1000 + i * 60, 36.9 + i * 0.035, -121.8 - i * 0.028, i % 3 === 0 ? null : 10500, 330, false]);
+  }
+  const result = extractOriginDest({ path });
+  assert.equal(result.destination, null);
+  assert.equal(result.ambiguous, false);
+});
+
+test("Japanese/Korean airline callsigns are not private; JA/HL registrations still are", () => {
+  const track = makeAmbiguousTrack();
+  const base = { altFt: 5000, vRate: -500 };
+  for (const cs of ["JAL123", "JAL1", "HLF123"]) {
+    const result = mergeRoutes(track, null, { ...base, callsign: cs });
+    assert.equal(result?.destination?.region, "Bay Area", `${cs} should get the regional fallback`);
+  }
+  for (const cs of ["JA123A", "JA01KZ", "HL7612", "C-GABC", "C-IABC"]) {
+    const result = mergeRoutes(track, null, { ...base, callsign: cs });
+    assert.equal(result, null, `${cs} is a registration and should be treated as private`);
   }
 });

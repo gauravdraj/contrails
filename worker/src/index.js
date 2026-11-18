@@ -1,4 +1,4 @@
-import { fetchCachedRouteEntry, fetchCachedAircraft } from "./adsbdb.js";
+import { fetchCachedRouteEntry, fetchCachedAircraft, normalizeCallsign } from "./adsbdb.js";
 import { buildSchedulePayload } from "./fr24.js";
 import { CORS_HEADERS, json } from "./http.js";
 import { handleAirport } from "./airport.js";
@@ -6,7 +6,14 @@ import { handleNearby } from "./nearby.js";
 import { mergeRoutes, detectPhase, formatRouteLabel } from "./routes.js";
 import { fetchTrace } from "./traces.js";
 import { configureRelay, fetchLookupResilient, fetchTraffic } from "./providers.js";
-import { fr24CheckBackoff, fr24TriggerBackoff, fr24ResetBackoff, fr24CachedSearch, fr24Fetch } from "./fr24-backoff.js";
+import {
+  fr24CheckBackoff,
+  fr24TriggerBackoff,
+  fr24ResetBackoff,
+  fr24CachedSearch,
+  fr24Fetch,
+  fr24BackoffGeneration,
+} from "./fr24-backoff.js";
 
 const PLANESPOTTERS_API = "https://api.planespotters.net/pub/photos";
 const FR24_API = "https://api.flightradar24.com/common/v1";
@@ -20,6 +27,18 @@ const DATIS_CACHE_TTL = 60;
 
 const CONTACT_USER_AGENT = "contrails/1.0 (+https://gauravdraj.github.io/contrails/)";
 
+// Upstream feeds serve at most 250 NM (adsb.fi rejects anything above it).
+const ADSB_MAX_DIST_NM = 250;
+// /routeset bodies carry at most 20 small plane records.
+const ROUTESET_MAX_BODY_BYTES = 64 * 1024;
+
+// Cache writes must outlive the response, so hand them to ctx.waitUntil; await
+// them directly when there is no ctx (unit tests).
+async function cachePut(ctx, cache, key, response) {
+  const put = Promise.resolve().then(() => cache.put(key, response)).catch(() => {});
+  if (typeof ctx?.waitUntil === "function") ctx.waitUntil(put);
+  else await put;
+}
 
 
 export default {
@@ -31,7 +50,7 @@ export default {
       return new Response(null, { headers: CORS_HEADERS });
     }
 
-    if (url.pathname.startsWith("/adsb/")) return proxyAdsb(url, env);
+    if (url.pathname.startsWith("/adsb/")) return proxyAdsb(url, env, ctx);
     if (url.pathname.startsWith("/photo/")) return handlePhoto(url, ctx);
     if (url.pathname === "/routeset") return handleRouteset(request, env, ctx);
     if (url.pathname.startsWith("/track/")) return handleTrack(url, env, ctx);
@@ -74,23 +93,28 @@ export function snapAdsbGrid(lat, lon, dist) {
   };
 }
 
-async function proxyAdsb(url, env) {
+async function proxyAdsb(url, env, ctx) {
   const parts = url.pathname.slice("/adsb".length).split("/");
   const latIdx = parts.indexOf("lat");
   const lonIdx = parts.indexOf("lon");
   const distIdx = parts.indexOf("dist");
 
   if (latIdx === -1 || lonIdx === -1 || distIdx === -1) {
-    return proxyAdsbLookup(url);
+    return proxyAdsbLookup(url, ctx);
   }
 
   const lat = parseFloat(parts[latIdx + 1]);
-  const lon = parseFloat(parts[lonIdx + 1]);
-  const dist = parseFloat(parts[distIdx + 1]);
+  let lon = parseFloat(parts[lonIdx + 1]);
+  let dist = parseFloat(parts[distIdx + 1]);
 
-  if (!isFinite(lat) || !isFinite(lon) || !isFinite(dist)) {
+  if (!isFinite(lat) || !isFinite(lon) || !isFinite(dist) || lat < -90 || lat > 90 || dist <= 0) {
     return json(400, { error: "Invalid coordinates" });
   }
+  // Installed older frontends can send an unwrapped longitude after panning
+  // across the antimeridian, and the boot prefetch in index.html asks for up
+  // to ~274 NM, so normalize those instead of rejecting them.
+  if (lon < -180 || lon > 180) lon = ((lon + 180) % 360 + 360) % 360 - 180;
+  dist = Math.min(dist, ADSB_MAX_DIST_NM);
 
   const snapped = snapAdsbGrid(lat, lon, dist);
   const gridPath = "/lat/" + snapped.lat.toFixed(2) + "/lon/" + snapped.lon.toFixed(2) + "/dist/" + snapped.dist;
@@ -113,7 +137,7 @@ async function proxyAdsb(url, env) {
     },
   });
 
-  cache.put(cacheKey, response.clone());
+  await cachePut(ctx, cache, cacheKey, response.clone());
   return response;
 }
 
@@ -124,11 +148,16 @@ const ADSB_LOOKUP_PATTERNS = {
   callsign: /^[A-Z0-9]{2,8}$/,
 };
 
-async function proxyAdsbLookup(url) {
+async function proxyAdsbLookup(url, ctx) {
   const match = url.pathname.match(/^\/adsb\/(hex|callsign)\/([^/]+)$/);
   if (!match) return json(404, { error: "Not found" });
   const kind = match[1];
-  const raw = decodeURIComponent(match[2]).trim();
+  let raw;
+  try {
+    raw = decodeURIComponent(match[2]).trim();
+  } catch (_) {
+    return json(400, { error: "Invalid " + kind });
+  }
   const value = kind === "hex" ? raw.toLowerCase() : raw.toUpperCase();
   if (!ADSB_LOOKUP_PATTERNS[kind].test(value)) return json(400, { error: "Invalid " + kind });
 
@@ -143,7 +172,7 @@ async function proxyAdsbLookup(url) {
       status: 200,
       headers: { "Content-Type": "application/json", "Cache-Control": "s-maxage=5", ...CORS_HEADERS },
     });
-    cache.put(cacheKey, response.clone());
+    await cachePut(ctx, cache, cacheKey, response.clone());
     return response;
   } catch (error) {
     return json(502, { error: error.message });
@@ -155,7 +184,8 @@ async function handlePhoto(url, ctx) {
   if (!/^[0-9a-f]{6}$/.test(hex)) return json(400, { error: "Invalid hex" });
 
   const cache = caches.default;
-  const cacheKey = new Request(url.toString());
+  // Canonical key: query strings and hex case must not bust the cache.
+  const cacheKey = new Request("https://photo-cache/" + hex);
   const cached = await cache.match(cacheKey);
   if (cached) return cached;
 
@@ -255,9 +285,14 @@ async function handleDatis(url, ctx) {
 async function handleRouteset(request, env, ctx) {
   if (request.method !== "POST") return json(405, { error: "POST required" });
 
+  const declaredLength = Number(request.headers.get("Content-Length"));
+  if (declaredLength > ROUTESET_MAX_BODY_BYTES) return json(413, { error: "Body too large" });
+
   let planes;
   try {
-    const body = await request.json();
+    const buf = await request.arrayBuffer();
+    if (buf.byteLength > ROUTESET_MAX_BODY_BYTES) return json(413, { error: "Body too large" });
+    const body = JSON.parse(new TextDecoder().decode(buf));
     planes = body.planes;
   } catch (_) {
     return json(400, { error: "Invalid JSON" });
@@ -269,9 +304,12 @@ async function handleRouteset(request, env, ctx) {
 
   const results = await Promise.allSettled(
     limited.map(async (plane) => {
+      // Callsigns reach the ADSBDB URL and cache key; drop planes without a valid one.
+      const callsign = normalizeCallsign(plane?.callsign);
+      if (!callsign) return null;
       const [trackResult, adsbdbResult] = await Promise.allSettled([
         plane.hex ? fetchTrace(plane.hex, cache, ctx) : Promise.resolve(null),
-        fetchCachedRouteEntry(plane.callsign, cache, ctx, ADSBDB_CACHE_TTL),
+        fetchCachedRouteEntry(callsign, cache, ctx, ADSBDB_CACHE_TTL),
       ]);
       const track = trackResult.status === "fulfilled" ? trackResult.value : null;
       const adsbdb = adsbdbResult.status === "fulfilled" ? adsbdbResult.value : null;
@@ -308,7 +346,8 @@ async function handleSchedule(url, ctx) {
   if (!/^[A-Z]{3,4}$/.test(iata)) return json(400, { error: "Invalid airport code" });
 
   const cache = caches.default;
-  const cacheKey = new Request(url.toString());
+  // Canonical key: arbitrary query strings must not bust the cache.
+  const cacheKey = new Request("https://schedule-cache/" + iata);
   const cached = await cache.match(cacheKey);
   if (cached) return cached;
 
@@ -317,27 +356,33 @@ async function handleSchedule(url, ctx) {
   try {
     const lookback = Math.floor(Date.now() / 1000) - 2 * 3600;
     const base = `${FR24_API}/airport.json?code=${encodeURIComponent(iata)}&plugin[]=schedule&plugin[]=details&limit=100&plugin-setting[schedule][timestamp]=${lookback}`;
+    const startGeneration = fr24BackoffGeneration();
+    // Page 2 is optional: its failure must not discard a good page 1.
     const [r1, r2] = await Promise.all([
       fr24Fetch(base + "&page=1"),
-      fr24Fetch(base + "&page=2"),
+      fr24Fetch(base + "&page=2").catch(() => null),
     ]);
     if (r1.status === 429 || r1.status === 403) {
       fr24TriggerBackoff(ctx);
       return json(503, { error: "FR24 rate limited" });
     }
     if (!r1.ok) throw new Error("FR24 HTTP " + r1.status);
-    fr24ResetBackoff(ctx);
 
     const raw1 = await r1.json();
     const result = buildSchedulePayload(raw1, iata);
+    fr24ResetBackoff(ctx, startGeneration);
 
-    if (r2.status === 429 || r2.status === 403) {
+    if (r2 && (r2.status === 429 || r2.status === 403)) {
       fr24TriggerBackoff(ctx);
-    } else if (r2.ok) {
-      const raw2 = await r2.json();
-      const page2 = buildSchedulePayload(raw2, iata);
-      result.arrivals = result.arrivals.concat(page2.arrivals);
-      result.departures = result.departures.concat(page2.departures);
+    } else if (r2 && r2.ok) {
+      try {
+        const raw2 = await r2.json();
+        const page2 = buildSchedulePayload(raw2, iata);
+        result.arrivals = result.arrivals.concat(page2.arrivals);
+        result.departures = result.departures.concat(page2.departures);
+      } catch (_) {
+        // keep page 1
+      }
     }
 
     const response = json(200, result);

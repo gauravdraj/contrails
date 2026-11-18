@@ -105,7 +105,11 @@ async function fetchFromBackupPath(path) {
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
     if (!resp.ok) throw new Error("Backup HTTP " + resp.status);
-    return await resp.json();
+    const data = await resp.json();
+    // A 200 with an error body (e.g. {"error":...}) is a failed attempt too, so
+    // it must fall through to the relay rather than be returned and rejected later.
+    if (!isValidPayload(data)) throw new Error("Backup invalid payload");
+    return data;
   } catch (err) {
     if (!relay) throw err;
     return fetchFromRelay(path);

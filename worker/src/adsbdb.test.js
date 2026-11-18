@@ -1,12 +1,46 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildAircraftEntry, buildRouteAirports, buildRouteEntry, normalizeCallsign } from "./adsbdb.js";
+import {
+  buildAircraftEntry,
+  buildRouteAirports,
+  buildRouteEntry,
+  fetchCachedAircraft,
+  fetchCachedRouteEntry,
+  normalizeCallsign,
+} from "./adsbdb.js";
 
 test("normalizeCallsign trims and uppercases callsigns", () => {
   assert.equal(normalizeCallsign("  ual123 "), "UAL123");
   assert.equal(normalizeCallsign(""), null);
   assert.equal(normalizeCallsign(null), null);
+});
+
+test("normalizeCallsign rejects callsigns that are not 2-8 letters/digits", () => {
+  for (const bad of ["../aircraft/abc123", "UAL 123", "UAL123?x=1", "A", "ABCDEFGHI", "ual%2F1"]) {
+    assert.equal(normalizeCallsign(bad), null, bad);
+  }
+  assert.equal(normalizeCallsign("dal42"), "DAL42");
+});
+
+test("ADSBDB route and aircraft fetches carry a timeout signal; bad callsigns never reach ADSBDB", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, init) => {
+    calls.push({ url: String(url), signal: init?.signal });
+    return new Response(JSON.stringify({ response: "unknown" }), { status: 200 });
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const cache = { match: async () => null, put: async () => {} };
+  const ctx = { waitUntil: () => {} };
+
+  await fetchCachedRouteEntry("UAL123", cache, ctx, 60);
+  await fetchCachedAircraft("a1b2c3", cache, ctx, 60);
+  assert.equal(calls.length, 2);
+  for (const c of calls) assert.ok(c.signal instanceof AbortSignal, c.url + " should have a deadline");
+
+  await fetchCachedRouteEntry("../aircraft/a1b2c3", cache, ctx, 60);
+  assert.equal(calls.length, 2, "an invalid callsign must not be fetched");
 });
 
 test("buildRouteEntry keeps concise origin and destination details", () => {
