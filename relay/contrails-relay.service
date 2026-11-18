@@ -1,12 +1,23 @@
 [Unit]
 Description=Contrails ADS-B relay (Worker fallback on a residential IP)
+Wants=network-online.target
 After=network-online.target
+# RestartSec=5 never trips the default 5-in-10s limit, so a crash loop would
+# restart forever silently. 5 starts in 10 min fails the unit and pages once.
+StartLimitIntervalSec=10min
+StartLimitBurst=5
+OnFailure=soul-pager-alert@%n.service
 
 [Service]
 EnvironmentFile=%h/.config/contrails-relay/env
 ExecStart=/usr/bin/python3 %h/CursorLocal/contrails/relay/adsb_relay.py
 Restart=always
 RestartSec=5
+# May be a no-op if the user manager has no memory delegation; the in-process
+# cache byte cap is the real guard.
+MemoryMax=256M
+NoNewPrivileges=yes
+UMask=0077
 
 [Install]
 WantedBy=default.target
