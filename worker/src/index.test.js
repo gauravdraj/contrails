@@ -362,6 +362,29 @@ test("routeset rejects bodies over 64 KB before parsing", async (t) => {
   assert.equal(response.headers.get("Access-Control-Allow-Origin"), "*");
 });
 
+test("routeset stops reading a streamed body without Content-Length once it passes 64 KB", async (t) => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => { throw new Error("upstream must not be called"); };
+  t.after(() => { globalThis.fetch = originalFetch; });
+  let pulled = 0;
+  let cancelled = false;
+  const chunk = new Uint8Array(4096).fill(32);
+  const body = new ReadableStream({
+    pull(controller) {
+      pulled++;
+      if (pulled > 1000) controller.close();
+      else controller.enqueue(chunk);
+    },
+    cancel() { cancelled = true; },
+  });
+  const request = new Request("https://worker.test/routeset", { method: "POST", body, duplex: "half" });
+  assert.equal(request.headers.get("Content-Length"), null);
+  const response = await handler.fetch(request, {}, recordingCtx());
+  assert.equal(response.status, 413);
+  assert.ok(pulled <= 20, `should stop after ~17 x 4 KB chunks, pulled ${pulled}`);
+  assert.equal(cancelled, true);
+});
+
 test("schedule success that began before a fresh 429 does not clear that backoff", async (t) => {
   const originalCaches = globalThis.caches;
   const originalFetch = globalThis.fetch;

@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { fr24ResetBackoff } from "./fr24-backoff.js";
 
 import {
   resolveAirport,
@@ -183,7 +184,60 @@ test("handleAirport with 100 aircraft makes <= 20 FR24 searches, prioritising bo
   for (let i = 0; i < 10; i++) {
     assert.ok(searched.includes("DSC" + String(i).padStart(3, "0")), "descending arrival candidates are enriched");
   }
-  assert.ok(!searched.some((q) => q.startsWith("CLB")), "climbing planes are not arrival candidates");
+  assert.equal(searched.filter((q) => q.startsWith("CLB")).length, 10, "climbing planes only fill the spare capacity");
+});
+
+function goAroundFetch(ac, searched) {
+  return async (url) => {
+    const urlStr = String(url);
+    if (urlStr.includes("api.adsb.lol")) return new Response(JSON.stringify({ ac }), { status: 200 });
+    if (urlStr.includes("flightradar24.com")) {
+      const q = new URL(urlStr).searchParams.get("query");
+      searched.push(q);
+      if (q === "UA1") {
+        return new Response(JSON.stringify({
+          results: [{ type: "live", detail: { callsign: "UAL1", flight: "UA1", schd_from: "LAX", schd_to: "SFO" } }],
+        }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ results: [] }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ response: {} }), { status: 200 });
+  };
+}
+
+const GO_AROUND = { hex: "a0a0a0", flight: "UAL1    ", lat: 37.64, lon: -122.39, alt_baro: 1500, gs: 160, baro_rate: 1800 };
+
+test("handleAirport enriches a go-around (climbing) arrival when there is spare capacity", async (t) => {
+  const originalCaches = globalThis.caches;
+  const originalFetch = globalThis.fetch;
+  globalThis.caches = { default: { match: async () => null, put: async () => {}, delete: async () => true } };
+  const searched = [];
+  globalThis.fetch = goAroundFetch([GO_AROUND], searched);
+  fr24ResetBackoff();
+  t.after(() => { globalThis.caches = originalCaches; globalThis.fetch = originalFetch; fr24ResetBackoff(); });
+
+  const resp = await handleAirport(new URL("https://worker.test/airport/SFO?format=json"), {}, { waitUntil: () => {} });
+  const body = await resp.json();
+  assert.ok(searched.includes("UA1"), "go-around should be enriched");
+  assert.ok(body.arrivals.some((a) => a.callsign === "UAL1"), "route-confirmed go-around stays on the arrivals board");
+});
+
+test("handleAirport does not pick a go-around over 100 descending candidates", async (t) => {
+  const originalCaches = globalThis.caches;
+  const originalFetch = globalThis.fetch;
+  globalThis.caches = { default: { match: async () => null, put: async () => {}, delete: async () => true } };
+  const ac = [GO_AROUND];
+  for (let i = 0; i < 100; i++) {
+    ac.push({ hex: "d" + String(i).padStart(5, "0"), flight: "DSC" + String(i).padStart(3, "0"), lat: 37.7, lon: -122.3, alt_baro: 3000 + i * 10, baro_rate: -800 });
+  }
+  const searched = [];
+  globalThis.fetch = goAroundFetch(ac, searched);
+  fr24ResetBackoff();
+  t.after(() => { globalThis.caches = originalCaches; globalThis.fetch = originalFetch; fr24ResetBackoff(); });
+
+  await handleAirport(new URL("https://worker.test/airport/SFO?format=json"), {}, { waitUntil: () => {} });
+  assert.ok(searched.length <= 20, `expected <= 20 FR24 searches, got ${searched.length}`);
+  assert.ok(!searched.includes("UA1"), "descending candidates come first");
 });
 
 test("handleAirport skips a null aircraft row instead of failing the snapshot", async (t) => {

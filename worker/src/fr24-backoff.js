@@ -41,6 +41,9 @@ export async function fr24CheckBackoff() {
     if (cached) {
       const { until } = await cached.json();
       if (until > Date.now()) {
+        // Importing another isolate's window counts as a new backoff here, so
+        // requests that began before it can't clear it (see fr24ResetBackoff).
+        if (until > backoffUntil) backoffGeneration++;
         backoffUntil = until;
         return true;
       }
@@ -70,11 +73,15 @@ export function fr24TriggerBackoff(ctx) {
 
 // startGeneration (from fr24BackoffGeneration() taken before the request was
 // sent) makes the reset conditional: a success must not clear a backoff that
-// started after that request began. Without it the reset is unconditional.
+// started after that request began. Such a success also never deletes the
+// shared cache marker: another isolate may have written a newer window this
+// isolate hasn't seen, and markers expire on their own (<= 300 s). Without
+// startGeneration the reset is unconditional and clears the marker too.
 export function fr24ResetBackoff(ctx, startGeneration) {
   if (startGeneration !== undefined && startGeneration !== backoffGeneration) return;
   backoffDelay = 10000;
   backoffUntil = 0;
+  if (startGeneration !== undefined) return;
 
   try {
     const cache = caches.default;

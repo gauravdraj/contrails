@@ -1002,3 +1002,42 @@ test("Japanese/Korean airline callsigns are not private; JA/HL registrations sti
     assert.equal(result, null, `${cs} is a registration and should be treated as private`);
   }
 });
+
+// SFO -> LAX (no ground reports at LAX), an hour out of coverage, then ground
+// reports at LAX while taxiing out for the next leg (LAX -> JFK).
+function makeSfoLaxThenGapThenGroundAtLaxPath() {
+  const pts = [];
+  let t = 1000;
+  const push = (lat, lon, alt, gnd = false, dt = 60) => { pts.push([t, lat, lon, alt, 150, gnd]); t += dt; };
+  push(37.62, -122.375, 0, true);
+  push(37.60, -122.36, 300);
+  for (let i = 0; i < 40; i++) {
+    const f = i / 39;
+    push(37.5 - f * 3.3, -122.3 + f * 3.6, 10000);
+  }
+  for (let i = 0; i < 12; i++) push(34.2 - i * 0.022, -118.7 + i * 0.026, 2500 - i * 200);
+  t += 3600;
+  push(33.943, -118.408, 0, true, 30);
+  push(33.944, -118.410, 0, true, 30);
+  push(33.945, -118.412, 0, true, 30);
+  return pts;
+}
+
+test("findLegStartIndex honours a gap that falls among the trailing ground points", () => {
+  const path = makeSfoLaxThenGapThenGroundAtLaxPath();
+  assert.equal(findLegStartIndex(path), path.length - 3);
+});
+
+test("extractOriginDest: ground reports after an hour-long gap start a new leg (origin LAX, not SFO)", () => {
+  const result = extractOriginDest({ path: makeSfoLaxThenGapThenGroundAtLaxPath() });
+  assert.equal(result.origin?.iata, "LAX");
+  assert.notEqual(result.destination?.iata, "LAX");
+});
+
+test("mergeRoutes keeps ADSBDB's JFK for the next leg after a gap + ground reports at LAX", () => {
+  const track = { path: makeSfoLaxThenGapThenGroundAtLaxPath() };
+  const adsbdb = { origin: { iata: "LAX", name: "Los Angeles" }, destination: { iata: "JFK", name: "New York" } };
+  const result = mergeRoutes(track, adsbdb, { callsign: "AAL2", altFt: 0, vRate: 0 });
+  assert.equal(result.origin.iata, "LAX");
+  assert.equal(result.destination?.iata, "JFK");
+});
