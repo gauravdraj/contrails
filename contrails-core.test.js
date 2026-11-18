@@ -1622,19 +1622,19 @@ test("selectRouteFetchPlanes skips recent misses so unresolvable planes don't st
   assert.equal(core.selectRouteFetchPlanes([{ callsign: "UAL1" }], cache, { now: now + 11 * 60 * 1000 }).length, 1);
 });
 
-test("routeEntryReplaceable: a late non-authoritative answer can't replace a fresh FR24/schedule destination", () => {
+test("routeEntryReplaceable: no /routeset answer replaces a fresh FR24/schedule destination, even 'cross-validated'", () => {
   var now = 10 * 60 * 60 * 1000;
-  var fr24 = { destination: { iata: "SFO" }, destSource: "fr24-search", fetchedAt: now - 1000 };
-  assert.equal(core.routeEntryReplaceable(fr24, "convergence", now), false);
-  assert.equal(core.routeEntryReplaceable(fr24, "adsbdb", now), false);
-  assert.equal(core.routeEntryReplaceable(fr24, null, now), false);
-  assert.equal(core.routeEntryReplaceable({ destination: { iata: "SFO" }, destSource: "schedule", fetchedAt: now }, "track", now), false);
-  // Another authoritative answer may replace it, and so may anything once it has gone stale.
-  assert.equal(core.routeEntryReplaceable(fr24, "cross-validated", now), true);
-  assert.equal(core.routeEntryReplaceable({ destination: { iata: "SFO" }, destSource: "fr24-search", fetchedAt: now - 61 * 60 * 1000 }, "convergence", now), true);
-  // Non-authoritative or empty entries are always replaceable.
-  assert.equal(core.routeEntryReplaceable({ destination: { iata: "OAK" }, destSource: "convergence", fetchedAt: now }, "adsbdb", now), true);
-  assert.equal(core.routeEntryReplaceable(undefined, "adsbdb", now), true);
+  var fr24 = { destination: { iata: "LAX" }, destSource: "fr24-search", fetchedAt: now - 1000 };
+  // The Worker's cross-validated SFO->JFK must not clobber FR24's SFO->LAX.
+  assert.equal(core.routeEntryReplaceable(fr24, now), false);
+  assert.equal(core.routeEntryReplaceable({ destination: { iata: "SFO" }, destSource: "schedule", fetchedAt: now }, now), false);
+  // Once stale it may be replaced.
+  assert.equal(core.routeEntryReplaceable({ destination: { iata: "SFO" }, destSource: "fr24-search", fetchedAt: now - 61 * 60 * 1000 }, now), true);
+  // Other or empty entries are always replaceable.
+  assert.equal(core.routeEntryReplaceable({ destination: { iata: "OAK" }, destSource: "convergence", fetchedAt: now }, now), true);
+  assert.equal(core.routeEntryReplaceable({ destination: { iata: "OAK" }, destSource: "cross-validated", fetchedAt: now }, now), true);
+  assert.equal(core.routeEntryReplaceable({ destination: null, destSource: "fr24-search", fetchedAt: now }, now), true);
+  assert.equal(core.routeEntryReplaceable(undefined, now), true);
 });
 
 test("isUsableTrafficRow skips malformed feed rows", () => {

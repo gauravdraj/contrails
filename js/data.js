@@ -406,7 +406,7 @@ function mergeRoutesetEntries(routes, sourcePlanes) {
     var r = routes[j];
     if (!r.callsign || (!r.origin && !r.destination)) continue;
     // FR24 or the schedule may have resolved this flight while the request was out.
-    if (!routeEntryReplaceable(routeCache[r.callsign], r.destSource, fetchedAt)) continue;
+    if (!routeEntryReplaceable(routeCache[r.callsign], fetchedAt)) continue;
     var dest = r.destination;
     var destIata = dest ? (dest.region ? dest.display : dest.iata) : null;
     var iataParts = [r.origin ? r.origin.iata : null, destIata].filter(Boolean);
