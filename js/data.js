@@ -1,6 +1,7 @@
 // Traffic, route, airport, and runway data fetching.
 
 // --- Data fetching ---
+var activeFetchCircles = null;
 async function fetchAircraft(options) {
   options = options || {};
   if (!map) return;
@@ -18,10 +19,11 @@ async function fetchAircraft(options) {
     var coverage = viewCoverage(spec);
     var circles = coverage ? coverage.circles : [{ lat: spec.center.lat, lng: spec.center.lng, km: spec.fetchKm }];
     var url = circles.map(function(c) { return trafficUrl(c.lat, c.lng, c.km); }).join(" ");
-    // A same-URL request already in flight is adopted, unless the page just resumed (it may be a request the
-    // OS froze) or it has outlived the timeout; then it is aborted and replaced.
-    if (fetchAbortController && activeFetchUrl === url && options.source !== "resume" &&
-        Date.now() - activeFetchStartedAt < TRAFFIC_FETCH_TIMEOUT_MS) {
+    // Keep a slow request through pans inside its coverage, including the renderer's padded view.
+    // A resumed or timed-out request must still be replaced even when its coverage matches.
+    if (fetchAbortController && options.source !== "resume" &&
+        Date.now() - activeFetchStartedAt < TRAFFIC_FETCH_TIMEOUT_MS &&
+        (activeFetchUrl === url || core.trafficCirclesCoverBounds(activeFetchCircles, spec.bounds.pad(VIEW_FILTER_PAD)))) {
       reschedule = false;
       return;
     }
@@ -30,6 +32,9 @@ async function fetchAircraft(options) {
     controller = new AbortController();
     fetchAbortController = controller;
     activeFetchUrl = url;
+    activeFetchCircles = circles.map(function(c) {
+      return { lat: +c.lat.toFixed(4), lng: +c.lng.toFixed(4), km: Math.ceil(c.km / 1.852) * 1.852 };
+    });
     activeFetchStartedAt = Date.now();
     var timedOut = false;
     timeoutId = setTimeout(function() {
@@ -79,6 +84,7 @@ async function fetchAircraft(options) {
     if (controller && fetchAbortController === controller) {
       fetchAbortController = null;
       activeFetchUrl = null;
+      activeFetchCircles = null;
     }
     if (map && reschedule) scheduleRefreshTimer(trafficRetryDelayMs(adaptiveRefreshMs(), trafficFailStreak, TRAFFIC_RETRY_MAX_MS));
   }
@@ -310,6 +316,7 @@ function processAircraft(ac, feedNow) {
 
   sortAircraftList();
 
+  var trailBounds = currentViewBounds(TRAIL_VIEW_PAD);
   for (var j = 0; j < aircraft.length; j++) {
     var a = aircraft[j];
     if (dormantHistory[a.icao24]) {
@@ -320,7 +327,7 @@ function processAircraft(ac, feedNow) {
     if (!posHistory[a.icao24]) posHistory[a.icao24] = [];
     var h = posHistory[a.icao24];
     var reportTs = a.reportTs;
-    seedSyntheticTrail(h, a, reportTs);
+    seedSyntheticTrail(h, a, reportTs, trailBounds);
     var lastPt = h.length ? h[h.length - 1] : null;
     if (lastPt && reportTs <= lastPt[2]) reportTs = lastPt[2] + 1;
     var breakBefore = !!trailBreakPending[a.icao24] && !!lastPt;
@@ -484,10 +491,17 @@ async function postRouteset(needed, candidates) {
 
 async function fetchRoutes() {
   if (!aircraft.length) return;
-  var visible = aircraft.filter(function(a) { return !isFiltered(a); });
+  var filterContext = aircraftFilterContext();
+  var visible = aircraft.filter(function(a) { return !isFiltered(a, filterContext); });
   var policy = currentViewPolicy(visible.length);
   if (!policy.allowRoutes) return;
   await fetchRoutesForPlanes(visible);
+}
+
+var airportGrid = null;
+function nearbyAirportCandidates(lat, lng, km) {
+  if (!airportGrid || airportGrid.airports !== airportData) airportGrid = core.buildAirportGrid(airportData);
+  return core.airportGridCandidates(airportGrid, lat, lng, km);
 }
 
 function clientConvergenceRefine() {
@@ -501,8 +515,9 @@ function clientConvergenceRefine() {
       var hiSrc = ["adsbdb", "track", "cross-validated", "schedule", "fr24-search"];
       if (!rc || !rc.origin || hiSrc.indexOf(rc.originSource) === -1) {
         var depCands = [];
-        for (var dc = 0; dc < airportData.length; dc++) {
-          var dap = airportData[dc];
+        var nearbyDepartures = nearbyAirportCandidates(a.lat, a.lng, 30);
+        for (var dc = 0; dc < nearbyDepartures.length; dc++) {
+          var dap = nearbyDepartures[dc];
           var dd = haversineKm(a.lat, a.lng, dap[1], dap[2]);
           if (dd < 30) depCands.push({ iata: dap[0], name: dap[3], dist: dd });
         }
@@ -549,8 +564,9 @@ function clientConvergenceRefine() {
     if (minAlt > 10000) continue;
     var last = tail[tail.length - 1];
     var candidates = [];
-    for (var j = 0; j < airportData.length; j++) {
-      var ap = airportData[j];
+    var nearbyArrivals = nearbyAirportCandidates(last[0], last[1], 80);
+    for (var j = 0; j < nearbyArrivals.length; j++) {
+      var ap = nearbyArrivals[j];
       var d = haversineKm(last[0], last[1], ap[1], ap[2]);
       if (d < 80) candidates.push({ iata: ap[0], name: ap[3], lat: ap[1], lon: ap[2], dist: d });
     }
@@ -682,9 +698,10 @@ function proactiveFetchTracks() {
   if (now - lastProactiveFetch < 30000) return;
   lastProactiveFetch = now;
   var targets = [];
+  var filterContext = aircraftFilterContext();
   for (var i = 0; i < aircraft.length; i++) {
     var a = aircraft[i];
-    if (!a.callsign || a.private || a.ground || isFiltered(a) || !isIcaoHex(a.icao24)) continue;
+    if (!a.callsign || a.private || a.ground || isFiltered(a, filterContext) || !isIcaoHex(a.icao24)) continue;
     if (trackExtended[a.icao24] || proactivePending[a.icao24]) continue;
     var rc = routeCache[a.callsign];
     if (rc && ((rc.origin && rc.originSource === "track") || rc.confidence === "high")) continue;
@@ -908,8 +925,9 @@ function buildDisplayTrailSegments(trail, a, displayPose, displayTime) {
   return segments;
 }
 
-function seedSyntheticTrail(history, a, reportTs) {
+function seedSyntheticTrail(history, a, reportTs, bounds) {
   if (history.length || a.ground) return;
+  if (bounds === undefined) bounds = currentViewBounds(TRAIL_VIEW_PAD);
   var trailTrack = a.track != null ? a.track : a.bearingDeg;
   if (trailTrack == null) return;
   var speedMs = Math.max(SEEDED_MIN_DISPLAY_SPEED_KTS, a.speedKts || 0) * 0.514444;
@@ -918,7 +936,7 @@ function seedSyntheticTrail(history, a, reportTs) {
   for (var i = SEEDED_TRAIL_POINTS; i >= 1; i--) {
     var ageMs = stepMs * i;
     var point = projectLatLng(a.lat, a.lng, reverseTrack, speedMs * ageMs / 1000);
-    if (!isLatLngInView(point[0], point[1], TRAIL_VIEW_PAD)) continue;
+    if (bounds && !bounds.contains(point[0], point[1])) continue;
     history.push([point[0], point[1], reportTs - ageMs, a.altFt, false, false, true]);
   }
 }
@@ -1046,13 +1064,13 @@ function updateAirportGroundCounts() {
   var counts = {};
   if (airportData && filters.ground && !groundPlanesShown()) {
     var planes = [];
+    var bounds = currentViewBounds(AIRPORT_VIEW_PAD);
     for (var i = 0; i < aircraft.length; i++) {
       var a = aircraft[i];
-      if (!a.ground || (!filters.private && a.private) || !isLatLngInView(a.lat, a.lng, AIRPORT_VIEW_PAD)) continue;
+      if (!a.ground || (!filters.private && a.private) || (bounds && !bounds.contains(a.lat, a.lng))) continue;
       planes.push(a);
     }
     if (planes.length) {
-      var bounds = currentViewBounds(AIRPORT_VIEW_PAD);
       var airports = [];
       for (var j = 0; j < airportData.length; j++) {
         var ap = airportData[j];
@@ -1105,16 +1123,16 @@ function renderRunways() {
 }
 
 function updateStatus() {
-  var visible = aircraft.filter(function(a) { return !isFiltered(a); });
-  updateControlsCompactSummary(visible.length);
+  updateControlsCompactSummary(visibleAircraftCount());
 }
 
 function updateAlerts() {
   var bar = document.getElementById("alert-bar");
   var alerts = [];
+  var filterContext = aircraftFilterContext();
   for (var i = 0; i < aircraft.length; i++) {
     var a = aircraft[i];
-    if (isFiltered(a)) continue;
+    if (isFiltered(a, filterContext)) continue;
     var label = SQUAWK_ALERT[a.squawk];
     if (label || a.emergency) {
       var name = a.callsign || a.icao24;

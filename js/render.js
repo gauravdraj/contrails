@@ -30,7 +30,9 @@ function trailStyle(ageNorm, isSelected, isSynthetic) {
 }
 
 var _trailsShown = false;
-function renderTrails(now, displayPoses) {
+var _trailCache = {};
+var _trailOrder = [];
+function renderTrails(now, displayPoses, filterContext) {
   if (!mapReady) return;
   now = now || Date.now();
   var markerCount = Object.keys(markerMap).length;
@@ -38,27 +40,59 @@ function renderTrails(now, displayPoses) {
   if (trailsOff) {
     if (_trailsShown) map.getSource("trails").setData(EMPTY_COLLECTION);
     _trailsShown = false;
+    _trailCache = {};
+    _trailOrder = [];
     return;
   }
 
+  filterContext = filterContext || aircraftFilterContext();
   var displayTime = currentDisplayTime(now);
-  var features = [];
+  var nextCache = {};
+  var nextOrder = [];
+  var changed = false;
   for (var i = 0; i < aircraft.length; i++) {
     var a = aircraft[i];
-    if (isFiltered(a)) continue;
+    if (isFiltered(a, filterContext)) continue;
+    if (_trailOrder[nextOrder.length] !== a.icao24) changed = true;
+    nextOrder.push(a.icao24);
     var pose = displayPoses && displayPoses[a.icao24] ? displayPoses[a.icao24] : getDisplayPoseForAircraft(a.icao24, displayTime);
-    var segments = buildDisplayTrailSegments(posHistory[a.icao24], a, pose, displayTime);
+    var trail = posHistory[a.icao24];
+    var length = trail ? trail.length : 0;
+    var trailMs = trailWindowMs(a);
+    var selected = selectedAircraftId === a.icao24;
+    var cached = _trailCache[a.icao24];
+    // Fade is tied to the display head's timestamp, not wall time. Only a held head can reuse its styles.
+    // Histories are appended/trimmed or replaced; the endpoints also catch same-length pruning/track loads.
+    if (!cached || cached.trail !== trail || cached.length !== length ||
+        cached.first !== (length && trail[0]) || cached.last !== (length && trail[length - 1]) ||
+        cached.trailMs !== trailMs || cached.selected !== selected ||
+        cached.ts !== (pose && pose.ts) || cached.lat !== (pose && pose.lat) || cached.lng !== (pose && pose.lng)) {
+      cached = { aircraft: a, pose: pose, trail: trail, length: length,
+        first: length && trail[0], last: length && trail[length - 1],
+        trailMs: trailMs, selected: selected, ts: pose && pose.ts, lat: pose && pose.lat, lng: pose && pose.lng };
+      changed = true;
+    }
+    nextCache[a.icao24] = cached;
+  }
+  if (_trailOrder.length !== nextOrder.length) changed = true;
+  _trailCache = nextCache;
+  _trailOrder = nextOrder;
+  if (!changed) return;
+  // Retain only the inputs used to detect a held frame, not another copy of thousands of GeoJSON features.
+  var features = [];
+  for (var ti = 0; ti < nextOrder.length; ti++) {
+    var entry = nextCache[nextOrder[ti]];
+    var segments = buildDisplayTrailSegments(entry.trail, entry.aircraft, entry.pose, displayTime);
     for (var si = 0; si < segments.length; si++) {
       var seg = segments[si];
-      features.push({
-        type: "Feature",
-        properties: { color: seg.color, opacity: seg.opacity, width: seg.weight },
-        geometry: { type: "LineString", coordinates: [[seg.latlngs[0][1], seg.latlngs[0][0]], [seg.latlngs[1][1], seg.latlngs[1][0]]] }
-      });
+      features.push({ type: "Feature", properties: { color: seg.color, opacity: seg.opacity, width: seg.weight },
+        geometry: { type: "LineString", coordinates: [[seg.latlngs[0][1], seg.latlngs[0][0]], [seg.latlngs[1][1], seg.latlngs[1][0]]] } });
     }
   }
-  map.getSource("trails").setData({ type: "FeatureCollection", features: features });
-  _trailsShown = true;
+  if (features.length || _trailsShown) {
+    map.getSource("trails").setData({ type: "FeatureCollection", features: features });
+  }
+  _trailsShown = features.length > 0;
 }
 
 function buildPopup(a, policy) {
@@ -428,6 +462,12 @@ function proactiveScheduleSweep() {
 
 function cascadeScheduleMatches() {
   var updated = 0;
+  var sources = [];
+  var now = Date.now();
+  for (var iata in scheduleDataCache) {
+    var cached = scheduleDataCache[iata];
+    if (cached && now - cached.ts <= SCHEDULE_CACHE_TTL) sources.push({ iata: iata, data: cached.data });
+  }
   for (var i = 0; i < aircraft.length; i++) {
     var a = aircraft[i];
     if (!a.callsign || a.private) continue;
@@ -435,12 +475,6 @@ function cascadeScheduleMatches() {
     if (rc && rc.destSource === "schedule") continue;
     var variants = callsignVariants(a.callsign);
     if (!variants.length) continue;
-    var sources = [];
-    for (var iata in scheduleDataCache) {
-      var cached = scheduleDataCache[iata];
-      if (!cached || Date.now() - cached.ts > SCHEDULE_CACHE_TTL) continue;
-      sources.push({ iata: iata, data: cached.data });
-    }
     var match = selectClientScheduleMatch(variants, sources, a);
     if (match && applyScheduleMatch(a, match)) updated++;
   }
@@ -635,14 +669,46 @@ function planeRecordProps(a, isSelected) {
   };
 }
 
+var _planeSource = null;
+var _planeLayerRecords = {};
 function pushPlaneLayer() {
   if (!mapReady) return;
-  var features = [];
+  var source = map.getSource("planes");
+  if (source !== _planeSource) { _planeSource = source; _planeLayerRecords = {}; }
+  var diff = { add: [], update: [], remove: [] };
   for (var hex in markerMap) {
     var rec = markerMap[hex];
-    features.push({ type: "Feature", properties: rec.props, geometry: { type: "Point", coordinates: [rec.lng, rec.lat] } });
+    var prev = _planeLayerRecords[hex];
+    if (!prev) {
+      diff.add.push({ type: "Feature", id: hex, properties: rec.props, geometry: { type: "Point", coordinates: [rec.lng, rec.lat] } });
+    } else {
+      var update = { id: hex };
+      if (rec.lat !== prev.lat || rec.lng !== prev.lng) update.newGeometry = { type: "Point", coordinates: [rec.lng, rec.lat] };
+      if (rec.props !== prev.props) {
+        var properties = [];
+        for (var key in rec.props) {
+          if (rec.props[key] !== prev.props[key]) properties.push({ key: key, value: rec.props[key] });
+        }
+        if (properties.length) update.addOrUpdateProperties = properties;
+      }
+      // MapLibre moves updated features behind untouched ones. Include the remaining IDs in order so
+      // equal-rank labels (and coincident icons) keep exactly the placement priority of the full collection.
+      if (update.newGeometry || update.addOrUpdateProperties || diff.update.length) diff.update.push(update);
+    }
+    _planeLayerRecords[hex] = { lat: rec.lat, lng: rec.lng, props: rec.props };
   }
-  map.getSource("planes").setData({ type: "FeatureCollection", features: features });
+  for (var oldHex in _planeLayerRecords) {
+    if (!markerMap[oldHex]) { diff.remove.push(oldHex); delete _planeLayerRecords[oldHex]; }
+  }
+  if (diff.add.length || diff.remove.length) {
+    // Numeric-looking hex keys can be inserted before existing keys; a membership change resets that order.
+    var features = [];
+    for (var id in markerMap) {
+      var plane = markerMap[id];
+      features.push({ type: "Feature", id: id, properties: plane.props, geometry: { type: "Point", coordinates: [plane.lng, plane.lat] } });
+    }
+    source.setData({ type: "FeatureCollection", features: features });
+  } else if (diff.update.length) source.updateData({ update: diff.update });
   if (planePopupHex && markerMap[planePopupHex]) {
     activeMapPopup.setLngLat([markerMap[planePopupHex].lng, markerMap[planePopupHex].lat]);
   }
@@ -697,11 +763,16 @@ function groundPlanesShown() {
   return !!map && viewZoom() >= GROUND_PLANES_MIN_ZOOM;
 }
 
-function isFiltered(a) {
+function aircraftFilterContext() {
+  return { bounds: currentViewBounds(VIEW_FILTER_PAD), groundShown: groundPlanesShown() };
+}
+
+function isFiltered(a, context) {
+  context = context || aircraftFilterContext();
   if (!filters.ground && a.ground) return true;
-  if (a.ground && a.icao24 !== selectedAircraftId && !groundPlanesShown()) return true;
+  if (a.ground && a.icao24 !== selectedAircraftId && !context.groundShown) return true;
   if (!filters.private && a.private) return true;
-  if (!isLatLngInView(a.lat, a.lng, VIEW_FILTER_PAD)) return true;
+  if (context.bounds && !context.bounds.contains(a.lat, a.lng)) return true;
   return false;
 }
 
@@ -713,18 +784,19 @@ function markerAnimationIntervalMs(markerCount) {
   return MARKER_TARGET_INTERVAL_MS;
 }
 
-function renderMarkers(now, displayPoses) {
+function renderMarkers(now, displayPoses, filterContext) {
   now = now || Date.now();
+  filterContext = filterContext || aircraftFilterContext();
   var displayTime = currentDisplayTime(now);
   var seen = {};
   var visibleCount = 0;
   for (var vc = 0; vc < aircraft.length; vc++) {
-    if (!isFiltered(aircraft[vc])) visibleCount++;
+    if (!isFiltered(aircraft[vc], filterContext)) visibleCount++;
   }
   var policy = currentViewPolicy(visibleCount);
   for (var i = 0; i < aircraft.length; i++) {
     var a = aircraft[i];
-    if (isFiltered(a)) continue;
+    if (isFiltered(a, filterContext)) continue;
     seen[a.icao24] = true;
 
     var state = extraState[a.icao24] || {};
@@ -787,6 +859,7 @@ function renderMarkers(now, displayPoses) {
   }
   setPlaneLabelsShown(!!policy.showLabels);
   pushPlaneLayer();
+  if (visibleCount) scheduleMarkerAnimation();
 }
 
 var _lastAnimateTs = 0;
@@ -795,6 +868,11 @@ function animateMarkers() {
   markerAnimationFrame = 0;
   var now = Date.now();
   var markerCount = Object.keys(markerMap).length;
+  if (!markerCount) {
+    _lastAnimateTs = 0;
+    renderTrails(now);
+    return;
+  }
   var minInterval = markerAnimationIntervalMs(markerCount);
   var elapsedMs = now - _lastAnimateTs;
   if (_lastAnimateTs && minInterval > 0 && elapsedMs < minInterval) {
@@ -825,8 +903,9 @@ function animateMarkers() {
 }
 
 function renderMap(now, displayPoses) {
-  renderMarkers(now, displayPoses);
-  renderTrails(now, displayPoses);
+  var filterContext = aircraftFilterContext();
+  renderMarkers(now, displayPoses, filterContext);
+  renderTrails(now, displayPoses, filterContext);
   updateRouteLine();
   applyFollow(currentDisplayTime(now || Date.now()));
 }

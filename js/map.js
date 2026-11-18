@@ -153,7 +153,9 @@ var EMPTY_COLLECTION = { type: "FeatureCollection", features: [] };
 // swallow its own label. Labels still collide with each other and push basemap text aside.
 function addAppLayers() {
   ["runways", "route", "trails", "planes"].forEach(function(id) {
-    map.addSource(id, { type: "geojson", data: EMPTY_COLLECTION });
+    var options = { type: "geojson", data: EMPTY_COLLECTION };
+    if (id === "planes") options.promoteId = "hex";
+    map.addSource(id, options);
   });
   map.addLayer({
     id: "runways", type: "line", source: "runways", minzoom: 8,
@@ -815,10 +817,7 @@ function updateControlsCompactSummary(visibleCount) {
   var el = document.getElementById("controls-compact-summary");
   if (!el) return;
   if (visibleCount == null) {
-    visibleCount = 0;
-    for (var i = 0; i < aircraft.length; i++) {
-      if (!isFiltered(aircraft[i])) visibleCount++;
-    }
+    visibleCount = visibleAircraftCount();
   }
   var summary;
   // After repeated failures the planes on the map are frozen at their last positions; say so here, since this
