@@ -16,6 +16,7 @@ import json
 import os
 import queue
 import re
+import socket
 import sys
 import threading
 import time
@@ -43,8 +44,8 @@ FR24_USER_AGENT = (
 )
 CACHE_TTL_S = 3
 TIMEOUT_S = 5
-# Overall bound on one upstream race and on each upstream fetch; urlopen's
-# timeout is per socket op, so a trickling body needs its own deadline.
+# Overall bound on one upstream race (and /fr24 fetch). The caller's slot is
+# freed when the race ends; racers still running become counted stragglers.
 RACE_DEADLINE_S = 2 * TIMEOUT_S
 READ_CHUNK_BYTES = 64 * 1024
 GZIP_MIN_BYTES = 1024
@@ -53,6 +54,9 @@ MAX_DIST_NM = 250
 MAX_BODY_BYTES = 8 * 1024 * 1024
 CACHE_MAX_BYTES = 32 * 1024 * 1024
 UPSTREAM_SLOTS = 8
+# Racers still running after their race ended (slow/trickling upstreams).
+# New upstream work is refused with 503 while this many are alive.
+MAX_STRAGGLERS = 16
 
 RELAY_KEY = os.environ.get("RELAY_KEY", "")
 # Insertion-ordered, so the first key is the oldest entry.
@@ -63,6 +67,8 @@ _inflight: dict = {}
 _inflight_lock = threading.Lock()
 # Bounds concurrent upstream work (adsb races and /fr24 fetches).
 _upstream_slots = threading.BoundedSemaphore(UPSTREAM_SLOTS)
+_stragglers = 0
+_stragglers_lock = threading.Lock()
 
 
 class Busy(Exception):
@@ -81,9 +87,8 @@ def _log(msg: str) -> None:
 
 
 def _read_capped(resp, deadline: float) -> bytes:
-    # read1 does at most one socket read (each bounded by the socket timeout),
-    # so checking the monotonic deadline between chunks bounds the whole read:
-    # a trickling loser exits by deadline + TIMEOUT_S and frees its slot.
+    # Deadline checked between chunks. Not a hard bound on its own (a chunked
+    # body can trickle inside one read1); _race's socket shutdown is.
     read = getattr(resp, "read1", resp.read)
     chunks, size = [], 0
     while True:
@@ -109,56 +114,124 @@ def _check_payload(body: bytes) -> None:
         raise ValueError("invalid upstream payload")
 
 
-def _fetch_one(url: str) -> bytes:
+def _fetch_one(url: str, track=None) -> bytes:
     deadline = time.monotonic() + RACE_DEADLINE_S
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(req, timeout=TIMEOUT_S) as resp:
+        if track is not None:
+            track(resp)
         return _read_capped(resp, deadline)
 
 
-def fetch_upstream(path: str, upstreams: tuple[str, ...], on_done=None) -> bytes:
-    # adsb.lol swings between ~0.8s and 5s+, so trying upstreams one after
-    # another can outlast the Worker's 6s relay timeout. Race them instead.
-    # on_done, if given, runs exactly once, after the LAST racer exits (losers
-    # keep reading after a winner returns), so a slot it frees bounds them too.
+def _fetch_fr24(url: str, track=None) -> bytes:
+    deadline = time.monotonic() + RACE_DEADLINE_S
+    req = urllib.request.Request(url, headers={"User-Agent": FR24_USER_AGENT})
+    with _fr24_opener.open(req, timeout=TIMEOUT_S) as resp:
+        if track is not None:
+            track(resp)
+        return _read_capped(resp, deadline)
+
+
+def _stragglers_full() -> bool:
+    with _stragglers_lock:
+        return _stragglers >= MAX_STRAGGLERS
+
+
+def _straggler_done() -> None:
+    global _stragglers
+    with _stragglers_lock:
+        _stragglers -= 1
+
+
+def _abort(resp) -> None:
+    # Best effort: shut the socket down so a straggler's blocked read returns
+    # now. Not resp.close(): that takes the buffer lock the reading thread
+    # holds, so it would block this (request) thread until the read returns.
+    try:
+        resp.fp.raw._sock.shutdown(socket.SHUT_RDWR)
+    except Exception:  # noqa: BLE001 - fakes, already closed, no socket
+        pass
+
+
+def _race(urls, fetch) -> bytes:
+    """Run fetch(url, track) for every url concurrently; return the first body.
+
+    Returns on the first success, raises the last error when all fail, or
+    TimeoutError at RACE_DEADLINE_S. Racers still running at that point become
+    stragglers: counted in _stragglers until they exit, their sockets shut
+    down. The caller's slot never waits on them.
+    """
+    global _stragglers
     results: queue.Queue = queue.Queue()
-    pending = [len(upstreams)]
-    pending_lock = threading.Lock()
+    lock = threading.Lock()
+    state = {"over": False}
+    running: dict = {}  # racer index -> its response once opened (or None)
 
-    def finish() -> None:
-        with pending_lock:
-            pending[0] -= 1
-            last = pending[0] == 0
-        if last and on_done is not None:
-            on_done()
+    def worker(i: int, url: str) -> None:
+        def track(resp) -> None:
+            with lock:
+                running[i] = resp
+                over = state["over"]
+            if over:
+                _abort(resp)
 
-    def worker(base: str) -> None:
         try:
-            body = _fetch_one(base + path)
-            _check_payload(body)
-            results.put((True, body))
+            results.put((True, fetch(url, track)))
         except Exception as err:  # noqa: BLE001 - any failure just loses the race
             results.put((False, err))
         finally:
-            finish()
+            with lock:
+                running.pop(i, None)
+                straggler = state["over"]
+            if straggler:
+                _straggler_done()
 
-    for base in upstreams:
+    for i, url in enumerate(urls):
+        with lock:
+            running[i] = None
         try:
-            threading.Thread(target=worker, args=(base,), daemon=True).start()
+            threading.Thread(target=worker, args=(i, url), daemon=True).start()
         except RuntimeError as err:  # can't start a thread: counts as a lost racer
+            with lock:
+                running.pop(i, None)
             results.put((False, err))
-            finish()
     deadline = time.monotonic() + RACE_DEADLINE_S
     last_err = None
-    for _ in upstreams:
-        try:
-            ok, value = results.get(timeout=max(0.0, deadline - time.monotonic()))
-        except queue.Empty:
-            raise RuntimeError(f"all upstreams failed: timed out ({last_err})") from None
-        if ok:
-            return value
-        last_err = value
-    raise RuntimeError(f"all upstreams failed: {last_err}")
+    try:
+        for _ in urls:
+            try:
+                ok, value = results.get(timeout=max(0.0, deadline - time.monotonic()))
+            except queue.Empty:
+                raise TimeoutError(f"timed out ({last_err})") from None
+            if ok:
+                return value
+            last_err = value
+        raise last_err
+    finally:
+        # Exactly once per racer: counted here iff still in `running`, and
+        # uncounted by the worker iff it sees `over` when it removes itself.
+        with lock:
+            state["over"] = True
+            left = list(running.values())
+            with _stragglers_lock:
+                _stragglers += len(left)
+        for resp in left:
+            if resp is not None:
+                _abort(resp)
+
+
+def fetch_upstream(path: str, upstreams: tuple[str, ...]) -> bytes:
+    # adsb.lol swings between ~0.8s and 5s+, so trying upstreams one after
+    # another can outlast the Worker's 6s relay timeout. Race them instead.
+    def fetch(url: str, track) -> bytes:
+        body = _fetch_one(url, track)
+        _check_payload(body)
+        return body
+
+    try:
+        return _race([base + path for base in upstreams], fetch)
+    except Exception as err:  # noqa: BLE001 - surfaced as a 502
+        raise RuntimeError(f"all upstreams failed: {err}") from None
 
 
 def _cache_get(key: str):
@@ -193,7 +266,7 @@ def fetch_cached(path: str, upstreams: tuple[str, ...]) -> bytes:
         flight = _inflight.get(path)
         leader = flight is None
         if leader:
-            if not _upstream_slots.acquire(blocking=False):
+            if _stragglers_full() or not _upstream_slots.acquire(blocking=False):
                 raise Busy()
             flight = _Flight()
             _inflight[path] = flight
@@ -204,8 +277,7 @@ def fetch_cached(path: str, upstreams: tuple[str, ...]) -> bytes:
             raise RuntimeError(str(flight.error))
         return flight.body
     try:
-        # The slot is freed by fetch_upstream once every racer has exited.
-        body = fetch_upstream(path, upstreams, on_done=_upstream_slots.release)
+        body = fetch_upstream(path, upstreams)
         _cache_put(path, body)
         flight.body = body
         return body
@@ -218,6 +290,8 @@ def fetch_cached(path: str, upstreams: tuple[str, ...]) -> bytes:
         with _inflight_lock:
             _inflight.pop(path, None)
         flight.done.set()
+        # fetch_upstream returns by RACE_DEADLINE_S; losers don't hold the slot.
+        _upstream_slots.release()
 
 
 def _coords_ok(m) -> bool:
@@ -317,14 +391,12 @@ class Handler(BaseHTTPRequestHandler):
         target = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).get("u", [""])[0]
         if not FR24_RE.fullmatch(target):
             return self._send(404, b'{"error":"not found"}')
-        if not _upstream_slots.acquire(blocking=False):
+        if _stragglers_full() or not _upstream_slots.acquire(blocking=False):
             _log("busy, rejected fr24")
             return self._send(503, b'{"error":"busy"}')
-        req = urllib.request.Request(target, headers={"User-Agent": FR24_USER_AGENT})
-        deadline = time.monotonic() + RACE_DEADLINE_S
         try:
-            with _fr24_opener.open(req, timeout=TIMEOUT_S) as resp:
-                body = _read_capped(resp, deadline)
+            # A one-racer race, so the slot is freed by the deadline too.
+            body = _race([target], _fetch_fr24)
         except urllib.error.HTTPError as err:
             _log(f"fr24 upstream {err.code}: {target}")
             if 300 <= err.code < 400:

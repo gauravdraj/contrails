@@ -10,6 +10,7 @@ import importlib.util
 import io
 import json
 import os
+import socketserver
 import threading
 import time
 import unittest
@@ -75,7 +76,7 @@ class RelayTest(unittest.TestCase):
         """Patch _fetch_one: url prefix -> body (bytes) or exception."""
         delays = delays or {}
 
-        def fetch(url):
+        def fetch(url, track=None):
             with self.calls_lock:
                 self.calls.append(url)
             for prefix, delay in delays.items():
@@ -230,16 +231,96 @@ class SingleFlightTest(RelayTest):
         with self.fake_fetch({"https://": VALID}):
             self.assertEqual(self.get("/adsb/hex/abc123")[0], 200)
 
-    def test_slot_held_until_losing_racer_exits(self):
+    def test_slot_freed_when_race_ends_not_when_loser_exits(self):
         slots = threading.BoundedSemaphore(1)
         bodies = {RaceTest.LOL: VALID, RaceTest.FI: VALID}
         with mock.patch.object(relay, "_upstream_slots", slots), \
                 self.fake_fetch(bodies, delays={RaceTest.FI: 1.0}):
             self.assertEqual(self.get("/adsb/hex/abc123")[0], 200)
-            # The adsb.fi loser is still reading: no slot for a new miss.
-            self.assertEqual(self.get("/adsb/hex/abc124")[0], 503)
-            time.sleep(1.3)
+            # The adsb.fi loser is still running, but the slot is already free.
             self.assertEqual(self.get("/adsb/hex/abc124")[0], 200)
+            time.sleep(1.2)
+
+    def wait_stragglers(self, target, within):
+        end = time.monotonic() + within
+        while time.monotonic() < end and relay._stragglers > target:
+            time.sleep(0.02)
+        return relay._stragglers
+
+    def test_chunked_trickle_over_real_socket_does_not_pin_slots(self):
+        # Reviewer repro with a real http.client.HTTPResponse: chunked framing
+        # trickled 1 byte at a time, so one read1() never returns or times out.
+        stop = threading.Event()
+        self.addCleanup(stop.set)
+
+        class TrickleHandler(socketserver.BaseRequestHandler):
+            def handle(self):
+                self.request.recv(65536)
+                self.request.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                                     b"Transfer-Encoding: chunked\r\n\r\n")
+                # A chunk-size line whose extension never ends: read1() sits in
+                # readline() forever while each byte beats the socket timeout.
+                try:
+                    self.request.sendall(b"1;")
+                    while not stop.wait(0.02):
+                        self.request.sendall(b"x")
+                except OSError:
+                    pass
+
+        conns = []
+        # Cleanups run LIFO: stop the trickle first, close client conns last
+        # (conn.close() blocks while a reader thread holds the buffer lock).
+        self.addCleanup(lambda: [c.close() for c in conns])
+        trickle = socketserver.ThreadingTCPServer(("127.0.0.1", 0), TrickleHandler)
+        trickle.daemon_threads = True
+        trickle.block_on_close = False
+        threading.Thread(target=trickle.serve_forever, daemon=True).start()
+        self.addCleanup(trickle.server_close)
+        self.addCleanup(trickle.shutdown)
+        self.addCleanup(stop.set)  # runs first: end the trickle handlers
+        port = trickle.server_address[1]
+        real_urlopen = urllib.request.urlopen
+
+        def fake_urlopen(req, timeout=None):
+            if req.full_url.startswith(RaceTest.FI):
+                conn = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
+                conns.append(conn)
+                conn.request("GET", "/")
+                return conn.getresponse()
+            return FakeResp(VALID)
+
+        before = self.wait_stragglers(0, 3.0) if hasattr(relay, "_stragglers") else 0
+        with mock.patch.object(relay, "_upstream_slots", threading.BoundedSemaphore(2)), \
+                mock.patch.object(relay, "RACE_DEADLINE_S", 0.5), \
+                mock.patch.object(urllib.request, "urlopen", fake_urlopen):
+            self.assertEqual(self.get("/adsb/hex/ccccc1")[0], 200)
+            self.assertEqual(self.get("/adsb/hex/ccccc2")[0], 200)
+            time.sleep(0.6)  # past the deadline
+            self.assertEqual(self.get("/adsb/hex/ccccc3")[0], 200, "slots pinned by trickling losers")
+            # Socket shutdown ends the stragglers promptly.
+            self.assertEqual(self.wait_stragglers(before, 2.0), before)
+        self.assertIs(urllib.request.urlopen, real_urlopen)
+
+    def test_stragglers_over_cap_return_503(self):
+        stop = threading.Event()
+        self.addCleanup(stop.set)
+
+        def fake_urlopen(req, timeout=None):
+            if req.full_url.startswith(RaceTest.FI):
+                stop.wait(10)  # stuck before any response exists (slow headers)
+                raise urllib.error.URLError("stopped")
+            return FakeResp(VALID)
+
+        before = self.wait_stragglers(0, 3.0)
+        with mock.patch.object(relay, "MAX_STRAGGLERS", before + 1), \
+                mock.patch.object(urllib.request, "urlopen", fake_urlopen):
+            self.assertEqual(self.get("/adsb/hex/ddddd1")[0], 200)
+            self.assertEqual(relay._stragglers, before + 1)
+            self.assertEqual(self.get("/adsb/hex/ddddd2")[0], 503)
+            self.assertEqual(self.get("/fr24?u=" + urllib.request.quote(FR24_URL, safe=""))[0], 503)
+            stop.set()
+            self.assertEqual(self.wait_stragglers(before, 2.0), before)
+            self.assertEqual(self.get("/adsb/hex/ddddd2")[0], 200)
 
     def test_trickling_loser_frees_slot_by_deadline(self):
         # Reviewer repro: a losing racer whose body trickles forever must not
