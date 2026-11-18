@@ -1,0 +1,524 @@
+{
+  "airlines": {
+    "AAL": {
+      "name": "American",
+      "iata": "AA"
+    },
+    "AAR": {
+      "name": "Asiana",
+      "iata": "OZ"
+    },
+    "ACA": {
+      "name": "Air Canada",
+      "iata": "AC"
+    },
+    "AFR": {
+      "name": "Air France",
+      "iata": "AF"
+    },
+    "AIC": {
+      "name": "Air India",
+      "iata": "AI"
+    },
+    "AIJ": {
+      "name": "Interjet"
+    },
+    "AJX": {
+      "name": "Air Japan"
+    },
+    "AMX": {
+      "name": "AeroMexico"
+    },
+    "ANA": {
+      "name": "All Nippon",
+      "iata": "NH"
+    },
+    "ANZ": {
+      "name": "Air New Zealand",
+      "iata": "NZ"
+    },
+    "APJ": {
+      "name": "Peach"
+    },
+    "ASA": {
+      "name": "Alaska",
+      "iata": "AS"
+    },
+    "AUA": {
+      "name": "Austrian",
+      "iata": "OS"
+    },
+    "AVA": {
+      "name": "Avianca",
+      "iata": "AV"
+    },
+    "AXM": {
+      "name": "AirAsia"
+    },
+    "AZA": {
+      "name": "Alitalia/ITA",
+      "iata": "AZ"
+    },
+    "BAW": {
+      "name": "British Airways",
+      "iata": "BA"
+    },
+    "BEL": {
+      "name": "Brussels"
+    },
+    "BER": {
+      "name": "Berlinair"
+    },
+    "BLX": {
+      "name": "TUIfly Benelux"
+    },
+    "BWA": {
+      "name": "Caribbean"
+    },
+    "CAL": {
+      "name": "China Airlines",
+      "iata": "CI"
+    },
+    "CCA": {
+      "name": "Air China"
+    },
+    "CEB": {
+      "name": "Cebu Pacific"
+    },
+    "CES": {
+      "name": "China Eastern"
+    },
+    "CHH": {
+      "name": "Hainan"
+    },
+    "CKS": {
+      "name": "Kalitta"
+    },
+    "CLX": {
+      "name": "Cargolux"
+    },
+    "CMP": {
+      "name": "Copa",
+      "iata": "CM"
+    },
+    "CPA": {
+      "name": "Cathay Pacific",
+      "iata": "CX"
+    },
+    "CPZ": {
+      "name": "Compass"
+    },
+    "CSN": {
+      "name": "China Southern"
+    },
+    "CTN": {
+      "name": "Croatia"
+    },
+    "DAL": {
+      "name": "Delta",
+      "iata": "DL"
+    },
+    "DLH": {
+      "name": "Lufthansa",
+      "iata": "LH"
+    },
+    "EIN": {
+      "name": "Aer Lingus",
+      "iata": "EI"
+    },
+    "EJU": {
+      "name": "easyJet Europe"
+    },
+    "ELY": {
+      "name": "El Al"
+    },
+    "ETD": {
+      "name": "Etihad",
+      "iata": "EY"
+    },
+    "ETH": {
+      "name": "Ethiopian",
+      "iata": "ET"
+    },
+    "EVA": {
+      "name": "EVA Air",
+      "iata": "BR"
+    },
+    "EWG": {
+      "name": "Eurowings"
+    },
+    "EZY": {
+      "name": "easyJet"
+    },
+    "FDX": {
+      "name": "FedEx"
+    },
+    "FIN": {
+      "name": "Finnair",
+      "iata": "AY"
+    },
+    "FJI": {
+      "name": "Fiji Airways"
+    },
+    "GAL": {
+      "name": "GetJet"
+    },
+    "GEC": {
+      "name": "Lufthansa Cargo"
+    },
+    "GIA": {
+      "name": "Garuda",
+      "iata": "GA"
+    },
+    "GTI": {
+      "name": "Atlas Air"
+    },
+    "GWI": {
+      "name": "Germanwings"
+    },
+    "HAL": {
+      "name": "Hawaiian",
+      "iata": "HA"
+    },
+    "HVN": {
+      "name": "Vietnam Airlines"
+    },
+    "IAW": {
+      "name": "Iraqi"
+    },
+    "IBE": {
+      "name": "Iberia",
+      "iata": "IB"
+    },
+    "ICE": {
+      "name": "Icelandair",
+      "iata": "FI"
+    },
+    "IGO": {
+      "name": "IndiGo"
+    },
+    "JAL": {
+      "name": "Japan Airlines",
+      "iata": "JL"
+    },
+    "JBU": {
+      "name": "JetBlue",
+      "iata": "B6"
+    },
+    "JIA": {
+      "name": "PSA Airlines"
+    },
+    "JST": {
+      "name": "Jetstar"
+    },
+    "KAL": {
+      "name": "Korean Air",
+      "iata": "KE"
+    },
+    "KLM": {
+      "name": "KLM",
+      "iata": "KL"
+    },
+    "LAN": {
+      "name": "LATAM Chile",
+      "iata": "LA"
+    },
+    "LAX": {
+      "name": "LATAM"
+    },
+    "LOT": {
+      "name": "LOT Polish",
+      "iata": "LO"
+    },
+    "MAU": {
+      "name": "Air Mauritius"
+    },
+    "MAS": {
+      "name": "Malaysia",
+      "iata": "MH"
+    },
+    "MEA": {
+      "name": "Middle East"
+    },
+    "MSR": {
+      "name": "EgyptAir",
+      "iata": "MS"
+    },
+    "NAX": {
+      "name": "Norwegian"
+    },
+    "NKS": {
+      "name": "Spirit"
+    },
+    "NPT": {
+      "name": "N. Pacific"
+    },
+    "NWS": {
+      "name": "Nordwind"
+    },
+    "NZM": {
+      "name": "Mount Cook"
+    },
+    "OAL": {
+      "name": "Olympic"
+    },
+    "OMA": {
+      "name": "Oman Air"
+    },
+    "PAC": {
+      "name": "Polar Air"
+    },
+    "PAL": {
+      "name": "Philippine",
+      "iata": "PR"
+    },
+    "PIA": {
+      "name": "Pakistan Intl"
+    },
+    "QFA": {
+      "name": "Qantas",
+      "iata": "QF"
+    },
+    "QTR": {
+      "name": "Qatar",
+      "iata": "QR"
+    },
+    "RAM": {
+      "name": "Royal Air Maroc"
+    },
+    "RJA": {
+      "name": "Royal Jordanian"
+    },
+    "ROT": {
+      "name": "TAROM"
+    },
+    "RPA": {
+      "name": "Republic"
+    },
+    "RYR": {
+      "name": "Ryanair",
+      "iata": "FR"
+    },
+    "SAS": {
+      "name": "SAS",
+      "iata": "SK"
+    },
+    "SAA": {
+      "name": "South African"
+    },
+    "SCX": {
+      "name": "Sun Country"
+    },
+    "SEJ": {
+      "name": "StarFlyer"
+    },
+    "SIA": {
+      "name": "Singapore",
+      "iata": "SQ"
+    },
+    "SKW": {
+      "name": "SkyWest"
+    },
+    "SLK": {
+      "name": "Silk Way"
+    },
+    "SVA": {
+      "name": "Saudia",
+      "iata": "SV"
+    },
+    "SWA": {
+      "name": "Southwest",
+      "iata": "WN"
+    },
+    "SWR": {
+      "name": "Swiss",
+      "iata": "LX"
+    },
+    "TAM": {
+      "name": "LATAM Brazil"
+    },
+    "TAP": {
+      "name": "TAP Portugal",
+      "iata": "TP"
+    },
+    "THA": {
+      "name": "Thai",
+      "iata": "TG"
+    },
+    "THY": {
+      "name": "Turkish",
+      "iata": "TK"
+    },
+    "TOM": {
+      "name": "TUI UK"
+    },
+    "TVF": {
+      "name": "Transavia France"
+    },
+    "UAE": {
+      "name": "Emirates",
+      "iata": "EK"
+    },
+    "UAL": {
+      "name": "United",
+      "iata": "UA"
+    },
+    "UPS": {
+      "name": "UPS"
+    },
+    "UTA": {
+      "name": "UTair"
+    },
+    "VIR": {
+      "name": "Virgin Atlantic",
+      "iata": "VS"
+    },
+    "VJC": {
+      "name": "VietJet"
+    },
+    "VOI": {
+      "name": "Volaris"
+    },
+    "VTI": {
+      "name": "Vistara"
+    },
+    "WJA": {
+      "name": "WestJet",
+      "iata": "WS"
+    },
+    "WZZ": {
+      "name": "Wizz Air"
+    },
+    "XAX": {
+      "name": "AirAsia X"
+    },
+    "ENY": {
+      "name": "Envoy"
+    },
+    "ASH": {
+      "name": "Mesa"
+    },
+    "QXE": {
+      "name": "Horizon"
+    },
+    "LOG": {
+      "name": "Loganair"
+    },
+    "EDV": {
+      "name": "Endeavor"
+    },
+    "JZA": {
+      "name": "Jazz"
+    },
+    "ROU": {
+      "name": "Air Canada Rouge"
+    },
+    "PDT": {
+      "name": "Piedmont"
+    },
+    "AWI": {
+      "name": "Air Wisconsin"
+    },
+    "GJS": {
+      "name": "GoJet"
+    },
+    "UCA": {
+      "name": "CommutAir"
+    },
+    "CFE": {
+      "name": "BA CityFlyer"
+    },
+    "CLH": {
+      "name": "Lufthansa CityLine"
+    },
+    "KLC": {
+      "name": "KLM Cityhopper"
+    },
+    "HOP": {
+      "name": "Air France Hop"
+    },
+    "EAI": {
+      "name": "Emerald Airlines"
+    },
+    "ABX": {
+      "name": "ABX Air"
+    },
+    "ATN": {
+      "name": "Air Transport International"
+    },
+    "ABW": {
+      "name": "AirBridgeCargo"
+    },
+    "BCS": {
+      "name": "European Air Transport"
+    },
+    "BOX": {
+      "name": "AeroLogic"
+    },
+    "SOO": {
+      "name": "Southern Air"
+    },
+    "MXY": {
+      "name": "Breeze"
+    },
+    "VXP": {
+      "name": "Avelo"
+    }
+  },
+  "privateRegistrationPrefixes": [
+    "N\\d",
+    "C-[FGI]",
+    "G-",
+    "D-",
+    "F-",
+    "I-",
+    "EC-",
+    "HB-",
+    "OE-",
+    "PH-",
+    "SE-",
+    "OH-",
+    "OY-",
+    "LN-",
+    "EI-",
+    "CS-",
+    "SX-",
+    "TC-",
+    "VH-",
+    "ZK-",
+    "PP-",
+    "PT-",
+    "PR-",
+    "JA\\d",
+    "B-",
+    "HL\\d",
+    "VT-",
+    "9V-",
+    "A[267]-",
+    "SU-",
+    "5[ABHNXY]-",
+    "ZS-",
+    "VP-",
+    "V[5HPQR]-",
+    "RP-",
+    "HS-",
+    "9M-",
+    "PK-",
+    "XA-",
+    "XB-",
+    "LV-",
+    "CC-",
+    "TI-",
+    "HP-",
+    "HK-",
+    "YV-"
+  ],
+  "fractionalCallsignPrefixes": [
+    "EJA",
+    "EJM",
+    "NJE",
+    "LXJ",
+    "VJT",
+    "DCM"
+  ]
+}

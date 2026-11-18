@@ -738,13 +738,13 @@ test("findFlightStartIndex returns 0 for continuous airborne flight with no gaps
   assert.equal(core.findFlightStartIndex(path), 0);
 });
 
-test("findFlightStartIndex returns first airborne index after on-ground segment", () => {
+test("findFlightStartIndex retains the last ground point before the airborne segment", () => {
   var path = [
     mkPt(100, false), mkPt(200, false),
     mkPt(300, true), mkPt(400, true),
     mkPt(500, false), mkPt(600, false)
   ];
-  assert.equal(core.findFlightStartIndex(path), 4);
+  assert.equal(core.findFlightStartIndex(path), 3);
 });
 
 test("findFlightStartIndex detects >30-min time gap with no ground points", () => {
@@ -782,15 +782,15 @@ test("findFlightStartIndex handles two flights with turnaround, current flight l
     mkPt(400, false), mkPt(500, false),
     mkPt(600, true)
   ];
-  assert.equal(core.findFlightStartIndex(path), 3);
+  assert.equal(core.findFlightStartIndex(path), 2);
 });
 
-test("findFlightStartIndex ignores time gap within trailing ground segment", () => {
+test("findFlightStartIndex honors time gap within trailing ground segment", () => {
   var path = [
     mkPt(100, false), mkPt(200, false),
     mkPt(300, true), mkPt(5000, true)
   ];
-  assert.equal(core.findFlightStartIndex(path), 0);
+  assert.equal(core.findFlightStartIndex(path), 3);
 });
 
 function callsigns(rows) {
@@ -1644,4 +1644,311 @@ test("isUsableTrafficRow skips malformed feed rows", () => {
   assert.equal(core.isUsableTrafficRow({ lat: "37.6", lon: -122.4 }), false);
   assert.equal(core.isUsableTrafficRow({ lat: 37.6, lon: null }), false);
   assert.equal(core.isUsableTrafficRow({ lat: NaN, lon: 1 }), false);
+});
+
+// The same fixed observations exercise the frontend and all three Worker consumers.
+const fs = require("node:fs");
+const vm = require("node:vm");
+const airlineFixture = require("./worker/src/airlines-characterization.json");
+function classicScript(file, globals) {
+  const context = vm.createContext(Object.assign({ core, document: { addEventListener() {} } }, core, globals));
+  vm.runInContext(fs.readFileSync(require.resolve(file), "utf8"), context, { filename: file });
+  return context;
+}
+function frontendPrivateClassifier() {
+  const context = vm.createContext(Object.assign({ core }, core));
+  const source = fs.readFileSync(require.resolve("./js/app-core.js"), "utf8");
+  vm.runInContext(source.match(/^function isPrivate\([^]*?^}/m)[0], context);
+  return context.isPrivate;
+}
+
+test("airline characterization: core and frontend preserve the shared fixture", () => {
+  const isPrivate = frontendPrivateClassifier();
+  for (const original of airlineFixture.cases) {
+    const row = Object.assign({}, original, original.regionalFix);
+    assert.deepEqual([core.airlineName(row.callsign), core.isLikelyPrivateCallsign(row.callsign)], row.core, String(row.callsign));
+    assert.equal(isPrivate(row.callsign, "CRJ9", null), row.frontendRegional, String(row.callsign));
+  }
+});
+
+
+test("regional flights: unknown airline shapes stay visible on CRJs, E-jets and turboprops", () => {
+  const isPrivate = frontendPrivateClassifier();
+  for (const callsign of ["ENY3456", "ASH5678", "QXE2100", "LOG123", "EDV4800", "RPA4500", "SKW5000", "HLF123", "ZZZ1", "ZZZ1234AB", "ABC123"]) {
+    for (const type of ["CRJ9", "E175", "DH8D"]) {
+      assert.equal(isPrivate(callsign, type, null), false, callsign + " " + type);
+    }
+    assert.equal(core.isLikelyPrivateCallsign(callsign), false, callsign);
+  }
+  for (const callsign of ["N123AB", "N12345", "JA123A", "HL7612", "C-GABC", "~abcdef", "EJA123", "LXJ123", "ZZZ12345", "ZZZ1ABC"]) {
+    assert.equal(isPrivate(callsign, "CRJ9", null), true, callsign);
+  }
+  assert.equal(core.isLikelyPrivateCallsign("EJA123"), false, "preserve callsign-only fractional behavior");
+});
+
+function sfoLaxGapGroundPath(groundAltitude = 0) {
+  const path = [[1000, 37.62, -122.375, 0, 150, true], [1060, 37.60, -122.36, 300, 150, false]];
+  for (let i = 0; i < 40; i++) path.push([1120 + i * 60, 37.5 - i / 39 * 3.3, -122.3 + i / 39 * 3.6, 10000, 150, false]);
+  path.push([3600, 33.95, -118.42, 200, 150, false]);
+  for (let i = 0; i < 3; i++) path.push([7200 + i * 30, 33.943 + i * .001, -118.408 - i * .002, groundAltitude, 150, groundAltitude !== "ground"]);
+  return path;
+}
+
+test("flight-start regression: gap before trailing ground reports starts the LAX leg", () => {
+  const path = sfoLaxGapGroundPath();
+  assert.equal(core.findFlightStartIndex(path), path.length - 3);
+});
+
+test("flight-start regression: gaps among all-ground reports still split legs", () => {
+  assert.equal(core.findFlightStartIndex([mkPt(100, true), mkPt(200, true), mkPt(4000, true)]), 2);
+});
+
+test("flight-start regression: retain the takeoff ground point and recognize readsb ground", () => {
+  const path = [[0, 0, 0, 0, 0, true], [10, 0, 0, 500, 0, false],
+    [20, 0, 0, "ground", 0, false], [30, 0, 0, 500, 0, false]];
+  assert.equal(core.findFlightStartIndex(path), 2);
+});
+
+function originDetectionContext(route) {
+  return classicScript("./js/render.js", {
+    aircraft: [{ icao24: "abc123", callsign: "AAL2" }],
+    airportData: [["SFO", 37.62, -122.375, "San Francisco"], ["LAX", 33.943, -118.408, "Los Angeles"]],
+    posHistory: {}, routeCache: route ? { AAL2: route } : {},
+    formatClientRouteLabel: (origin, dest) => (origin && origin.iata) + " to " + (dest && dest.iata)
+  });
+}
+
+test("flight-start regression: ingested LAX ground reports replace the prior SFO origin and keep JFK", () => {
+  const context = originDetectionContext({ origin: { iata: "SFO" }, originSource: "track", destination: { iata: "JFK" }, destSource: "adsbdb" });
+  context.ingestTrackPath("abc123", { path: sfoLaxGapGroundPath() });
+  assert.equal(context.routeCache.AAL2.origin.iata, "LAX");
+  assert.equal(context.routeCache.AAL2.destination.iata, "JFK");
+  assert.equal(context.posHistory.abc123.length, 3);
+  assert.equal(context.posHistory.abc123[0][4], true);
+});
+
+test("flight-start regression: readsb ground altitude remains ground in history and origin detection", () => {
+  const context = originDetectionContext();
+  context.ingestTrackPath("abc123", { path: sfoLaxGapGroundPath("ground") });
+  assert.equal(context.posHistory.abc123[0][4], true);
+  assert.equal(context.routeCache.AAL2.origin.iata, "LAX");
+});
+
+test("flight-start regression: explicit ground flag with unknown altitude supplies the origin", () => {
+  const context = originDetectionContext();
+  context.ingestTrackPath("abc123", { path: sfoLaxGapGroundPath(null) });
+  assert.equal(context.posHistory.abc123[0][4], true);
+  assert.equal(context.routeCache.AAL2.origin.iata, "LAX");
+});
+
+test("flight-start regression: unknown airborne altitude cannot supply an origin", () => {
+  const context = originDetectionContext();
+  context.runOriginDetection("abc123", { path: Array.from({ length: 6 }, (_, i) => [1000 + i * 60, 37.62, -122.375, null, 0, false]) });
+  assert.equal(context.routeCache.AAL2, undefined);
+});
+
+const SCHEDULE_NOW = 1700000000000;
+const SCHEDULE_SEC = SCHEDULE_NOW / 1000;
+const schedulePlane = { callsign: "UAL123", lat: 37.62, lng: -122.375, altFt: 2500, vRate: 12, ground: false };
+function scheduleSource(data, iata = "SFO", lat = 37.62, lng = -122.375) { return { iata, data, lat, lng }; }
+function selectScheduleForTest(sources, plane = schedulePlane) {
+  // Replay the same regression against c67a18a's original selector when the new pure helper is absent.
+  if (core.selectScheduleMatch) return core.selectScheduleMatch(["UAL123", "UA123"], sources, plane, SCHEDULE_NOW);
+  const original = classicScript("./js/render.js");
+  for (const source of sources) {
+    const match = original.findScheduleMatch(["UAL123", "UA123"], source.data, source.iata);
+    if (match) return match;
+  }
+  return null;
+}
+function departureRow(to, overrides) {
+  return Object.assign({ callsign: "UAL123", to_iata: to, sched_dep: SCHEDULE_SEC - 300, live: true, status: "Departed" }, overrides);
+}
+
+test("schedule regression: previous-day JFK row cannot beat the live LAX departure", () => {
+  const old = departureRow("JFK", { sched_dep: SCHEDULE_SEC - 86400, actual_arr: SCHEDULE_SEC - 60000, live: false, status: "Landed" });
+  const current = departureRow("LAX");
+  for (const departures of [[old, current], [current, old]]) {
+    assert.equal(selectScheduleForTest([scheduleSource({ departures })]).to, "LAX");
+  }
+});
+
+test("schedule regression: through-flight climb selects departure, descent selects arrival", () => {
+  const data = {
+    arrivals: [{ callsign: "UAL123", from_iata: "JFK", est_arr: SCHEDULE_SEC + 60, live: true }],
+    departures: [departureRow("LAX", { est_dep: SCHEDULE_SEC - 120 })]
+  };
+  const sources = [scheduleSource(data)];
+  const climbing = selectScheduleForTest(sources);
+  assert.equal(climbing.dir, "departure");
+  assert.equal(climbing.to, "LAX");
+  assert.equal(selectScheduleForTest(sources, { ...schedulePlane, vRate: -12 }).dir, "arrival");
+});
+
+test("schedule regression: estimated time and live status outrank stale matching rows", () => {
+  const data = { departures: [
+    departureRow("JFK", { sched_dep: SCHEDULE_SEC - 1800, live: false, status: "Scheduled" }),
+    departureRow("LAX", { sched_dep: SCHEDULE_SEC - 7200, est_dep: SCHEDULE_SEC - 60 })
+  ] };
+  assert.equal(selectScheduleForTest([scheduleSource(data)]).to, "LAX");
+  data.departures[0].est_dep = SCHEDULE_SEC - 60;
+  assert.equal(selectScheduleForTest([scheduleSource(data)]).to, "LAX");
+});
+
+test("schedule regression: reject ambiguous ties, cancellations and an opposite-direction-only row", () => {
+  assert.equal(selectScheduleForTest([scheduleSource({ departures: [departureRow("JFK"), departureRow("LAX")] })]), null);
+  assert.equal(selectScheduleForTest([scheduleSource({ departures: [departureRow("JFK", { status: "Cancelled" })] })]), null);
+  assert.equal(selectScheduleForTest([scheduleSource({ arrivals: [{ callsign: "UAL123", from_iata: "JFK", est_arr: SCHEDULE_SEC, live: true }] })]), null);
+});
+
+test("schedule regression: rank across airports and aliases without depending on cache order", () => {
+  const old = scheduleSource({ departures: [departureRow("JFK", { sched_dep: SCHEDULE_SEC - 86400, live: false })] }, "SEA", 47.45, -122.31);
+  const live = scheduleSource({ departures: [departureRow("LAX", { callsign: "", flight: "UA 123" })] });
+  for (const sources of [[old, live], [live, old]]) assert.equal(selectScheduleForTest(sources).to, "LAX");
+});
+
+test("schedule regression: duplicate rows for the same route are harmless, timeless conflicting rows are ambiguous", () => {
+  const row = departureRow("LAX");
+  assert.equal(selectScheduleForTest([scheduleSource({ departures: [row, { ...row }] })]).to, "LAX");
+  assert.equal(selectScheduleForTest([scheduleSource({ departures: [departureRow("LAX", { sched_dep: null }), departureRow("JFK", { sched_dep: null })] })]), null);
+});
+
+test("schedule regression: cascade uses the onward leg instead of flipping a through-flight arrival", () => {
+  const context = classicScript("./js/render.js", {
+    Date: class extends Date { static now() { return SCHEDULE_NOW; } },
+    aircraft: [schedulePlane], airportData: [["SFO", 37.62, -122.375, "San Francisco"]],
+    routeCache: {}, SCHEDULE_CACHE_TTL: 300000,
+    scheduleDataCache: { SFO: { ts: SCHEDULE_NOW, data: {
+      arrivals: [{ callsign: "UAL123", from_iata: "JFK", est_arr: SCHEDULE_SEC, live: true }],
+      departures: [departureRow("LAX")]
+    } } },
+    formatClientRouteLabel: (o, d) => o.iata + " to " + d.iata
+  });
+  assert.equal(context.cascadeScheduleMatches(), 1);
+  assert.equal(context.routeCache.UAL123.origin.iata, "SFO");
+  assert.equal(context.routeCache.UAL123.destination.iata, "LAX");
+  assert.equal(context.routeCache.UAL123.destSource, "schedule");
+});
+
+function runwayMemoryForTest() {
+  let seen = {};
+  let now = 0;
+  const original = core.updateActiveRunwayMemory ? null : classicScript("./js/airport-board.js", {
+    Date: class extends Date { static now() { return now; } }
+  });
+  return (derived, nowMs) => {
+    now = nowMs;
+    if (original) return JSON.parse(JSON.stringify(original.rememberActiveRunways("SFO", derived)));
+    const next = core.updateActiveRunwayMemory(seen, derived, nowMs);
+    seen = next.seen;
+    return next.active;
+  };
+}
+
+test("runway regression: remember parallel and crossing runways until each individually expires", () => {
+  const remember = runwayMemoryForTest();
+  const minute = 60000;
+  assert.deepEqual(remember({ departing_runways: ["28L"], arriving_runways: ["28R"] }, 0),
+    { departing_runways: ["28L"], arriving_runways: ["28R"] });
+  const both = remember({ departing_runways: ["1R"], arriving_runways: ["28L"] }, minute);
+  assert.deepEqual(both.departing_runways, ["28L", "1R"]);
+  assert.deepEqual(both.arriving_runways, ["28R", "28L"]);
+  remember({ departing_runways: ["28L"], arriving_runways: [] }, 10 * minute);
+  assert.deepEqual(remember(null, 16 * minute), { departing_runways: ["28L", "1R"], arriving_runways: ["28L"] });
+  assert.deepEqual(remember(null, 16 * minute + 1), { departing_runways: ["28L"], arriving_runways: [] });
+  assert.equal(remember(null, 25 * minute + 1), null);
+});
+
+test("runway regression: memory is pure, airport-scoped and D-ATIS keeps precedence", () => {
+  const context = classicScript("./js/airport-board.js", { Date: class extends Date { static now() { return 1000; } } });
+  context.rememberActiveRunways("SFO", { departing_runways: ["28L"], arriving_runways: ["28R"] });
+  const sfo = context.rememberActiveRunways("SFO", { departing_runways: ["1R"], arriving_runways: ["28L"] });
+  assert.equal(context.rememberActiveRunways("LAX", null), null);
+  const overridden = context.mergeActiveRunways({ departing_runways: ["10R"], arriving_runways: [] }, sfo);
+  assert.deepEqual(Array.from(overridden.departing_runways), ["10R"]);
+  assert.deepEqual(Array.from(overridden.arriving_runways), ["28R", "28L"]);
+  if (core.updateActiveRunwayMemory) {
+    const memory = { departing_runways: { "28L": 0 }, arriving_runways: {} };
+    const before = JSON.stringify(memory);
+    core.updateActiveRunwayMemory(memory, { departing_runways: ["1R"] }, 1000);
+    assert.equal(JSON.stringify(memory), before);
+  }
+});
+
+function onFinalAircraft(designator, overrides) {
+  const end = core.matchRunwayDesignator(SFO_RUNWAYS, "SFO", designator);
+  const track = core.bearingDegrees(end.thresholdLat, end.thresholdLon, end.farEndLat, end.farEndLon);
+  const pos = core.projectLatLng(end.thresholdLat, end.thresholdLon, (track + 180) % 360, 6000);
+  return { lat: pos[0], lng: pos[1], track, altFt: 1000, vRate: -8, ground: false, ...overrides };
+}
+
+test("runway regression: on-final arrivals count before entering the runway box, including shallow descent", () => {
+  for (const vRate of [-8, -1, 0]) {
+    const result = core.deriveActiveRunways(SFO_RUNWAYS, "SFO", [onFinalAircraft("28L", { vRate })]);
+    assert.deepEqual(result && result.arriving_runways, ["28L"], String(vRate));
+    assert.deepEqual(result.departing_runways, []);
+  }
+});
+
+test("runway regression: final-approach inference excludes climbing, high, ground and wrong-heading traffic", () => {
+  const base = onFinalAircraft("28L");
+  for (const overrides of [{ vRate: 12 }, { altFt: 30000 }, { ground: true }, { track: (base.track + 90) % 360 }]) {
+    assert.equal(core.deriveActiveRunways(SFO_RUNWAYS, "SFO", [{ ...base, ...overrides }]), null);
+  }
+});
+
+function persistenceContext(value) {
+  return classicScript("./js/features.js", {
+    LS_VIEW: "view", LS_PLACES: "places",
+    window: { localStorage: { getItem: () => JSON.stringify(value) } }
+  });
+}
+
+test("saved coordinates regression: last view rejects null, strings, booleans and out-of-range coordinates", () => {
+  for (const value of [null, "0", false, 91, -91, Infinity]) {
+    assert.equal(persistenceContext({ lat: value, lng: 0 }).loadLastView(), null, "lat: " + value);
+  }
+  for (const value of [null, "0", false, 181, -181, -Infinity]) {
+    assert.equal(persistenceContext({ lat: 0, lng: value }).loadLastView(), null, "lng: " + value);
+  }
+});
+
+test("saved coordinates regression: saved places filter corrupt coordinates", () => {
+  const saved = [{ name: "Zero", lat: 0, lng: 0 }, { lat: null, lng: 0 }, { lat: 0, lng: null },
+    { lat: "37", lng: -122 }, { lat: false, lng: 0 }, { lat: 90.01, lng: 0 }, { lat: 0, lng: -180.01 }, null];
+  assert.deepEqual(JSON.parse(JSON.stringify(persistenceContext(saved).loadPlaces())), [saved[0]]);
+});
+
+test("saved coordinates regression: valid zero and boundary coordinates survive", () => {
+  for (const value of [{ lat: 0, lng: 0, zoom: 8 }, { lat: 90, lng: -180 }, { lat: -90, lng: 180 }]) {
+    assert.deepEqual(JSON.parse(JSON.stringify(persistenceContext(value).loadLastView())), value);
+    assert.deepEqual(JSON.parse(JSON.stringify(persistenceContext([value]).loadPlaces())), [value]);
+  }
+});
+
+test("flight-start regression: new-leg origin updates even when live history already covers the trace", () => {
+  const context = originDetectionContext({ origin: { iata: "SFO" }, originSource: "track", destination: { iata: "JFK" }, destSource: "adsbdb" });
+  context.posHistory.abc123 = [[33.943, -118.408, 7200000, null, true]];
+  context.ingestTrackPath("abc123", { path: sfoLaxGapGroundPath() });
+  assert.equal(context.routeCache.AAL2.origin.iata, "LAX");
+  assert.equal(context.posHistory.abc123.length, 1);
+});
+
+test("flight-start regression: a short arrival-only trace cannot replace an established origin", () => {
+  const context = originDetectionContext({ origin: { iata: "SFO" }, originSource: "track" });
+  context.runOriginDetection("abc123", { path: Array.from({ length: 6 }, (_, i) => [1000 + i * 60, 33.943, -118.408, 800, 0, false]) });
+  assert.equal(context.routeCache.AAL2.origin.iata, "SFO");
+});
+
+test("airline data: the inlined browser core and Node expose the same data and classifications", async () => {
+  const { buildBundle } = await import("./scripts/build-bundle.mjs");
+  const bundle = await buildBundle();
+  const context = vm.createContext({});
+  vm.runInContext(bundle.slice(0, bundle.indexOf(";// ---- js/app-core.js")), context);
+  assert.deepEqual(JSON.parse(JSON.stringify(context.ContrailsCore.AIRLINES)), core.AIRLINES);
+  assert.deepEqual(JSON.parse(JSON.stringify(context.ContrailsCore.AIRLINE_IATA_ALIASES)), core.AIRLINE_IATA_ALIASES);
+  for (const original of airlineFixture.cases) {
+    const row = Object.assign({}, original, original.regionalFix);
+    assert.equal(context.ContrailsCore.isLikelyPrivateCallsign(row.callsign), row.core[1], String(row.callsign));
+  }
 });

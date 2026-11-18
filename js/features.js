@@ -26,7 +26,8 @@ function loadLastView() {
   if (!raw) return null;
   try {
     var v = JSON.parse(raw);
-    if (v && isFinite(v.lat) && isFinite(v.lng)) return v;
+    if (v && Number.isFinite(v.lat) && Math.abs(v.lat) <= 90 &&
+        Number.isFinite(v.lng) && Math.abs(v.lng) <= 180) return v;
   } catch (e) {}
   return null;
 }
@@ -48,7 +49,10 @@ function loadPlaces() {
   try {
     var arr = JSON.parse(raw);
     if (Array.isArray(arr)) {
-      return arr.filter(function(p) { return p && isFinite(p.lat) && isFinite(p.lng); }).slice(0, 30);
+      return arr.filter(function(p) {
+        return p && Number.isFinite(p.lat) && Math.abs(p.lat) <= 90 &&
+          Number.isFinite(p.lng) && Math.abs(p.lng) <= 180;
+      }).slice(0, 30);
     }
   } catch (e) {}
   return [];
