@@ -27,7 +27,10 @@ function loadLastView() {
   try {
     var v = JSON.parse(raw);
     if (v && Number.isFinite(v.lat) && Math.abs(v.lat) <= 90 &&
-        Number.isFinite(v.lng) && Math.abs(v.lng) <= 180) return v;
+        Number.isFinite(v.lng)) {
+      v.lng = ((v.lng + 180) % 360 + 360) % 360 - 180;
+      return v;
+    }
   } catch (e) {}
   return null;
 }
@@ -39,6 +42,7 @@ function scheduleSaveLastView() {
     if (!map) return;
     var c = map.getCenter();
     if (!c) return;
+    c = c.wrap();
     lsSet(LS_VIEW, JSON.stringify({ lat: +c.lat.toFixed(4), lng: +c.lng.toFixed(4), zoom: viewZoom() }));
   }, 600);
 }
@@ -51,8 +55,11 @@ function loadPlaces() {
     if (Array.isArray(arr)) {
       return arr.filter(function(p) {
         return p && Number.isFinite(p.lat) && Math.abs(p.lat) <= 90 &&
-          Number.isFinite(p.lng) && Math.abs(p.lng) <= 180;
-      }).slice(0, 30);
+          Number.isFinite(p.lng);
+      }).slice(0, 30).map(function(p) {
+        p.lng = ((p.lng + 180) % 360 + 360) % 360 - 180;
+        return p;
+      });
     }
   } catch (e) {}
   return [];
@@ -395,6 +402,7 @@ function saveCurrentPlace() {
   if (!map) return;
   var c = map.getCenter();
   if (!c) return;
+  c = c.wrap();
   var name = "";
   try { name = window.prompt("Name this place", suggestPlaceName(c.lat, c.lng)) || ""; } catch (e) { name = ""; }
   name = name.trim();

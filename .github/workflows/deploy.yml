@@ -15,6 +15,7 @@ on:
     paths:
       - "worker/**"
       - "airports.json"
+      - "airlines.json"
       - ".github/workflows/deploy.yml"
   workflow_dispatch:
 

@@ -1672,15 +1672,15 @@ test("airline characterization: core and frontend preserve the shared fixture", 
 });
 
 
-test("regional flights: unknown airline shapes stay visible on CRJs, E-jets and turboprops", () => {
+test("regional flights: explicit carriers stay visible, unknown airline shapes keep the size fallback", () => {
   const isPrivate = frontendPrivateClassifier();
-  for (const callsign of ["ENY3456", "ASH5678", "QXE2100", "LOG123", "EDV4800", "RPA4500", "SKW5000", "HLF123", "ZZZ1", "ZZZ1234AB", "ABC123"]) {
+  for (const callsign of ["ENY3456", "ASH5678", "QXE2100", "LOG123", "EDV4800", "RPA4500", "SKW5000"]) {
     for (const type of ["CRJ9", "E175", "DH8D"]) {
       assert.equal(isPrivate(callsign, type, null), false, callsign + " " + type);
     }
     assert.equal(core.isLikelyPrivateCallsign(callsign), false, callsign);
   }
-  for (const callsign of ["N123AB", "N12345", "JA123A", "HL7612", "C-GABC", "~abcdef", "EJA123", "LXJ123", "ZZZ12345", "ZZZ1ABC"]) {
+  for (const callsign of ["N123AB", "N12345", "JA123A", "HL7612", "C-GABC", "~abcdef", "EJA123", "LXJ123", "ZZZ12345", "ZZZ1ABC", "HLF123", "ZZZ1", "ZZZ1234AB", "ABC123"]) {
     assert.equal(isPrivate(callsign, "CRJ9", null), true, callsign);
   }
   assert.equal(core.isLikelyPrivateCallsign("EJA123"), false, "preserve callsign-only fractional behavior");
@@ -1908,21 +1908,25 @@ test("saved coordinates regression: last view rejects null, strings, booleans an
   for (const value of [null, "0", false, 91, -91, Infinity]) {
     assert.equal(persistenceContext({ lat: value, lng: 0 }).loadLastView(), null, "lat: " + value);
   }
-  for (const value of [null, "0", false, 181, -181, -Infinity]) {
+  for (const value of [null, "0", false, -Infinity]) {
     assert.equal(persistenceContext({ lat: 0, lng: value }).loadLastView(), null, "lng: " + value);
+  }
+  for (const [lng, expected] of [[181, -179], [-181, 179], [541, -179], [-541, 179]]) {
+    assert.equal(persistenceContext({ lat: 0, lng }).loadLastView()?.lng, expected, "lng: " + lng);
   }
 });
 
 test("saved coordinates regression: saved places filter corrupt coordinates", () => {
   const saved = [{ name: "Zero", lat: 0, lng: 0 }, { lat: null, lng: 0 }, { lat: 0, lng: null },
-    { lat: "37", lng: -122 }, { lat: false, lng: 0 }, { lat: 90.01, lng: 0 }, { lat: 0, lng: -180.01 }, null];
+    { lat: "37", lng: -122 }, { lat: false, lng: 0 }, { lat: 90.01, lng: 0 }, null];
   assert.deepEqual(JSON.parse(JSON.stringify(persistenceContext(saved).loadPlaces())), [saved[0]]);
 });
 
 test("saved coordinates regression: valid zero and boundary coordinates survive", () => {
   for (const value of [{ lat: 0, lng: 0, zoom: 8 }, { lat: 90, lng: -180 }, { lat: -90, lng: 180 }]) {
-    assert.deepEqual(JSON.parse(JSON.stringify(persistenceContext(value).loadLastView())), value);
-    assert.deepEqual(JSON.parse(JSON.stringify(persistenceContext([value]).loadPlaces())), [value]);
+    const expected = { ...value, lng: value.lng === 180 ? -180 : value.lng };
+    assert.deepEqual(JSON.parse(JSON.stringify(persistenceContext(value).loadLastView())), expected);
+    assert.deepEqual(JSON.parse(JSON.stringify(persistenceContext([value]).loadPlaces())), [expected]);
   }
 });
 
@@ -1978,6 +1982,145 @@ function hotPathRenderContext() {
   context.updateRouteLine = () => {};
   return { context, uploads, diffs, frames, boundsReads: () => boundsReads };
 }
+
+// Independent review regressions: each fails against a5ec8a1.
+const privateReviewFlights = [
+  ["CAP1234", "C182"], ["SAM44", "GLF5"], ["PAT652", "C560"], ["GAF681", "GL6T"],
+  ["IAM3150", "F900"], ["CFC3012", "CL60"], ["RRR1234", "BE20"], ["XOJ123", "CL35"],
+  ["XSR456", "E55P"], ["JTL12", "C68A"], ["AHO123", "C56X"], ["TWY12", "GLF4"], ["RPC1234", "C172"]
+];
+test("review 1: government, CAP and charter aircraft retain the c67a18a private classification", () => {
+  const isPrivate = frontendPrivateClassifier();
+  for (const [callsign, type] of privateReviewFlights) {
+    assert.equal(isPrivate(callsign, type, null), true, callsign + "/" + type);
+    assert.equal(core.isAirlineCallsign(callsign), false, callsign);
+  }
+});
+
+const reviewRunways = require("./runways.json");
+for (const [iata, designators] of [["LAX", ["24R", "25L", "24L"]], ["ATL", ["26R"]]]) {
+  test("review 2: " + iata + " finals use the closest centerline on staggered parallels", () => {
+    for (const designator of designators) {
+      const end = core.matchRunwayDesignator(reviewRunways[iata], iata, designator);
+      const track = core.bearingDegrees(end.thresholdLat, end.thresholdLon, end.farEndLat, end.farEndLon);
+      for (const km of [2, 4, 6, 8]) {
+        const [lat, lng] = core.projectLatLng(end.thresholdLat, end.thresholdLon, (track + 180) % 360, km * 1000);
+        const result = core.deriveActiveRunways(reviewRunways[iata], iata, [{ lat, lng, track, altFt: 1000, vRate: -8, ground: false }]);
+        assert.deepEqual(result && result.arriving_runways, [designator], designator + " at " + km + " km");
+      }
+    }
+  });
+}
+
+test("review 3: SFO 28L to 10R flow reversal immediately keeps the takeoff roll Departing", () => {
+  const context = classicScript("./js/airport-board.js", {
+    runwayData: reviewRunways, airportData: [["SFO", 37.62, -122.375]], routeCache: {},
+    posHistory: {}, extraState: {}, DEPARTURE_PERIMETER_KM: 15, AIRPORT_POPUP_FETCH_KM: 100
+  });
+  context.rememberActiveRunways("SFO", { departing_runways: ["28L"], arriving_runways: [] });
+  context.rememberActiveRunways("SFO", { departing_runways: ["10R"], arriving_runways: [] });
+  const plane = onRunwayAircraft("10R", { ground: true, altFt: null, speedKts: 70, callsign: "UAL123", icao24: "abc123" });
+  const board = context.buildLiveScheduleData("SFO", 37.62, -122.375, [plane]);
+  assert.equal(board.departures[0]?.status, "Departing");
+  assert.deepEqual(Array.from(context.rememberActiveRunways("SFO", null).departing_runways), ["10R"]);
+});
+
+test("review 3: runway memory removes reciprocals and normalizes leading zeroes in both directions", () => {
+  for (const key of ["departing_runways", "arriving_runways"]) {
+    for (const [old, observed] of [["28L", "10R"], ["10R", "28L"], ["01L", "19R"], ["19C", "01C"], ["18", "36"]]) {
+      const next = core.updateActiveRunwayMemory({ [key]: { [old]: 0 } }, { [key]: [observed] }, 1000);
+      assert.deepEqual(next.active[key], [observed.replace(/^0+/, "")], old + " -> " + observed);
+    }
+    const next = core.updateActiveRunwayMemory({ [key]: { "01L": 100, "1L": 200 } }, { [key]: ["01L"] }, 1000);
+    assert.deepEqual(next.active[key], ["1L"]);
+    assert.deepEqual(next.seen[key], { "1L": 1000 });
+  }
+  const onRunway = core.deriveActiveRunways(reviewRunways.SFO, "SFO", [onRunwayAircraft("1L", { vRate: 12 })]);
+  assert.deepEqual(onRunway.departing_runways, ["1L"]);
+  assert.deepEqual(core.parseDatisActiveRunways("DEPARTING RWY 01L. LANDING RWY 01L."),
+    { departing_runways: ["1L"], arriving_runways: ["1L"] });
+});
+
+test("review 4: old world-copy views and places normalize and survive saving and deletion", () => {
+  const storage = { places: JSON.stringify([{ name: "East", lat: 1, lng: 181 }, { name: "West", lat: 2, lng: -541 }]) };
+  let scheduled, wraps = 0;
+  const context = classicScript("./js/features.js", {
+    LS_VIEW: "view", LS_PLACES: "places", _saveViewTimer: 0,
+    setTimeout(fn) { scheduled = fn; return 1; }, clearTimeout() {},
+    map: { getCenter: () => ({ lat: 3, lng: 541, wrap() { wraps++; return { lat: 3, lng: -179 }; } }) },
+    window: { prompt: () => "New", localStorage: { getItem: key => storage[key], setItem: (key, value) => { storage[key] = value; } } },
+    document: { addEventListener() {}, getElementById: () => null },
+    viewZoom: () => 8, findNearestRegion: () => null, setControlsFeedback() {}
+  });
+  context.scheduleSaveLastView();
+  scheduled();
+  assert.equal(JSON.parse(storage.view).lng, -179);
+  assert.equal(context.loadLastView().lng, -179);
+  context.saveCurrentPlace();
+  assert.equal(wraps, 2, "both writers wrap MapLibre centers");
+  assert.deepEqual(JSON.parse(storage.places).map(p => p.lng), [-179, 179, -179]);
+  context.deletePlace(2);
+  assert.deepEqual(JSON.parse(storage.places).map(p => p.name), ["East", "West"]);
+  assert.deepEqual(Array.from(context.loadPlaces(), p => p.lng), [-179, 179]);
+});
+
+test("review 5: grounded SWA1234 at MDW keeps BWI arrival over DEN departure in 45 minutes", () => {
+  const plane = { callsign: "SWA1234", lat: 41.7868, lng: -87.7522, ground: true, altFt: null, vRate: 0 };
+  const arrival = { callsign: "SWA1234", from_iata: "BWI", status: "Landed", actual_arr: SCHEDULE_SEC - 300 };
+  const departure = { callsign: "SWA1234", to_iata: "DEN", status: "Scheduled", sched_dep: SCHEDULE_SEC + 45 * 60 };
+  function select(arrivals, aircraft = plane) {
+    return core.selectScheduleMatch(["SWA1234", "WN1234"],
+      [scheduleSource({ arrivals, departures: [departure] }, "MDW", plane.lat, plane.lng)], aircraft, SCHEDULE_NOW);
+  }
+  const match = select([arrival]);
+  assert.equal(match?.dir, "arrival");
+  assert.equal(match.from, "BWI");
+  const context = classicScript("./js/render.js", { routeCache: {}, formatClientRouteLabel: (o, d) => o.iata + " to " + d.iata });
+  context.applyScheduleMatch(plane, match);
+  assert.equal(context.routeCache.SWA1234.iata, "BWI to MDW");
+  assert.equal(context.routeCache.SWA1234.destSource, "schedule");
+  // Actual arrival, not row order or an older schedule, orders recent landed instances.
+  assert.equal(select([{ ...arrival, from_iata: "ORD", actual_arr: SCHEDULE_SEC - 3600 }, arrival]).from, "BWI");
+  assert.equal(select([{ ...arrival, actual_arr: SCHEDULE_SEC - 89 * 60 }]).dir, "arrival");
+  for (const overrides of [{ actual_arr: SCHEDULE_SEC - 91 * 60 }, { actual_arr: null }, { status: "Cancelled" }]) {
+    assert.equal(select([{ ...arrival, ...overrides }]).dir, "departure");
+  }
+  assert.equal(select([arrival], { ...plane, ground: false }).dir, "departure");
+});
+
+test("review 6: a gate gap clears the prior destination when it becomes the new SFO origin", () => {
+  const context = originDetectionContext({ origin: { iata: "LAX" }, originSource: "track", destination: { iata: "SFO" }, destSource: "schedule" });
+  const path = [[1000, 33.943, -118.408, 0, 0, true], [1060, 34, -118.4, 1000, 0, false],
+    [4000, 37.62, -122.375, 0, 0, true], [7000, 37.62, -122.375, 0, 0, true], [7030, 37.62, -122.375, 0, 0, true]];
+  context.runOriginDetection("abc123", { path });
+  const route = context.routeCache.AAL2;
+  assert.equal(route.origin.iata, "SFO");
+  assert.equal(route.destination, null);
+  assert.equal(route.destSource, null);
+  assert.equal(route.iata, "SFO");
+  assert.notEqual(route.display, "SFO to SFO");
+});
+
+test("review 7: the same SFO to LAX leg from both endpoint schedules is not ambiguous", () => {
+  const sources = [scheduleSource({ departures: [departureRow("LAX")] }),
+    scheduleSource({ arrivals: [{ callsign: "UAL123", from_iata: "SFO", est_arr: SCHEDULE_SEC + 300, live: true }] }, "LAX", 33.943, -118.408)];
+  for (const order of [sources, sources.slice().reverse()]) {
+    const match = selectScheduleForTest(order, { ...schedulePlane, altFt: 30000, vRate: 0 });
+    assert.ok(match);
+    assert.deepEqual(match.dir === "arrival" ? [match.from, match.airport] : [match.airport, match.to], ["SFO", "LAX"]);
+  }
+});
+
+test("review 10: the standalone browser core loads with empty airline tables when AIRLINES_DATA is absent", () => {
+  const context = vm.createContext({});
+  vm.runInContext(fs.readFileSync(require.resolve("./contrails-core.js"), "utf8"), context);
+  const standalone = context.ContrailsCore;
+  assert.equal(standalone.airlineName("UAL123"), null);
+  assert.equal(standalone.isAirlineCallsign("UAL123"), false);
+  assert.equal(standalone.isLikelyPrivateCallsign("UAL123"), false, "empty registration table must not match every callsign");
+  assert.equal(standalone.isPrivateAircraft("CAP1234", "C182", null), true);
+  assert.deepEqual(Array.from(standalone.callsignVariants("UAL123")), ["UAL123"]);
+});
 
 test("hot path: render filtering reads bounds once per pass and keeps selected ground planes", () => {
   const { context: c, uploads, boundsReads } = hotPathRenderContext();

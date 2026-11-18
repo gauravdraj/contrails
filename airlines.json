@@ -109,7 +109,8 @@
       "name": "Compass"
     },
     "CSN": {
-      "name": "China Southern"
+      "name": "China Southern",
+      "iata": "CZ"
     },
     "CTN": {
       "name": "Croatia"
@@ -245,10 +246,12 @@
       "iata": "MS"
     },
     "NAX": {
-      "name": "Norwegian"
+      "name": "Norwegian",
+      "iata": "DY"
     },
     "NKS": {
-      "name": "Spirit"
+      "name": "Spirit",
+      "iata": "NK"
     },
     "NPT": {
       "name": "N. Pacific"
@@ -293,7 +296,8 @@
       "name": "TAROM"
     },
     "RPA": {
-      "name": "Republic"
+      "name": "Republic",
+      "iata": "YX"
     },
     "RYR": {
       "name": "Ryanair",
@@ -304,10 +308,12 @@
       "iata": "SK"
     },
     "SAA": {
-      "name": "South African"
+      "name": "South African",
+      "iata": "SA"
     },
     "SCX": {
-      "name": "Sun Country"
+      "name": "Sun Country",
+      "iata": "SY"
     },
     "SEJ": {
       "name": "StarFlyer"
@@ -317,7 +323,8 @@
       "iata": "SQ"
     },
     "SKW": {
-      "name": "SkyWest"
+      "name": "SkyWest",
+      "iata": "OO"
     },
     "SLK": {
       "name": "Silk Way"
@@ -393,76 +400,100 @@
       "name": "AirAsia X"
     },
     "ENY": {
-      "name": "Envoy"
+      "name": "Envoy",
+      "iata": "MQ"
     },
     "ASH": {
-      "name": "Mesa"
+      "name": "Mesa",
+      "iata": "YV"
     },
     "QXE": {
-      "name": "Horizon"
+      "name": "Horizon",
+      "iata": "QX"
     },
     "LOG": {
-      "name": "Loganair"
+      "name": "Loganair",
+      "iata": "LM"
     },
     "EDV": {
-      "name": "Endeavor"
+      "name": "Endeavor",
+      "iata": "9E"
     },
     "JZA": {
-      "name": "Jazz"
+      "name": "Jazz",
+      "iata": "QK"
     },
     "ROU": {
-      "name": "Air Canada Rouge"
+      "name": "Air Canada Rouge",
+      "iata": "RV"
     },
     "PDT": {
-      "name": "Piedmont"
+      "name": "Piedmont",
+      "iata": "PT"
     },
     "AWI": {
-      "name": "Air Wisconsin"
+      "name": "Air Wisconsin",
+      "iata": "ZW"
     },
     "GJS": {
-      "name": "GoJet"
+      "name": "GoJet",
+      "iata": "G7"
     },
     "UCA": {
-      "name": "CommutAir"
+      "name": "CommutAir",
+      "iata": "C5"
     },
     "CFE": {
-      "name": "BA CityFlyer"
+      "name": "BA CityFlyer",
+      "iata": "CJ"
     },
     "CLH": {
-      "name": "Lufthansa CityLine"
+      "name": "Lufthansa CityLine",
+      "iata": "CL"
     },
     "KLC": {
-      "name": "KLM Cityhopper"
+      "name": "KLM Cityhopper",
+      "iata": "WA"
     },
     "HOP": {
-      "name": "Air France Hop"
+      "name": "Air France Hop",
+      "iata": "A5"
     },
     "EAI": {
-      "name": "Emerald Airlines"
+      "name": "Emerald Airlines",
+      "iata": "EA"
     },
     "ABX": {
-      "name": "ABX Air"
+      "name": "ABX Air",
+      "iata": "GB"
     },
     "ATN": {
-      "name": "Air Transport International"
+      "name": "Air Transport International",
+      "iata": "8C"
     },
     "ABW": {
-      "name": "AirBridgeCargo"
+      "name": "AirBridgeCargo",
+      "iata": "RU"
     },
     "BCS": {
-      "name": "European Air Transport"
+      "name": "European Air Transport",
+      "iata": "QY"
     },
     "BOX": {
-      "name": "AeroLogic"
+      "name": "AeroLogic",
+      "iata": "3S"
     },
     "SOO": {
-      "name": "Southern Air"
+      "name": "Southern Air",
+      "iata": "9S"
     },
     "MXY": {
-      "name": "Breeze"
+      "name": "Breeze",
+      "iata": "MX"
     },
     "VXP": {
-      "name": "Avelo"
+      "name": "Avelo",
+      "iata": "XP"
     }
   },
   "privateRegistrationPrefixes": [

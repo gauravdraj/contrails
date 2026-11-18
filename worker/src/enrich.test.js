@@ -3,6 +3,61 @@ import assert from "node:assert/strict";
 
 import { enrichRoutes, ICAO_TO_IATA } from "./enrich.js";
 import { fr24ResetBackoff } from "./fr24-backoff.js";
+import airlinesData from "../../airlines.json" with { type: "json" };
+
+// Snapshot of enrich's existing translations before consolidating the table.
+const legacyIata = {
+  AAL: "AA", AAR: "OZ", ACA: "AC", AFR: "AF", AIC: "AI", ANA: "NH",
+  ANZ: "NZ", ASA: "AS", AUA: "OS", AVA: "AV", BAW: "BA", CAL: "CI",
+  CMP: "CM", CPA: "CX", CSN: "CZ", DAL: "DL", DLH: "LH", EIN: "EI",
+  ETD: "EY", ETH: "ET", EVA: "BR", FIN: "AY", GIA: "GA", HAL: "HA",
+  IBE: "IB", ICE: "FI", JAL: "JL", JBU: "B6", KAL: "KE", KLM: "KL",
+  LAN: "LA", LOT: "LO", MAS: "MH", MSR: "MS", NAX: "DY", NKS: "NK",
+  PAL: "PR", QFA: "QF", QTR: "QR", RPA: "YX", RYR: "FR", SAA: "SA",
+  SAS: "SK", SCX: "SY", SIA: "SQ", SKW: "OO", SVA: "SV", SWA: "WN",
+  SWR: "LX", TAP: "TP", THA: "TG", THY: "TK", UAE: "EK", UAL: "UA",
+  VIR: "VS", WJA: "WS"
+};
+const regionalIata = {
+  ENY: "MQ", ASH: "YV", QXE: "QX", LOG: "LM", EDV: "9E", JZA: "QK", ROU: "RV", PDT: "PT",
+  AWI: "ZW", GJS: "G7", UCA: "C5", CFE: "CJ", CLH: "CL", KLC: "WA", HOP: "A5", EAI: "EA",
+  ABX: "GB", ATN: "8C", ABW: "RU", BCS: "QY", BOX: "3S", SOO: "9S", MXY: "MX", VXP: "XP"
+};
+
+test("review 9: shared airline data includes every legacy enrich alias and all 24 added carriers", () => {
+  for (const [icao, iata] of Object.entries({ ...legacyIata, ...regionalIata })) {
+    assert.equal(airlinesData.airlines[icao]?.iata, iata, icao);
+    assert.equal(ICAO_TO_IATA[icao], iata, icao);
+  }
+  assert.deepEqual(ICAO_TO_IATA, Object.fromEntries(Object.entries(airlinesData.airlines)
+    .filter(([, airline]) => airline.iata).map(([icao, airline]) => [icao, airline.iata])));
+});
+
+test("review 9: enrich preserves all legacy FR24 queries and uses the new shared carrier aliases", async (t) => {
+  const originalCaches = globalThis.caches, originalFetch = globalThis.fetch;
+  const queries = [];
+  globalThis.caches = { default: {
+    async match(req) {
+      const url = typeof req === "string" ? req : req.url;
+      if (!url.includes("fr24-search-cache/")) return null;
+      const query = url.split("/").pop();
+      queries.push(query);
+      return makeFR24Response(query, "SFO", "LAX");
+    },
+    async put() {}
+  } };
+  globalThis.fetch = async () => { throw new Error("unexpected network request"); };
+  t.after(() => { globalThis.caches = originalCaches; globalThis.fetch = originalFetch; fr24ResetBackoff(); });
+  for (const aliases of [legacyIata, regionalIata]) {
+    for (const [icao, iata] of Object.entries(aliases)) {
+      const callsign = icao + "123";
+      const result = await enrichRoutes([{ callsign, altFt: 30000, vRate: 0, ground: false }], {}, mockCtx());
+      assert.equal(queries.at(-1), iata + "123", callsign);
+      assert.equal(result[callsign]?.origin.iata, "SFO", callsign);
+      assert.equal(result[callsign]?.destination.iata, "LAX", callsign);
+    }
+  }
+});
 
 function makeFR24Response(callsign, from, to) {
   return new Response(JSON.stringify({

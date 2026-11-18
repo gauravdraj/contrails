@@ -2,6 +2,14 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import fixture from "./airlines-characterization.json" with { type: "json" };
+import { isAirlineCallsign } from "./airlines.js";
+
+test("review 1: government, CAP and charter callsigns are not Worker airline signals", () => {
+  for (const callsign of ["CAP1234", "SAM44", "PAT652", "GAF681", "IAM3150", "CFC3012", "RRR1234",
+    "XOJ123", "XSR456", "JTL12", "AHO123", "TWY12", "RPC1234", "HLF123", "ZZZ42AB", "ABC123"]) {
+    assert.equal(isAirlineCallsign(callsign), false, callsign);
+  }
+});
 
 // Expose the original private helpers without changing production exports. Relative imports still load
 // the real module dependencies; this also works against untouched c67a18a sources in the red-test scratch.
