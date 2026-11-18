@@ -493,7 +493,7 @@ function onPlanePopupOpened(hex, el) {
 
 function syncUrlState() {
   if (map) {
-    var center = map.getCenter();
+    var center = map.getCenter().wrap();
     params.set("lat", center.lat.toFixed(4));
     params.set("lng", center.lng.toFixed(4));
     params.set("zoom", String(Math.round(viewZoom() * 4) / 4));
@@ -506,7 +506,12 @@ function syncUrlState() {
   else params.delete("hex");
   params.delete("radius");
   var query = params.toString();
-  history.replaceState(null, "", query ? "?" + query : location.pathname);
+  // Safari throws once replaceState runs too often; the URL is a convenience, never worth breaking a caller.
+  try {
+    history.replaceState(null, "", query ? "?" + query : location.pathname);
+  } catch (err) {
+    console.warn("URL update skipped:", err);
+  }
 }
 
 function setControlsFeedback(message, tone, options) {
@@ -576,7 +581,7 @@ function pickLiveAircraft(acList) {
 }
 
 async function fetchLookup(path) {
-  var resp = await fetch(adsbUrl(path));
+  var resp = await fetchWithTimeout(adsbUrl(path));
   if (!resp.ok) throw new Error("HTTP " + resp.status);
   return resp.json();
 }
@@ -584,6 +589,8 @@ async function fetchLookup(path) {
 async function lookupAircraftQuery(query) {
   if (!query) return null;
   if (query.type === "hex") {
+    // Non-ICAO ("~") addresses are only known to the live feed, not to the hex lookup.
+    if (!isIcaoHex(query.value)) return null;
     var hexData = await fetchLookup("/hex/" + encodeURIComponent(query.value));
     return pickLiveAircraft(hexData.ac || []);
   }
@@ -660,7 +667,7 @@ function buildPlaneShareUrl(id) {
   var plane = normalized ? findAircraftById(normalized) : null;
   var pose = normalized ? getDisplayPoseForAircraft(normalized, currentDisplayTime(Date.now())) : null;
   var lat = pose ? pose.lat : (plane ? plane.lat : (map ? map.getCenter().lat : paramLat));
-  var lng = pose ? pose.lng : (plane ? plane.lng : (map ? map.getCenter().lng : paramLng));
+  var lng = pose ? pose.lng : (plane ? plane.lng : (map ? map.getCenter().wrap().lng : paramLng));
   var zoom = Math.max(map ? viewZoom() : DEFAULT_MAP_ZOOM, SEARCH_MIN_ZOOM);
   var url = new URL(location.href);
   url.searchParams.set("lat", lat.toFixed(4));
@@ -750,42 +757,44 @@ function tryResolvePendingPlaneFocus() {
 }
 
 async function maybeLookupPendingPlaneFocus() {
-  if (!pendingPlaneFocus ||
-      (pendingPlaneFocus.reason !== "shared-link" && pendingPlaneFocus.reason !== "search") ||
-      pendingPlaneFocus.loading || pendingPlaneFocus.failed ||
-      pendingPlaneFocus.lookupAttempts >= SHARED_PLANE_LOOKUP_LIMIT) {
+  var focus = pendingPlaneFocus;
+  if (!focus ||
+      (focus.reason !== "shared-link" && focus.reason !== "search") ||
+      focus.loading || focus.failed ||
+      focus.lookupAttempts >= SHARED_PLANE_LOOKUP_LIMIT) {
     return;
   }
-  pendingPlaneFocus.loading = true;
-  pendingPlaneFocus.lookupAttempts += 1;
+  focus.loading = true;
+  focus.lookupAttempts += 1;
   setControlsFeedback(
-    pendingPlaneFocus.reason === "search" ? "Finding plane\u2026" : "Finding shared plane\u2026",
+    focus.reason === "search" ? "Finding plane\u2026" : "Finding shared plane\u2026",
     "info", { persistent: true }
   );
   try {
     var found = await lookupAircraftQuery({
       type: "hex",
-      value: pendingPlaneFocus.hex,
-      variants: [pendingPlaneFocus.hex]
+      value: focus.hex,
+      variants: [focus.hex]
     });
-    if (!pendingPlaneFocus) return;
+    // Another plane may have been picked (or the focus cleared) while this lookup was out.
+    if (pendingPlaneFocus !== focus) return;
     if (found) {
       setControlsFeedback(
-        pendingPlaneFocus.reason === "search" ? "Centering on plane\u2026" : "Centering on shared plane\u2026",
+        focus.reason === "search" ? "Centering on plane\u2026" : "Centering on shared plane\u2026",
         "info", { timeoutMs: 4000 }
       );
       centerMapOnPlane(found.lat, found.lng, SEARCH_MIN_ZOOM);
-    } else if (pendingPlaneFocus.lookupAttempts >= SHARED_PLANE_LOOKUP_LIMIT) {
-      pendingPlaneFocus.failed = true;
+    } else if (focus.lookupAttempts >= SHARED_PLANE_LOOKUP_LIMIT) {
+      focus.failed = true;
       setControlsFeedback("Plane not currently available.", "warning", { timeoutMs: 6000 });
-      if (pendingPlaneFocus && pendingPlaneFocus.reason === "shared-link") {
+      if (focus.reason === "shared-link") {
         fallbackToUserLocation();
       }
     }
   } catch (_) {
-    if (pendingPlaneFocus && pendingPlaneFocus.lookupAttempts >= SHARED_PLANE_LOOKUP_LIMIT) {
-      var reason = pendingPlaneFocus.reason;
-      pendingPlaneFocus.failed = true;
+    if (pendingPlaneFocus === focus && focus.lookupAttempts >= SHARED_PLANE_LOOKUP_LIMIT) {
+      var reason = focus.reason;
+      focus.failed = true;
       setControlsFeedback(
         reason === "search"
           ? "Couldn\u2019t find that plane right now."
@@ -797,7 +806,7 @@ async function maybeLookupPendingPlaneFocus() {
       }
     }
   } finally {
-    if (pendingPlaneFocus) pendingPlaneFocus.loading = false;
+    focus.loading = false;
   }
 }
 
@@ -811,9 +820,13 @@ function updateControlsCompactSummary(visibleCount) {
     }
   }
   var summary;
-  var outage = false;
+  // After repeated failures the planes on the map are frozen at their last positions; say so here, since this
+  // line stays visible when the dock (and its error text) is collapsed.
+  var outage = trafficFetchOk === false && trafficOutage(trafficFailStreak, lastTrafficOkAt, Date.now());
   var degraded = trafficSource === "backup" && trafficFetchOk === true;
-  if (visibleCount > 0) {
+  if (outage) {
+    summary = aircraft.length ? "Live traffic unavailable \u00b7 retrying" : "Live traffic temporarily unavailable";
+  } else if (visibleCount > 0) {
     summary = visibleCount + " planes in view";
   } else if (aircraft.length) {
     summary = "No planes in view";
@@ -828,6 +841,17 @@ function updateControlsCompactSummary(visibleCount) {
   el.textContent = summary;
   el.classList.toggle("outage", outage);
   el.classList.toggle("degraded", degraded);
+}
+
+// Dims planes and trails while the feed is down, so frozen positions don't read as live.
+var _trafficStaleShown = false;
+function setTrafficStale(stale) {
+  stale = !!stale;
+  if (!mapReady || stale === _trafficStaleShown) return;
+  _trafficStaleShown = stale;
+  map.setPaintProperty("planes", "icon-opacity", stale ? 0.4 : 1);
+  map.setPaintProperty("planes-selected", "icon-opacity", stale ? 0.4 : 1);
+  map.setPaintProperty("trails", "line-opacity", stale ? ["*", ["get", "opacity"], 0.4] : ["get", "opacity"]);
 }
 
 function setControlsExpanded(expanded) {

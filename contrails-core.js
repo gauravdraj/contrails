@@ -49,7 +49,7 @@
 
   function parseCoordinate(value, min, max) {
     var parsed = parseFloat(value);
-    if (!isFinite(parsed)) return null;
+    if (!Number.isFinite(parsed)) return null;
     if (parsed < min || parsed > max) return null;
     return Math.round(parsed * 10000) / 10000;
   }
@@ -87,6 +87,20 @@
     return clamp(Math.round(delay), minMs, maxMs);
   }
 
+  // Longitude `lng` moved by whole turns to lie within 180 degrees of `refLng`, so a step across the
+  // antimeridian (179.9 -> -179.9) is a short hop rather than a sweep back through 0.
+  function unwrapLngNear(lng, refLng) {
+    while (lng - refLng > 180) lng -= 360;
+    while (lng - refLng < -180) lng += 360;
+    return lng;
+  }
+
+  function wrapLng(lng) {
+    if (lng > 180) return lng - 360;
+    if (lng < -180) return lng + 360;
+    return lng;
+  }
+
   function interpolateTimedPose(prev, next, targetTime) {
     if (!prev && !next) return null;
     if (!prev) return { lat: next.lat, lng: next.lng, ts: next.ts, progress: 1 };
@@ -97,7 +111,7 @@
     var progress = clamp((targetTime - prev.ts) / span, 0, 1);
     return {
       lat: prev.lat + (next.lat - prev.lat) * progress,
-      lng: prev.lng + (next.lng - prev.lng) * progress,
+      lng: wrapLng(prev.lng + (unwrapLngNear(next.lng, prev.lng) - prev.lng) * progress),
       ts: prev.ts + (next.ts - prev.ts) * progress,
       progress: progress
     };
@@ -142,7 +156,7 @@
 
     var last = samples[samples.length - 1];
     var extrapolationMs = Math.max(0, Math.min(maxExtrapolationMs, displayTime - last.ts));
-    if (extrapolationMs > 0 && isFinite(last.spdMs) && isFinite(last.trackDeg)) {
+    if (extrapolationMs > 0 && Number.isFinite(last.spdMs) && Number.isFinite(last.trackDeg)) {
       var projected = projectLatLng(last.lat, last.lng, last.trackDeg, last.spdMs * extrapolationMs / 1000);
       return {
         lat: projected[0],
@@ -161,7 +175,7 @@
       var observedSpan = Math.max(1, last.ts - observedPrev.ts);
       return {
         lat: last.lat + (last.lat - observedPrev.lat) * (extrapolationMs / observedSpan),
-        lng: last.lng + (last.lng - observedPrev.lng) * (extrapolationMs / observedSpan),
+        lng: wrapLng(last.lng + (last.lng - unwrapLngNear(observedPrev.lng, last.lng)) * (extrapolationMs / observedSpan)),
         ts: last.ts + extrapolationMs,
         mode: "extrapolate",
         prev: observedPrev,
@@ -345,10 +359,16 @@
     return AIRLINES[callsign.substring(0, 3).toUpperCase()] || null;
   }
 
+  // Feeds mark non-ICAO addresses (TIS-B, anonymised) with a leading "~". The "~" is kept so "~abcdef" never
+  // collides with the real ICAO aircraft "abcdef"; ICAO-only services must check isIcaoHex first.
   function normalizeAircraftHex(value) {
     if (value == null) return null;
-    var normalized = String(value).trim().replace(/^~/, "").toLowerCase();
-    return /^[0-9a-f]{6}$/.test(normalized) ? normalized : null;
+    var normalized = String(value).trim().toLowerCase();
+    return /^~?[0-9a-f]{6}$/.test(normalized) ? normalized : null;
+  }
+
+  function isIcaoHex(id) {
+    return typeof id === "string" && /^[0-9a-f]{6}$/.test(id);
   }
 
   function normalizeSearchText(value) {
@@ -427,7 +447,9 @@
     return null;
   }
 
-  var _PRIV_REG = /^(N\d|C-[FGFI]|G-|D-|F-|I-|EC-|HB-|OE-|PH-|SE-|OH-|OY-|LN-|EI-|CS-|SX-|TC-|VH-|ZK-|PP-|PT-|PR-|JA|B-|HL|VT-|9V-|A[267]-|SU-|5[ABHNXY]-|ZS-|VP-|V[5HPQR]-|RP-|HS-|9M-|PK-|XA-|XB-|LV-|CC-|TI-|HP-|HK-|YV-)/i;
+  // Registration-shaped callsigns. Japan (JA) and Korea (HL) write registrations without a dash, so only
+  // JA/HL followed by a digit count; JAL123 is an airline flight.
+  var _PRIV_REG = /^(N\d|C-[FGI]|G-|D-|F-|I-|EC-|HB-|OE-|PH-|SE-|OH-|OY-|LN-|EI-|CS-|SX-|TC-|VH-|ZK-|PP-|PT-|PR-|JA\d|B-|HL\d|VT-|9V-|A[267]-|SU-|5[ABHNXY]-|ZS-|VP-|V[5HPQR]-|RP-|HS-|9M-|PK-|XA-|XB-|LV-|CC-|TI-|HP-|HK-|YV-)/i;
   var _PRIV_ANON_HEX = /^~[0-9a-f]{4,}$/i;
   var _PRIV_HEXLIKE = /^(?:~)?[0-9a-f]{6}$/i;
 
@@ -712,7 +734,7 @@
   // Minutes to fly `distKm` to the airport, slowing down on the way in: the current ground speed out to 60 km,
   // at most 220 kts from 60 to 15 km (approach), at most 150 kts on the last 15 km (final).
   function arrivalPathTimeMin(distKm, spdKts) {
-    if (distKm == null || !isFinite(distKm)) return null;
+    if (distKm == null || !Number.isFinite(distKm)) return null;
     var gs = spdKts > 0 ? spdKts : 250;
     var legs = [[Math.max(0, distKm - 60), gs], [Math.max(0, Math.min(distKm, 60) - 15), Math.min(gs, 220)], [Math.min(distKm, 15), Math.min(gs, 150)]];
     var min = 0;
@@ -723,8 +745,8 @@
   // Far out, the feed's (FR24) estimated landing time knows the schedule and routing better than geometry;
   // close in, live geometry wins. Blend linearly from the geometry ETA at 10 min to the feed ETA at 20 min.
   function blendArrivalEta(geoEtaMin, feedEtaMin) {
-    if (feedEtaMin == null || !isFinite(feedEtaMin) || feedEtaMin < 0) return geoEtaMin;
-    if (geoEtaMin == null || !isFinite(geoEtaMin)) return feedEtaMin;
+    if (feedEtaMin == null || !Number.isFinite(feedEtaMin) || feedEtaMin < 0) return geoEtaMin;
+    if (geoEtaMin == null || !Number.isFinite(geoEtaMin)) return feedEtaMin;
     var w = Math.max(0, Math.min(1, (geoEtaMin - 10) / 10));
     return geoEtaMin * (1 - w) + feedEtaMin * w;
   }
@@ -734,17 +756,17 @@
   // distKm (straight line to the airport) still decides eligibility.
   function scoreArrivalCandidate(input) {
     input = input || {};
-    var fieldElevFt = isFinite(input.fieldElevFt) ? input.fieldElevFt : 0;
-    var altFt = isFinite(input.altFt) ? Math.max(0, input.altFt - fieldElevFt) : null;
-    var distKm = isFinite(input.distKm) ? Math.max(0, input.distKm) : null;
-    var etaDistKm = isFinite(input.pathKm) ? Math.max(input.pathKm, distKm || 0) : distKm;
-    var spdKts = isFinite(input.spdKts) ? Math.max(0, input.spdKts) : 0;
+    var fieldElevFt = Number.isFinite(input.fieldElevFt) ? input.fieldElevFt : 0;
+    var altFt = Number.isFinite(input.altFt) ? Math.max(0, input.altFt - fieldElevFt) : null;
+    var distKm = Number.isFinite(input.distKm) ? Math.max(0, input.distKm) : null;
+    var etaDistKm = Number.isFinite(input.pathKm) ? Math.max(input.pathKm, distKm || 0) : distKm;
+    var spdKts = Number.isFinite(input.spdKts) ? Math.max(0, input.spdKts) : 0;
     var confidence = input.confidence || "";
     var phase = input.phase || "";
     var privateAircraft = !!input.private;
     var destinationMatch = !!input.destinationMatch;
     var originMatch = !!input.originMatch;
-    var vRateFpm = isFinite(input.vRate) ? input.vRate * 60 : null;
+    var vRateFpm = Number.isFinite(input.vRate) ? input.vRate * 60 : null;
     var descending = vRateFpm != null && vRateFpm <= -200;
     var climbing = vRateFpm != null && vRateFpm >= 150;
     var distanceEtaMin = etaDistKm != null && spdKts > 0 ? arrivalPathTimeMin(etaDistKm, spdKts) : null;
@@ -754,7 +776,7 @@
     var etaMin = null;
     var eligible = true;
 
-    if ((destinationMatch || isFinite(input.pathKm)) && etaDistKm != null) {
+    if ((destinationMatch || Number.isFinite(input.pathKm)) && etaDistKm != null) {
       etaMin = arrivalPathTimeMin(etaDistKm, spdKts);
     } else if (descentEtaMin != null) {
       etaMin = descentEtaMin;
@@ -911,8 +933,8 @@
     options = options || {};
     var totalLimit = options.totalLimit == null ? 15 : options.totalLimit;
     var rows = copyAirportRows(inbound).sort(function(a, b) {
-      var etaA = a && a.etaMin != null && isFinite(a.etaMin) ? a.etaMin : Infinity;
-      var etaB = b && b.etaMin != null && isFinite(b.etaMin) ? b.etaMin : Infinity;
+      var etaA = a && a.etaMin != null && Number.isFinite(a.etaMin) ? a.etaMin : Infinity;
+      var etaB = b && b.etaMin != null && Number.isFinite(b.etaMin) ? b.etaMin : Infinity;
       if (etaA !== etaB) return etaA - etaB;
       return compareAirportArrivalEntries(a, b);
     });
@@ -961,7 +983,7 @@
     for (var i = points.length - 1; i >= 0; i--) {
       var p = points[i];
       if (!p || p[2] < nowMs - windowMs) break;
-      if (p[6] || p[4] || p[3] == null || !isFinite(p[3])) continue;
+      if (p[6] || p[4] || p[3] == null || !Number.isFinite(p[3])) continue;
       if (p[3] < lo) lo = p[3];
       if (p[3] > hi) hi = p[3];
     }
@@ -998,7 +1020,7 @@
     // Such aircraft must not be labelled "Departing" / next departure.
     // Returns "Departing" | "Holding" | "Taxiing" | "Parked".
     input = input || {};
-    var speedKts = isFinite(input.speedKts) ? input.speedKts : 0;
+    var speedKts = Number.isFinite(input.speedKts) ? input.speedKts : 0;
     var track = input.track;
     var onActiveDepRunway = !!input.onActiveDepRunway;
     var onAnyRunway = !!input.onAnyRunway;
@@ -1190,7 +1212,7 @@
     // across the antimeridian (values may exceed +/-180) so the map draws one
     // unbroken line instead of wrapping it across the whole map.
     if (lat1 == null || lng1 == null || lat2 == null || lng2 == null) return [];
-    if (!isFinite(lat1) || !isFinite(lng1) || !isFinite(lat2) || !isFinite(lng2)) return [];
+    if (!Number.isFinite(lat1) || !Number.isFinite(lng1) || !Number.isFinite(lat2) || !Number.isFinite(lng2)) return [];
     segments = segments && segments > 1 ? Math.floor(segments) : 64;
     var toRad = Math.PI / 180;
     var toDeg = 180 / Math.PI;
@@ -1236,13 +1258,16 @@
   function sizeClass(type, category) {
     if (!type) return sizeFromCategory(category) || "light";
     var t = type.toUpperCase();
-    if (/^(EC\d|H1[2-9]\d|H60|R22|R44|R66|S76|S92|A1[0-9]\d|AS\d|B[024]\d\d|MD[5-9]\d|BK|K[A-Z]\d|MI\d|NH90)/.test(t)) return "heli";
+    // Helicopter codes share prefixes with airliners (MD80s, BAe 146 B46x, An-124/148 A1xx, KC-10), so each
+    // family is spelled out: AgustaWestland A1x9, Bell B06/B2xx/B4[0-3]x/B47G/B5x5, MD Helicopters MD5x/MD6x,
+    // Kamov KAxx.
+    if (/^(EC\d|H1[2-9]\d|H60|R22|R44|R66|S76|S92|A1[0-8]9|AS\d|B06|B2[0-3]\d|B4[0-3]\d|B47G|B5[0-2]5|MD[56]\d|BK|KA\d|MI\d|NH90)/.test(t)) return "heli";
     if (/^(C1[2-9]\d|C2[0-1]\d|P28|PA\d|SR2[02]|DA[24]\d|BE[23]\d|M20|TB[12]\d|DR4|RV\d|COL[34]|TRIN|P46T|PC12|GLST)/.test(t)) return "light";
     if (/^(AT[4-7]\d|DH8[A-D]|DHC[6-8]|SF34|SB20|B190|C208|PC[0-9]|TBM[0-9]|JS[2-4]\d|AN[2-3]\d|L410|DO[0-9]|J328|E120|BE[9A][0-9]|SW[34]|M28)/.test(t)) return "turboprop";
     if (/^(CRJ|E[1-2][0-9]\d|ERJ|GLF[2-7]|GL\dT|GLEX|G[2-7]\d\d|GA[5-7].|LJ\d|CL[0-9]|C[5-7]\d\d|C25|C56|C68|F[29][0-9]\d|FA[57]|H25|HA4|PRM|ASTR|GALX|E35L|E55P|EA50|SF50|PC24|P180)/.test(t)) return "bizjet";
-    if (/^(A38\d|B74[0-9]|A34[0-9]|IL96|C5M?|A400|AN12)/.test(t)) return "quadjet";
-    if (/^(B7[6-8].|A3[03].|A35.|MD1[01]|DC10|L101|IL[89]\d|C17|KC46|A310)/.test(t)) return "widebody";
-    if (/^(A3[12]\d|A2[02]\d|A[12]\dN|B73[0-9]|B3[89]M|BCS[1-3]|B75[0-9]|MD[89]\d|B712|E295|MC21)/.test(t)) return "narrowbody";
+    if (/^(A38\d|B74[0-9]|A34[0-9]|IL96|C5M?|A400|AN12|A124|K35R)/.test(t)) return "quadjet";
+    if (/^(B7[6-8].|A3[03].|A35.|MD1[01]|DC10|KC10|L101|IL[89]\d|C17|KC46|A310)/.test(t)) return "widebody";
+    if (/^(A3[12]\d|A2[02]\d|A[12]\dN|B73[0-9]|B3[89]M|BCS[1-3]|B75[0-9]|MD[89]\d|B712|E295|MC21|B46[1-3]|A148)/.test(t)) return "narrowbody";
     return sizeFromCategory(category) || "light";
   }
 
@@ -1273,8 +1298,53 @@
   // up slowly so a client clock change is eventually absorbed.
   function updateClockOffset(prevOffsetMs, receivedAtMs, feedNowMs, creepMs) {
     var observed = receivedAtMs - feedNowMs;
-    if (prevOffsetMs == null || !isFinite(prevOffsetMs)) return observed;
+    if (prevOffsetMs == null || !Number.isFinite(prevOffsetMs)) return observed;
     return Math.min(observed, prevOffsetMs + (creepMs == null ? 50 : creepMs));
+  }
+
+  // Traffic polling after failures: the normal interval, doubled per consecutive failure, capped.
+  function trafficRetryDelayMs(baseMs, failStreak, capMs) {
+    if (!failStreak || failStreak < 1) return baseMs;
+    return Math.min(capMs == null ? 60000 : capMs, baseMs * Math.pow(2, failStreak - 1));
+  }
+
+  // One failed poll is a blip; two in a row, or one with no good data for 30 s, is an outage worth showing.
+  function trafficOutage(failStreak, lastOkAt, now, staleMs) {
+    if (!failStreak) return false;
+    if (failStreak >= 2) return true;
+    return !lastOkAt || now - lastOkAt > (staleMs == null ? 30000 : staleMs);
+  }
+
+  // Route sources the client's own track/convergence guesses must not overwrite.
+  var AUTHORITATIVE_DEST_SOURCES = ["fr24-search", "schedule", "cross-validated"];
+  function isAuthoritativeDestSource(source) {
+    return AUTHORITATIVE_DEST_SOURCES.indexOf(source) !== -1;
+  }
+
+  // Cached routes are re-asked after 10 minutes, or 60 when an authoritative source resolved them.
+  function routeCacheEntryStale(entry, now) {
+    if (!entry) return true;
+    if (!entry.fetchedAt) return true;
+    var ttlMs = isAuthoritativeDestSource(entry.destSource) ? 60 * 60 * 1000 : 10 * 60 * 1000;
+    return now - entry.fetchedAt > ttlMs;
+  }
+
+  // The planes to send in one /routeset request: public callsigns with no fresh cached route, skipping ones
+  // the server recently could not resolve (retryAt[callsign] is when they may be asked again).
+  function selectRouteFetchPlanes(planes, cache, options) {
+    options = options || {};
+    var maxPlanes = options.maxPlanes != null ? options.maxPlanes : 20;
+    var now = options.now != null ? options.now : Date.now();
+    var retryAt = options.retryAt || {};
+    var picked = [];
+    for (var i = 0; i < planes.length && picked.length < maxPlanes; i++) {
+      var a = planes[i];
+      if (!a.callsign || a.private) continue;
+      if (retryAt[a.callsign] && retryAt[a.callsign] > now) continue;
+      if (!routeCacheEntryStale(cache[a.callsign], now)) continue;
+      picked.push(a);
+    }
+    return picked;
   }
 
   // Axis-aligned view box in degrees. `pad` grows every side by that fraction of the span. Longitudes may run
@@ -1430,6 +1500,13 @@
     declutterLabels: declutterLabels,
     updateClockOffset: updateClockOffset,
     viewBounds: viewBounds,
-    alphaToSdf: alphaToSdf
+    alphaToSdf: alphaToSdf,
+    isIcaoHex: isIcaoHex,
+    unwrapLngNear: unwrapLngNear,
+    trafficRetryDelayMs: trafficRetryDelayMs,
+    trafficOutage: trafficOutage,
+    isAuthoritativeDestSource: isAuthoritativeDestSource,
+    routeCacheEntryStale: routeCacheEntryStale,
+    selectRouteFetchPlanes: selectRouteFetchPlanes
   };
 });

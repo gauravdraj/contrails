@@ -55,6 +55,13 @@ const declutterLabels = core.declutterLabels;
 const updateClockOffset = core.updateClockOffset;
 const viewBounds = core.viewBounds;
 const alphaToSdf = core.alphaToSdf;
+const isIcaoHex = core.isIcaoHex;
+const unwrapLngNear = core.unwrapLngNear;
+const trafficRetryDelayMs = core.trafficRetryDelayMs;
+const trafficOutage = core.trafficOutage;
+const isAuthoritativeDestSource = core.isAuthoritativeDestSource;
+const routeCacheEntryStale = core.routeCacheEntryStale;
+const selectRouteFetchPlanes = core.selectRouteFetchPlanes;
 if (!airlineName || !angleDiffDeg || !bearingDegrees || !buildViewPolicy || !buildViewportFetchSpec || !cardinalDir ||
     !callsignVariants || !computePlaybackDelayMs || !escapeHtml || !formatDistanceMiles || !formatSpeedMph ||
     !getAirportNextRow || !haversineKm || !interpolatePlaybackPose || !interpolateTimedPose || !isLikelyPrivateCallsign ||
@@ -64,11 +71,13 @@ if (!airlineName || !angleDiffDeg || !bearingDegrees || !buildViewPolicy || !bui
     !findFlightStartIndex || !matchRunwayDesignator || !deriveActiveRunways || !greatCirclePoints || !pointOnRunway ||
     !roundTenths || !slantKm || !elevationDeg || !SQUAWK_ALERT ||
     !sizeFromCategory || !sizeClass || !isLikelyPrivateClass || !dimColor || !declutterLabels || !updateClockOffset ||
-    !viewBounds || !alphaToSdf || !buildCoverageCircles || !countGroundByAirport) {
+    !viewBounds || !alphaToSdf || !buildCoverageCircles || !countGroundByAirport ||
+    !isIcaoHex || !unwrapLngNear || !trafficRetryDelayMs || !trafficOutage || !isAuthoritativeDestSource ||
+    !routeCacheEntryStale || !selectRouteFetchPlanes) {
   throw new Error("Contrails core helpers failed to load.");
 }
 
-const APP_VERSION = "2.43";
+const APP_VERSION = "2.44";
 const isLocal = location.hostname === "localhost" || location.hostname === "127.0.0.1";
 const isIOSDevice = /iP(ad|hone|od)/.test(navigator.userAgent) ||
   (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
@@ -175,6 +184,27 @@ function geoUrl() {
 }
 function aircraftUrl(hex) {
   return WORKER_URL + "/aircraft/" + hex;
+}
+// fetch has no timeout of its own, and a request that never settles stalls whatever awaits it. The timer is left
+// running after the headers arrive so a stalled body read is cut off too (aborting a finished request is a no-op).
+// An outer options.signal still aborts the request.
+const FETCH_TIMEOUT_MS = 10000;
+function fetchWithTimeout(url, options, timeoutMs) {
+  options = options || {};
+  var controller = new AbortController();
+  var outer = options.signal;
+  if (outer) {
+    if (outer.aborted) controller.abort();
+    else outer.addEventListener("abort", function() { controller.abort(); });
+  }
+  var init = {};
+  for (var k in options) init[k] = options[k];
+  init.signal = controller.signal;
+  var timer = setTimeout(function() { controller.abort(); }, timeoutMs || FETCH_TIMEOUT_MS);
+  return fetch(url, init).catch(function(err) {
+    clearTimeout(timer);
+    throw err;
+  });
 }
 const REFRESH_MS = 5000;
 // App zoom levels (URL ?zoom=, saved views, every threshold below) use the 256-px tile scale the app was
@@ -325,6 +355,7 @@ let suppressViewportRefresh = false;
 let fetchAbortController = null;
 let activeFetchUrl = null;
 let fetchRequestSeq = 0;
+let activeFetchStartedAt = 0;
 let appBooted = false;
 let bootView = null;
 let playbackDelayMs = REFRESH_MS + PLAYBACK_DELAY_SAFETY_MS;
@@ -350,13 +381,20 @@ var fetchInterval = REFRESH_MS;
 var trailBreakPending = {};
 var trafficFetchOk = null;
 var trafficFailStreak = 0;
+var lastTrafficOkAt = 0;
 var trafficSource = null;
 const filters = { private: true, ground: true, trails: true, labels: true };
 
 // --- URL params for Siri Shortcut ---
 const params = new URLSearchParams(window.location.search);
-const paramLat = parseFloat(params.get("lat"));
-const paramLng = parseFloat(params.get("lng"));
+// Out-of-range or non-finite values (?lat=999, ?zoom=Infinity) would make the map library throw, so they read
+// as absent (NaN) and boot falls back to the normal location flow.
+function urlParamNumber(name, min, max) {
+  var value = parseCoordinate(params.get(name), min, max);
+  return value == null ? NaN : value;
+}
+const paramLat = urlParamNumber("lat", -90, 90);
+const paramLng = urlParamNumber("lng", -180, 180);
 const paramZoom = parseFloat(params.get("zoom"));
 const paramHex = normalizeAircraftHex(params.get("hex"));
 let pendingPlaneFocus = paramHex ? {

@@ -52,7 +52,7 @@
 
   function parseCoordinate(value, min, max) {
     var parsed = parseFloat(value);
-    if (!isFinite(parsed)) return null;
+    if (!Number.isFinite(parsed)) return null;
     if (parsed < min || parsed > max) return null;
     return Math.round(parsed * 10000) / 10000;
   }
@@ -90,6 +90,20 @@
     return clamp(Math.round(delay), minMs, maxMs);
   }
 
+  // Longitude `lng` moved by whole turns to lie within 180 degrees of `refLng`, so a step across the
+  // antimeridian (179.9 -> -179.9) is a short hop rather than a sweep back through 0.
+  function unwrapLngNear(lng, refLng) {
+    while (lng - refLng > 180) lng -= 360;
+    while (lng - refLng < -180) lng += 360;
+    return lng;
+  }
+
+  function wrapLng(lng) {
+    if (lng > 180) return lng - 360;
+    if (lng < -180) return lng + 360;
+    return lng;
+  }
+
   function interpolateTimedPose(prev, next, targetTime) {
     if (!prev && !next) return null;
     if (!prev) return { lat: next.lat, lng: next.lng, ts: next.ts, progress: 1 };
@@ -100,7 +114,7 @@
     var progress = clamp((targetTime - prev.ts) / span, 0, 1);
     return {
       lat: prev.lat + (next.lat - prev.lat) * progress,
-      lng: prev.lng + (next.lng - prev.lng) * progress,
+      lng: wrapLng(prev.lng + (unwrapLngNear(next.lng, prev.lng) - prev.lng) * progress),
       ts: prev.ts + (next.ts - prev.ts) * progress,
       progress: progress
     };
@@ -145,7 +159,7 @@
 
     var last = samples[samples.length - 1];
     var extrapolationMs = Math.max(0, Math.min(maxExtrapolationMs, displayTime - last.ts));
-    if (extrapolationMs > 0 && isFinite(last.spdMs) && isFinite(last.trackDeg)) {
+    if (extrapolationMs > 0 && Number.isFinite(last.spdMs) && Number.isFinite(last.trackDeg)) {
       var projected = projectLatLng(last.lat, last.lng, last.trackDeg, last.spdMs * extrapolationMs / 1000);
       return {
         lat: projected[0],
@@ -164,7 +178,7 @@
       var observedSpan = Math.max(1, last.ts - observedPrev.ts);
       return {
         lat: last.lat + (last.lat - observedPrev.lat) * (extrapolationMs / observedSpan),
-        lng: last.lng + (last.lng - observedPrev.lng) * (extrapolationMs / observedSpan),
+        lng: wrapLng(last.lng + (last.lng - unwrapLngNear(observedPrev.lng, last.lng)) * (extrapolationMs / observedSpan)),
         ts: last.ts + extrapolationMs,
         mode: "extrapolate",
         prev: observedPrev,
@@ -348,10 +362,16 @@
     return AIRLINES[callsign.substring(0, 3).toUpperCase()] || null;
   }
 
+  // Feeds mark non-ICAO addresses (TIS-B, anonymised) with a leading "~". The "~" is kept so "~abcdef" never
+  // collides with the real ICAO aircraft "abcdef"; ICAO-only services must check isIcaoHex first.
   function normalizeAircraftHex(value) {
     if (value == null) return null;
-    var normalized = String(value).trim().replace(/^~/, "").toLowerCase();
-    return /^[0-9a-f]{6}$/.test(normalized) ? normalized : null;
+    var normalized = String(value).trim().toLowerCase();
+    return /^~?[0-9a-f]{6}$/.test(normalized) ? normalized : null;
+  }
+
+  function isIcaoHex(id) {
+    return typeof id === "string" && /^[0-9a-f]{6}$/.test(id);
   }
 
   function normalizeSearchText(value) {
@@ -430,7 +450,9 @@
     return null;
   }
 
-  var _PRIV_REG = /^(N\d|C-[FGFI]|G-|D-|F-|I-|EC-|HB-|OE-|PH-|SE-|OH-|OY-|LN-|EI-|CS-|SX-|TC-|VH-|ZK-|PP-|PT-|PR-|JA|B-|HL|VT-|9V-|A[267]-|SU-|5[ABHNXY]-|ZS-|VP-|V[5HPQR]-|RP-|HS-|9M-|PK-|XA-|XB-|LV-|CC-|TI-|HP-|HK-|YV-)/i;
+  // Registration-shaped callsigns. Japan (JA) and Korea (HL) write registrations without a dash, so only
+  // JA/HL followed by a digit count; JAL123 is an airline flight.
+  var _PRIV_REG = /^(N\d|C-[FGI]|G-|D-|F-|I-|EC-|HB-|OE-|PH-|SE-|OH-|OY-|LN-|EI-|CS-|SX-|TC-|VH-|ZK-|PP-|PT-|PR-|JA\d|B-|HL\d|VT-|9V-|A[267]-|SU-|5[ABHNXY]-|ZS-|VP-|V[5HPQR]-|RP-|HS-|9M-|PK-|XA-|XB-|LV-|CC-|TI-|HP-|HK-|YV-)/i;
   var _PRIV_ANON_HEX = /^~[0-9a-f]{4,}$/i;
   var _PRIV_HEXLIKE = /^(?:~)?[0-9a-f]{6}$/i;
 
@@ -715,7 +737,7 @@
   // Minutes to fly `distKm` to the airport, slowing down on the way in: the current ground speed out to 60 km,
   // at most 220 kts from 60 to 15 km (approach), at most 150 kts on the last 15 km (final).
   function arrivalPathTimeMin(distKm, spdKts) {
-    if (distKm == null || !isFinite(distKm)) return null;
+    if (distKm == null || !Number.isFinite(distKm)) return null;
     var gs = spdKts > 0 ? spdKts : 250;
     var legs = [[Math.max(0, distKm - 60), gs], [Math.max(0, Math.min(distKm, 60) - 15), Math.min(gs, 220)], [Math.min(distKm, 15), Math.min(gs, 150)]];
     var min = 0;
@@ -726,8 +748,8 @@
   // Far out, the feed's (FR24) estimated landing time knows the schedule and routing better than geometry;
   // close in, live geometry wins. Blend linearly from the geometry ETA at 10 min to the feed ETA at 20 min.
   function blendArrivalEta(geoEtaMin, feedEtaMin) {
-    if (feedEtaMin == null || !isFinite(feedEtaMin) || feedEtaMin < 0) return geoEtaMin;
-    if (geoEtaMin == null || !isFinite(geoEtaMin)) return feedEtaMin;
+    if (feedEtaMin == null || !Number.isFinite(feedEtaMin) || feedEtaMin < 0) return geoEtaMin;
+    if (geoEtaMin == null || !Number.isFinite(geoEtaMin)) return feedEtaMin;
     var w = Math.max(0, Math.min(1, (geoEtaMin - 10) / 10));
     return geoEtaMin * (1 - w) + feedEtaMin * w;
   }
@@ -737,17 +759,17 @@
   // distKm (straight line to the airport) still decides eligibility.
   function scoreArrivalCandidate(input) {
     input = input || {};
-    var fieldElevFt = isFinite(input.fieldElevFt) ? input.fieldElevFt : 0;
-    var altFt = isFinite(input.altFt) ? Math.max(0, input.altFt - fieldElevFt) : null;
-    var distKm = isFinite(input.distKm) ? Math.max(0, input.distKm) : null;
-    var etaDistKm = isFinite(input.pathKm) ? Math.max(input.pathKm, distKm || 0) : distKm;
-    var spdKts = isFinite(input.spdKts) ? Math.max(0, input.spdKts) : 0;
+    var fieldElevFt = Number.isFinite(input.fieldElevFt) ? input.fieldElevFt : 0;
+    var altFt = Number.isFinite(input.altFt) ? Math.max(0, input.altFt - fieldElevFt) : null;
+    var distKm = Number.isFinite(input.distKm) ? Math.max(0, input.distKm) : null;
+    var etaDistKm = Number.isFinite(input.pathKm) ? Math.max(input.pathKm, distKm || 0) : distKm;
+    var spdKts = Number.isFinite(input.spdKts) ? Math.max(0, input.spdKts) : 0;
     var confidence = input.confidence || "";
     var phase = input.phase || "";
     var privateAircraft = !!input.private;
     var destinationMatch = !!input.destinationMatch;
     var originMatch = !!input.originMatch;
-    var vRateFpm = isFinite(input.vRate) ? input.vRate * 60 : null;
+    var vRateFpm = Number.isFinite(input.vRate) ? input.vRate * 60 : null;
     var descending = vRateFpm != null && vRateFpm <= -200;
     var climbing = vRateFpm != null && vRateFpm >= 150;
     var distanceEtaMin = etaDistKm != null && spdKts > 0 ? arrivalPathTimeMin(etaDistKm, spdKts) : null;
@@ -757,7 +779,7 @@
     var etaMin = null;
     var eligible = true;
 
-    if ((destinationMatch || isFinite(input.pathKm)) && etaDistKm != null) {
+    if ((destinationMatch || Number.isFinite(input.pathKm)) && etaDistKm != null) {
       etaMin = arrivalPathTimeMin(etaDistKm, spdKts);
     } else if (descentEtaMin != null) {
       etaMin = descentEtaMin;
@@ -914,8 +936,8 @@
     options = options || {};
     var totalLimit = options.totalLimit == null ? 15 : options.totalLimit;
     var rows = copyAirportRows(inbound).sort(function(a, b) {
-      var etaA = a && a.etaMin != null && isFinite(a.etaMin) ? a.etaMin : Infinity;
-      var etaB = b && b.etaMin != null && isFinite(b.etaMin) ? b.etaMin : Infinity;
+      var etaA = a && a.etaMin != null && Number.isFinite(a.etaMin) ? a.etaMin : Infinity;
+      var etaB = b && b.etaMin != null && Number.isFinite(b.etaMin) ? b.etaMin : Infinity;
       if (etaA !== etaB) return etaA - etaB;
       return compareAirportArrivalEntries(a, b);
     });
@@ -964,7 +986,7 @@
     for (var i = points.length - 1; i >= 0; i--) {
       var p = points[i];
       if (!p || p[2] < nowMs - windowMs) break;
-      if (p[6] || p[4] || p[3] == null || !isFinite(p[3])) continue;
+      if (p[6] || p[4] || p[3] == null || !Number.isFinite(p[3])) continue;
       if (p[3] < lo) lo = p[3];
       if (p[3] > hi) hi = p[3];
     }
@@ -1001,7 +1023,7 @@
     // Such aircraft must not be labelled "Departing" / next departure.
     // Returns "Departing" | "Holding" | "Taxiing" | "Parked".
     input = input || {};
-    var speedKts = isFinite(input.speedKts) ? input.speedKts : 0;
+    var speedKts = Number.isFinite(input.speedKts) ? input.speedKts : 0;
     var track = input.track;
     var onActiveDepRunway = !!input.onActiveDepRunway;
     var onAnyRunway = !!input.onAnyRunway;
@@ -1193,7 +1215,7 @@
     // across the antimeridian (values may exceed +/-180) so the map draws one
     // unbroken line instead of wrapping it across the whole map.
     if (lat1 == null || lng1 == null || lat2 == null || lng2 == null) return [];
-    if (!isFinite(lat1) || !isFinite(lng1) || !isFinite(lat2) || !isFinite(lng2)) return [];
+    if (!Number.isFinite(lat1) || !Number.isFinite(lng1) || !Number.isFinite(lat2) || !Number.isFinite(lng2)) return [];
     segments = segments && segments > 1 ? Math.floor(segments) : 64;
     var toRad = Math.PI / 180;
     var toDeg = 180 / Math.PI;
@@ -1239,13 +1261,16 @@
   function sizeClass(type, category) {
     if (!type) return sizeFromCategory(category) || "light";
     var t = type.toUpperCase();
-    if (/^(EC\d|H1[2-9]\d|H60|R22|R44|R66|S76|S92|A1[0-9]\d|AS\d|B[024]\d\d|MD[5-9]\d|BK|K[A-Z]\d|MI\d|NH90)/.test(t)) return "heli";
+    // Helicopter codes share prefixes with airliners (MD80s, BAe 146 B46x, An-124/148 A1xx, KC-10), so each
+    // family is spelled out: AgustaWestland A1x9, Bell B06/B2xx/B4[0-3]x/B47G/B5x5, MD Helicopters MD5x/MD6x,
+    // Kamov KAxx.
+    if (/^(EC\d|H1[2-9]\d|H60|R22|R44|R66|S76|S92|A1[0-8]9|AS\d|B06|B2[0-3]\d|B4[0-3]\d|B47G|B5[0-2]5|MD[56]\d|BK|KA\d|MI\d|NH90)/.test(t)) return "heli";
     if (/^(C1[2-9]\d|C2[0-1]\d|P28|PA\d|SR2[02]|DA[24]\d|BE[23]\d|M20|TB[12]\d|DR4|RV\d|COL[34]|TRIN|P46T|PC12|GLST)/.test(t)) return "light";
     if (/^(AT[4-7]\d|DH8[A-D]|DHC[6-8]|SF34|SB20|B190|C208|PC[0-9]|TBM[0-9]|JS[2-4]\d|AN[2-3]\d|L410|DO[0-9]|J328|E120|BE[9A][0-9]|SW[34]|M28)/.test(t)) return "turboprop";
     if (/^(CRJ|E[1-2][0-9]\d|ERJ|GLF[2-7]|GL\dT|GLEX|G[2-7]\d\d|GA[5-7].|LJ\d|CL[0-9]|C[5-7]\d\d|C25|C56|C68|F[29][0-9]\d|FA[57]|H25|HA4|PRM|ASTR|GALX|E35L|E55P|EA50|SF50|PC24|P180)/.test(t)) return "bizjet";
-    if (/^(A38\d|B74[0-9]|A34[0-9]|IL96|C5M?|A400|AN12)/.test(t)) return "quadjet";
-    if (/^(B7[6-8].|A3[03].|A35.|MD1[01]|DC10|L101|IL[89]\d|C17|KC46|A310)/.test(t)) return "widebody";
-    if (/^(A3[12]\d|A2[02]\d|A[12]\dN|B73[0-9]|B3[89]M|BCS[1-3]|B75[0-9]|MD[89]\d|B712|E295|MC21)/.test(t)) return "narrowbody";
+    if (/^(A38\d|B74[0-9]|A34[0-9]|IL96|C5M?|A400|AN12|A124|K35R)/.test(t)) return "quadjet";
+    if (/^(B7[6-8].|A3[03].|A35.|MD1[01]|DC10|KC10|L101|IL[89]\d|C17|KC46|A310)/.test(t)) return "widebody";
+    if (/^(A3[12]\d|A2[02]\d|A[12]\dN|B73[0-9]|B3[89]M|BCS[1-3]|B75[0-9]|MD[89]\d|B712|E295|MC21|B46[1-3]|A148)/.test(t)) return "narrowbody";
     return sizeFromCategory(category) || "light";
   }
 
@@ -1276,8 +1301,53 @@
   // up slowly so a client clock change is eventually absorbed.
   function updateClockOffset(prevOffsetMs, receivedAtMs, feedNowMs, creepMs) {
     var observed = receivedAtMs - feedNowMs;
-    if (prevOffsetMs == null || !isFinite(prevOffsetMs)) return observed;
+    if (prevOffsetMs == null || !Number.isFinite(prevOffsetMs)) return observed;
     return Math.min(observed, prevOffsetMs + (creepMs == null ? 50 : creepMs));
+  }
+
+  // Traffic polling after failures: the normal interval, doubled per consecutive failure, capped.
+  function trafficRetryDelayMs(baseMs, failStreak, capMs) {
+    if (!failStreak || failStreak < 1) return baseMs;
+    return Math.min(capMs == null ? 60000 : capMs, baseMs * Math.pow(2, failStreak - 1));
+  }
+
+  // One failed poll is a blip; two in a row, or one with no good data for 30 s, is an outage worth showing.
+  function trafficOutage(failStreak, lastOkAt, now, staleMs) {
+    if (!failStreak) return false;
+    if (failStreak >= 2) return true;
+    return !lastOkAt || now - lastOkAt > (staleMs == null ? 30000 : staleMs);
+  }
+
+  // Route sources the client's own track/convergence guesses must not overwrite.
+  var AUTHORITATIVE_DEST_SOURCES = ["fr24-search", "schedule", "cross-validated"];
+  function isAuthoritativeDestSource(source) {
+    return AUTHORITATIVE_DEST_SOURCES.indexOf(source) !== -1;
+  }
+
+  // Cached routes are re-asked after 10 minutes, or 60 when an authoritative source resolved them.
+  function routeCacheEntryStale(entry, now) {
+    if (!entry) return true;
+    if (!entry.fetchedAt) return true;
+    var ttlMs = isAuthoritativeDestSource(entry.destSource) ? 60 * 60 * 1000 : 10 * 60 * 1000;
+    return now - entry.fetchedAt > ttlMs;
+  }
+
+  // The planes to send in one /routeset request: public callsigns with no fresh cached route, skipping ones
+  // the server recently could not resolve (retryAt[callsign] is when they may be asked again).
+  function selectRouteFetchPlanes(planes, cache, options) {
+    options = options || {};
+    var maxPlanes = options.maxPlanes != null ? options.maxPlanes : 20;
+    var now = options.now != null ? options.now : Date.now();
+    var retryAt = options.retryAt || {};
+    var picked = [];
+    for (var i = 0; i < planes.length && picked.length < maxPlanes; i++) {
+      var a = planes[i];
+      if (!a.callsign || a.private) continue;
+      if (retryAt[a.callsign] && retryAt[a.callsign] > now) continue;
+      if (!routeCacheEntryStale(cache[a.callsign], now)) continue;
+      picked.push(a);
+    }
+    return picked;
   }
 
   // Axis-aligned view box in degrees. `pad` grows every side by that fraction of the span. Longitudes may run
@@ -1433,7 +1503,14 @@
     declutterLabels: declutterLabels,
     updateClockOffset: updateClockOffset,
     viewBounds: viewBounds,
-    alphaToSdf: alphaToSdf
+    alphaToSdf: alphaToSdf,
+    isIcaoHex: isIcaoHex,
+    unwrapLngNear: unwrapLngNear,
+    trafficRetryDelayMs: trafficRetryDelayMs,
+    trafficOutage: trafficOutage,
+    isAuthoritativeDestSource: isAuthoritativeDestSource,
+    routeCacheEntryStale: routeCacheEntryStale,
+    selectRouteFetchPlanes: selectRouteFetchPlanes
   };
 });
 
@@ -1495,6 +1572,13 @@ const declutterLabels = core.declutterLabels;
 const updateClockOffset = core.updateClockOffset;
 const viewBounds = core.viewBounds;
 const alphaToSdf = core.alphaToSdf;
+const isIcaoHex = core.isIcaoHex;
+const unwrapLngNear = core.unwrapLngNear;
+const trafficRetryDelayMs = core.trafficRetryDelayMs;
+const trafficOutage = core.trafficOutage;
+const isAuthoritativeDestSource = core.isAuthoritativeDestSource;
+const routeCacheEntryStale = core.routeCacheEntryStale;
+const selectRouteFetchPlanes = core.selectRouteFetchPlanes;
 if (!airlineName || !angleDiffDeg || !bearingDegrees || !buildViewPolicy || !buildViewportFetchSpec || !cardinalDir ||
     !callsignVariants || !computePlaybackDelayMs || !escapeHtml || !formatDistanceMiles || !formatSpeedMph ||
     !getAirportNextRow || !haversineKm || !interpolatePlaybackPose || !interpolateTimedPose || !isLikelyPrivateCallsign ||
@@ -1504,11 +1588,13 @@ if (!airlineName || !angleDiffDeg || !bearingDegrees || !buildViewPolicy || !bui
     !findFlightStartIndex || !matchRunwayDesignator || !deriveActiveRunways || !greatCirclePoints || !pointOnRunway ||
     !roundTenths || !slantKm || !elevationDeg || !SQUAWK_ALERT ||
     !sizeFromCategory || !sizeClass || !isLikelyPrivateClass || !dimColor || !declutterLabels || !updateClockOffset ||
-    !viewBounds || !alphaToSdf || !buildCoverageCircles || !countGroundByAirport) {
+    !viewBounds || !alphaToSdf || !buildCoverageCircles || !countGroundByAirport ||
+    !isIcaoHex || !unwrapLngNear || !trafficRetryDelayMs || !trafficOutage || !isAuthoritativeDestSource ||
+    !routeCacheEntryStale || !selectRouteFetchPlanes) {
   throw new Error("Contrails core helpers failed to load.");
 }
 
-const APP_VERSION = "2.43";
+const APP_VERSION = "2.44";
 const isLocal = location.hostname === "localhost" || location.hostname === "127.0.0.1";
 const isIOSDevice = /iP(ad|hone|od)/.test(navigator.userAgent) ||
   (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
@@ -1615,6 +1701,27 @@ function geoUrl() {
 }
 function aircraftUrl(hex) {
   return WORKER_URL + "/aircraft/" + hex;
+}
+// fetch has no timeout of its own, and a request that never settles stalls whatever awaits it. The timer is left
+// running after the headers arrive so a stalled body read is cut off too (aborting a finished request is a no-op).
+// An outer options.signal still aborts the request.
+const FETCH_TIMEOUT_MS = 10000;
+function fetchWithTimeout(url, options, timeoutMs) {
+  options = options || {};
+  var controller = new AbortController();
+  var outer = options.signal;
+  if (outer) {
+    if (outer.aborted) controller.abort();
+    else outer.addEventListener("abort", function() { controller.abort(); });
+  }
+  var init = {};
+  for (var k in options) init[k] = options[k];
+  init.signal = controller.signal;
+  var timer = setTimeout(function() { controller.abort(); }, timeoutMs || FETCH_TIMEOUT_MS);
+  return fetch(url, init).catch(function(err) {
+    clearTimeout(timer);
+    throw err;
+  });
 }
 const REFRESH_MS = 5000;
 // App zoom levels (URL ?zoom=, saved views, every threshold below) use the 256-px tile scale the app was
@@ -1765,6 +1872,7 @@ let suppressViewportRefresh = false;
 let fetchAbortController = null;
 let activeFetchUrl = null;
 let fetchRequestSeq = 0;
+let activeFetchStartedAt = 0;
 let appBooted = false;
 let bootView = null;
 let playbackDelayMs = REFRESH_MS + PLAYBACK_DELAY_SAFETY_MS;
@@ -1790,13 +1898,20 @@ var fetchInterval = REFRESH_MS;
 var trailBreakPending = {};
 var trafficFetchOk = null;
 var trafficFailStreak = 0;
+var lastTrafficOkAt = 0;
 var trafficSource = null;
 const filters = { private: true, ground: true, trails: true, labels: true };
 
 // --- URL params for Siri Shortcut ---
 const params = new URLSearchParams(window.location.search);
-const paramLat = parseFloat(params.get("lat"));
-const paramLng = parseFloat(params.get("lng"));
+// Out-of-range or non-finite values (?lat=999, ?zoom=Infinity) would make the map library throw, so they read
+// as absent (NaN) and boot falls back to the normal location flow.
+function urlParamNumber(name, min, max) {
+  var value = parseCoordinate(params.get(name), min, max);
+  return value == null ? NaN : value;
+}
+const paramLat = urlParamNumber("lat", -90, 90);
+const paramLng = urlParamNumber("lng", -180, 180);
 const paramZoom = parseFloat(params.get("zoom"));
 const paramHex = normalizeAircraftHex(params.get("hex"));
 let pendingPlaneFocus = paramHex ? {
@@ -2429,7 +2544,7 @@ function onPlanePopupOpened(hex, el) {
 
 function syncUrlState() {
   if (map) {
-    var center = map.getCenter();
+    var center = map.getCenter().wrap();
     params.set("lat", center.lat.toFixed(4));
     params.set("lng", center.lng.toFixed(4));
     params.set("zoom", String(Math.round(viewZoom() * 4) / 4));
@@ -2442,7 +2557,12 @@ function syncUrlState() {
   else params.delete("hex");
   params.delete("radius");
   var query = params.toString();
-  history.replaceState(null, "", query ? "?" + query : location.pathname);
+  // Safari throws once replaceState runs too often; the URL is a convenience, never worth breaking a caller.
+  try {
+    history.replaceState(null, "", query ? "?" + query : location.pathname);
+  } catch (err) {
+    console.warn("URL update skipped:", err);
+  }
 }
 
 function setControlsFeedback(message, tone, options) {
@@ -2512,7 +2632,7 @@ function pickLiveAircraft(acList) {
 }
 
 async function fetchLookup(path) {
-  var resp = await fetch(adsbUrl(path));
+  var resp = await fetchWithTimeout(adsbUrl(path));
   if (!resp.ok) throw new Error("HTTP " + resp.status);
   return resp.json();
 }
@@ -2520,6 +2640,8 @@ async function fetchLookup(path) {
 async function lookupAircraftQuery(query) {
   if (!query) return null;
   if (query.type === "hex") {
+    // Non-ICAO ("~") addresses are only known to the live feed, not to the hex lookup.
+    if (!isIcaoHex(query.value)) return null;
     var hexData = await fetchLookup("/hex/" + encodeURIComponent(query.value));
     return pickLiveAircraft(hexData.ac || []);
   }
@@ -2596,7 +2718,7 @@ function buildPlaneShareUrl(id) {
   var plane = normalized ? findAircraftById(normalized) : null;
   var pose = normalized ? getDisplayPoseForAircraft(normalized, currentDisplayTime(Date.now())) : null;
   var lat = pose ? pose.lat : (plane ? plane.lat : (map ? map.getCenter().lat : paramLat));
-  var lng = pose ? pose.lng : (plane ? plane.lng : (map ? map.getCenter().lng : paramLng));
+  var lng = pose ? pose.lng : (plane ? plane.lng : (map ? map.getCenter().wrap().lng : paramLng));
   var zoom = Math.max(map ? viewZoom() : DEFAULT_MAP_ZOOM, SEARCH_MIN_ZOOM);
   var url = new URL(location.href);
   url.searchParams.set("lat", lat.toFixed(4));
@@ -2686,42 +2808,44 @@ function tryResolvePendingPlaneFocus() {
 }
 
 async function maybeLookupPendingPlaneFocus() {
-  if (!pendingPlaneFocus ||
-      (pendingPlaneFocus.reason !== "shared-link" && pendingPlaneFocus.reason !== "search") ||
-      pendingPlaneFocus.loading || pendingPlaneFocus.failed ||
-      pendingPlaneFocus.lookupAttempts >= SHARED_PLANE_LOOKUP_LIMIT) {
+  var focus = pendingPlaneFocus;
+  if (!focus ||
+      (focus.reason !== "shared-link" && focus.reason !== "search") ||
+      focus.loading || focus.failed ||
+      focus.lookupAttempts >= SHARED_PLANE_LOOKUP_LIMIT) {
     return;
   }
-  pendingPlaneFocus.loading = true;
-  pendingPlaneFocus.lookupAttempts += 1;
+  focus.loading = true;
+  focus.lookupAttempts += 1;
   setControlsFeedback(
-    pendingPlaneFocus.reason === "search" ? "Finding plane\u2026" : "Finding shared plane\u2026",
+    focus.reason === "search" ? "Finding plane\u2026" : "Finding shared plane\u2026",
     "info", { persistent: true }
   );
   try {
     var found = await lookupAircraftQuery({
       type: "hex",
-      value: pendingPlaneFocus.hex,
-      variants: [pendingPlaneFocus.hex]
+      value: focus.hex,
+      variants: [focus.hex]
     });
-    if (!pendingPlaneFocus) return;
+    // Another plane may have been picked (or the focus cleared) while this lookup was out.
+    if (pendingPlaneFocus !== focus) return;
     if (found) {
       setControlsFeedback(
-        pendingPlaneFocus.reason === "search" ? "Centering on plane\u2026" : "Centering on shared plane\u2026",
+        focus.reason === "search" ? "Centering on plane\u2026" : "Centering on shared plane\u2026",
         "info", { timeoutMs: 4000 }
       );
       centerMapOnPlane(found.lat, found.lng, SEARCH_MIN_ZOOM);
-    } else if (pendingPlaneFocus.lookupAttempts >= SHARED_PLANE_LOOKUP_LIMIT) {
-      pendingPlaneFocus.failed = true;
+    } else if (focus.lookupAttempts >= SHARED_PLANE_LOOKUP_LIMIT) {
+      focus.failed = true;
       setControlsFeedback("Plane not currently available.", "warning", { timeoutMs: 6000 });
-      if (pendingPlaneFocus && pendingPlaneFocus.reason === "shared-link") {
+      if (focus.reason === "shared-link") {
         fallbackToUserLocation();
       }
     }
   } catch (_) {
-    if (pendingPlaneFocus && pendingPlaneFocus.lookupAttempts >= SHARED_PLANE_LOOKUP_LIMIT) {
-      var reason = pendingPlaneFocus.reason;
-      pendingPlaneFocus.failed = true;
+    if (pendingPlaneFocus === focus && focus.lookupAttempts >= SHARED_PLANE_LOOKUP_LIMIT) {
+      var reason = focus.reason;
+      focus.failed = true;
       setControlsFeedback(
         reason === "search"
           ? "Couldn\u2019t find that plane right now."
@@ -2733,7 +2857,7 @@ async function maybeLookupPendingPlaneFocus() {
       }
     }
   } finally {
-    if (pendingPlaneFocus) pendingPlaneFocus.loading = false;
+    focus.loading = false;
   }
 }
 
@@ -2747,9 +2871,13 @@ function updateControlsCompactSummary(visibleCount) {
     }
   }
   var summary;
-  var outage = false;
+  // After repeated failures the planes on the map are frozen at their last positions; say so here, since this
+  // line stays visible when the dock (and its error text) is collapsed.
+  var outage = trafficFetchOk === false && trafficOutage(trafficFailStreak, lastTrafficOkAt, Date.now());
   var degraded = trafficSource === "backup" && trafficFetchOk === true;
-  if (visibleCount > 0) {
+  if (outage) {
+    summary = aircraft.length ? "Live traffic unavailable \u00b7 retrying" : "Live traffic temporarily unavailable";
+  } else if (visibleCount > 0) {
     summary = visibleCount + " planes in view";
   } else if (aircraft.length) {
     summary = "No planes in view";
@@ -2764,6 +2892,17 @@ function updateControlsCompactSummary(visibleCount) {
   el.textContent = summary;
   el.classList.toggle("outage", outage);
   el.classList.toggle("degraded", degraded);
+}
+
+// Dims planes and trails while the feed is down, so frozen positions don't read as live.
+var _trafficStaleShown = false;
+function setTrafficStale(stale) {
+  stale = !!stale;
+  if (!mapReady || stale === _trafficStaleShown) return;
+  _trafficStaleShown = stale;
+  map.setPaintProperty("planes", "icon-opacity", stale ? 0.4 : 1);
+  map.setPaintProperty("planes-selected", "icon-opacity", stale ? 0.4 : 1);
+  map.setPaintProperty("trails", "line-opacity", stale ? ["*", ["get", "opacity"], 0.4] : ["get", "opacity"]);
 }
 
 function setControlsExpanded(expanded) {
@@ -3033,10 +3172,9 @@ async function fetchRainviewerFrame() {
   var resp = await fetch(RAINVIEWER_INDEX_URL, { cache: "no-store" });
   if (!resp.ok) throw new Error("HTTP " + resp.status);
   var data = await resp.json();
+  // The newest observed frame. `nowcast` frames are forecasts, which would be shown unlabelled as current radar.
   var past = (data && data.radar && data.radar.past) || [];
-  var nowcast = (data && data.radar && data.radar.nowcast) || [];
-  var frames = past.concat(nowcast);
-  var latest = frames.length ? frames[frames.length - 1] : null;
+  var latest = past.length ? past[past.length - 1] : null;
   if (!latest || !latest.path) throw new Error("no radar frames");
   _rvRadar = { host: (data && data.host) || "https://tilecache.rainviewer.com", path: latest.path };
   return _rvRadar;
@@ -3056,9 +3194,25 @@ function weatherSourceLabel(source) {
   return source === "iem" ? "US radar \u00b7 NWS NEXRAD" : "Global radar \u00b7 RainViewer";
 }
 
+// While radar is on it refreshes every few minutes; maybeRefreshWeather keeps its own 5-minute throttle.
+var _weatherRefreshInterval = 0;
+function startWeatherRefreshTimer() {
+  if (_weatherRefreshInterval) return;
+  _weatherRefreshInterval = setInterval(function() {
+    if (!weatherOn) { stopWeatherRefreshTimer(); return; }
+    if (!document.hidden) maybeRefreshWeather();
+  }, 60 * 1000);
+}
+function stopWeatherRefreshTimer() {
+  if (!_weatherRefreshInterval) return;
+  clearInterval(_weatherRefreshInterval);
+  _weatherRefreshInterval = 0;
+}
+
 async function enableWeather(opts) {
   opts = opts || {};
   weatherOn = true;
+  startWeatherRefreshTimer();
   var btn = document.getElementById("toggle-weather");
   if (btn) { btn.classList.add("on"); btn.setAttribute("aria-pressed", "true"); }
   if (!map) return;
@@ -3084,6 +3238,7 @@ async function enableWeather(opts) {
       } catch (e2) {}
     }
     weatherOn = false;
+    stopWeatherRefreshTimer();
     if (btn) { btn.classList.remove("on"); btn.setAttribute("aria-pressed", "false"); }
     if (!opts.silent) setControlsFeedback("Weather radar unavailable right now.", "info", { timeoutMs: 4000 });
   }
@@ -3091,6 +3246,7 @@ async function enableWeather(opts) {
 
 function disableWeather() {
   weatherOn = false;
+  stopWeatherRefreshTimer();
   var btn = document.getElementById("toggle-weather");
   if (btn) { btn.classList.remove("on"); btn.setAttribute("aria-pressed", "false"); }
   removeWeatherLayer();
@@ -3114,10 +3270,20 @@ function maybeSwapWeatherSource() {
   applyWeatherLayer();
 }
 
+// A failed refresh keeps the radar that is already showing rather than turning weather off.
 function maybeRefreshWeather() {
   if (!weatherOn || !map) return;
   if (Date.now() - _weatherRefreshTs < 5 * 60 * 1000) return;
-  enableWeather({ silent: true });
+  _weatherRefreshTs = Date.now();
+  var prevPath = _rvRadar && _rvRadar.path;
+  fetchRainviewerFrame()
+    .catch(function() { return null; })
+    .then(function() {
+      if (!weatherOn) return;
+      // Re-adding an unchanged RainViewer frame would only make the radar blink.
+      if (_weatherSource === "rainviewer" && _rvRadar && _rvRadar.path === prevPath) return;
+      applyWeatherLayer();
+    });
 }
 
 // --- Saved places panel ---
@@ -3237,7 +3403,8 @@ function currentViewBounds(padRatio) {
 }
 
 function currentViewCenter() {
-  if (map) return map.getCenter();
+  // After panning across the antimeridian the map's center longitude runs past ±180; requests need it wrapped.
+  if (map) return map.getCenter().wrap();
   if (userLat != null && userLng != null) return { lat: userLat, lng: userLng };
   return null;
 }
@@ -3428,28 +3595,51 @@ async function fetchAircraft(options) {
   if (!map) return;
   clearMapFetchTimer();
   clearRefreshTimer();
-  var spec = currentViewportFetchSpec();
-  if (!spec) {
-    scheduleRefreshTimer(adaptiveRefreshMs());
-    return;
-  }
-  syncUrlState();
-  var coverage = viewCoverage(spec);
-  var circles = coverage ? coverage.circles : [{ lat: spec.center.lat, lng: spec.center.lng, km: spec.fetchKm }];
-  var url = circles.map(function(c) { return trafficUrl(c.lat, c.lng, c.km); }).join(" ");
-  if (fetchAbortController && activeFetchUrl === url) return;
-  var requestSeq = ++fetchRequestSeq;
-  if (fetchAbortController && !options.skipAbort) fetchAbortController.abort();
-  var controller = new AbortController();
-  fetchAbortController = controller;
-  activeFetchUrl = url;
-
+  // Every path below reschedules the poll in `finally`, except a deduped call that leaves it to the request
+  // already in flight. Anything that throws (even syncUrlState) must not end polling for good.
+  var reschedule = true;
+  var controller = null;
+  var timeoutId = 0;
   try {
-    var data = await fetchTrafficCircles(circles, controller.signal);
+    var spec = currentViewportFetchSpec();
+    if (!spec) return;
+    syncUrlState();
+    var coverage = viewCoverage(spec);
+    var circles = coverage ? coverage.circles : [{ lat: spec.center.lat, lng: spec.center.lng, km: spec.fetchKm }];
+    var url = circles.map(function(c) { return trafficUrl(c.lat, c.lng, c.km); }).join(" ");
+    // A same-URL request already in flight is adopted, unless the page just resumed (it may be a request the
+    // OS froze) or it has outlived the timeout; then it is aborted and replaced.
+    if (fetchAbortController && activeFetchUrl === url && options.source !== "resume" &&
+        Date.now() - activeFetchStartedAt < TRAFFIC_FETCH_TIMEOUT_MS) {
+      reschedule = false;
+      return;
+    }
+    var requestSeq = ++fetchRequestSeq;
+    if (fetchAbortController && !options.skipAbort) fetchAbortController.abort();
+    controller = new AbortController();
+    fetchAbortController = controller;
+    activeFetchUrl = url;
+    activeFetchStartedAt = Date.now();
+    var timedOut = false;
+    timeoutId = setTimeout(function() {
+      timedOut = true;
+      controller.abort();
+    }, TRAFFIC_FETCH_TIMEOUT_MS);
+
+    var data;
+    try {
+      data = await abortablePromise(fetchTrafficCircles(circles, controller.signal), controller.signal);
+    } catch (fetchErr) {
+      if (fetchErr && fetchErr.name === "AbortError" && !timedOut) return;
+      if (requestSeq !== fetchRequestSeq) return;
+      noteTrafficFetchFailure();
+      return;
+    }
     if (requestSeq !== fetchRequestSeq) return;
     var prevSource = trafficSource;
     trafficFetchOk = true;
     trafficFailStreak = 0;
+    lastTrafficOkAt = Date.now();
     trafficSource = data.source || null;
     if (prevSource && trafficSource && prevSource !== trafficSource) {
       if (trafficSource === "backup") {
@@ -3458,27 +3648,52 @@ async function fetchAircraft(options) {
         setControlsFeedback("Primary traffic feed restored.", "success", { timeoutMs: 4000 });
       }
     }
+    setTrafficStale(false);
     processAircraft(data.ac || [], data.now);
   } catch (err) {
-    if (err && err.name === "AbortError") return;
-    trafficFailStreak++;
-    trafficFetchOk = false;
-    trafficSource = null;
-    updateControlsCompactSummary(0);
-    setControlsFeedback(
-      trafficFailStreak <= 1
-        ? "Could not reach the traffic feed \u2014 retrying\u2026"
-        : "Still trying to reach the traffic feed\u2026",
-      "warning", { timeoutMs: 8000 }
-    );
-    updateViewHint(0);
+    console.warn("Traffic refresh failed:", err);
   } finally {
-    if (fetchAbortController === controller) {
+    if (timeoutId) clearTimeout(timeoutId);
+    if (controller && fetchAbortController === controller) {
       fetchAbortController = null;
       activeFetchUrl = null;
     }
-    if (map) scheduleRefreshTimer(adaptiveRefreshMs());
+    if (map && reschedule) scheduleRefreshTimer(trafficRetryDelayMs(adaptiveRefreshMs(), trafficFailStreak, TRAFFIC_RETRY_MAX_MS));
   }
+}
+
+var TRAFFIC_FETCH_TIMEOUT_MS = 10000;
+// Consecutive failures back the poll off exponentially up to this.
+var TRAFFIC_RETRY_MAX_MS = 60000;
+
+// Rejects with an AbortError as soon as `signal` aborts, even if `promise` never settles (the boot prefetch
+// that fetchTrafficCircles may adopt can't be aborted).
+function abortablePromise(promise, signal) {
+  return new Promise(function(resolve, reject) {
+    function onAbort() {
+      var err = new Error("Aborted");
+      err.name = "AbortError";
+      reject(err);
+    }
+    if (signal.aborted) { onAbort(); return; }
+    signal.addEventListener("abort", onAbort);
+    promise.then(resolve, reject);
+  });
+}
+
+function noteTrafficFetchFailure() {
+  trafficFailStreak++;
+  trafficFetchOk = false;
+  trafficSource = null;
+  setTrafficStale(trafficOutage(trafficFailStreak, lastTrafficOkAt, Date.now()));
+  updateControlsCompactSummary();
+  setControlsFeedback(
+    trafficFailStreak <= 1
+      ? "Could not reach the traffic feed \u2014 retrying\u2026"
+      : "Still trying to reach the traffic feed\u2026",
+    "warning", { timeoutMs: 8000 }
+  );
+  updateViewHint(0);
 }
 
 // Both feeds take the radius in nautical miles.
@@ -3641,6 +3856,20 @@ function feedPositionClock(feedNow, receivedAt) {
   return positionNow;
 }
 
+// A plane missing from one poll (a dropped report, a coverage seam) is kept where it was for that poll, so a
+// single miss doesn't drop it, its popup, or the selection; it goes when it misses a second poll in a row.
+function carryOverMissedAircraft(previous, snapshot) {
+  for (var i = 0; i < previous.length; i++) {
+    var p = previous[i];
+    if (snapshot.activeIds[p.icao24] || p.missedPolls) continue;
+    var kept = {};
+    for (var k in p) kept[k] = p[k];
+    kept.missedPolls = 1;
+    snapshot.aircraft.push(kept);
+    snapshot.activeIds[p.icao24] = true;
+  }
+}
+
 function processAircraft(ac, feedNow) {
   var receivedAt = Date.now();
   var snapshot = buildAircraftSnapshot(ac, { now: receivedAt, positionNow: feedPositionClock(feedNow, receivedAt) });
@@ -3648,6 +3877,7 @@ function processAircraft(ac, feedNow) {
   if (lastFetchTs) updatePlaybackDelay(now - lastFetchTs);
   else updatePlaybackDelay(null);
   lastFetchTs = now;
+  carryOverMissedAircraft(aircraft, snapshot);
   aircraft = snapshot.aircraft;
   var activeIds = snapshot.activeIds;
 
@@ -3697,29 +3927,48 @@ function processAircraft(ac, feedNow) {
   if (_activeAirportPopup && _activeAirportIata) patchAirportCacheFromViewport();
 }
 
+// Callsigns the server could not resolve, mapped to when they may be asked again. Without this they would be
+// re-sent every poll and crowd everything else out of the 20-plane request.
+var routeRetryAt = {};
+var ROUTE_MISS_RETRY_MS = 10 * 60 * 1000;
+var routesetPending = null;
+
 function buildRouteFetchPayload(sourcePlanes, options) {
   options = options || {};
-  var maxPlanes = options.maxPlanes != null ? options.maxPlanes : 20;
-  var needed = [];
-  var now = Date.now();
-  for (var i = 0; i < sourcePlanes.length && needed.length < maxPlanes; i++) {
-    var a = sourcePlanes[i];
-    var cached = a.callsign ? routeCache[a.callsign] : null;
-    var hiConfSrc = cached && (cached.destSource === "fr24-search" || cached.destSource === "schedule" || cached.destSource === "cross-validated");
-    var stale = cached && !hiConfSrc && (!cached.fetchedAt || now - cached.fetchedAt > 10 * 60 * 1000);
-    if (a.callsign && !a.private && (!cached || stale)) {
-      needed.push({
-        callsign: a.callsign,
-        hex: a.icao24,
-        lat: a.lat,
-        lng: a.lng,
-        altFt: a.altFt,
-        vRate: a.vRate != null ? Math.round(a.vRate * 60) : null,
-        ground: a.ground
-      });
-    }
+  var picked = selectRouteFetchPlanes(sourcePlanes, routeCache, {
+    maxPlanes: options.maxPlanes != null ? options.maxPlanes : 20,
+    now: Date.now(),
+    retryAt: routeRetryAt
+  });
+  return picked.map(function(a) {
+    return {
+      callsign: a.callsign,
+      hex: isIcaoHex(a.icao24) ? a.icao24 : null,
+      lat: a.lat,
+      lng: a.lng,
+      altFt: a.altFt,
+      vRate: a.vRate != null ? Math.round(a.vRate * 60) : null,
+      ground: a.ground
+    };
+  });
+}
+
+// Planes that were asked about but came back without an origin or destination.
+function noteRouteMisses(needed, routes) {
+  var resolved = {};
+  for (var i = 0; i < routes.length; i++) {
+    var r = routes[i];
+    if (r && r.callsign && (r.origin || r.destination)) resolved[r.callsign] = true;
   }
-  return needed;
+  var now = Date.now();
+  for (var j = 0; j < needed.length; j++) {
+    var cs = needed[j].callsign;
+    if (resolved[cs]) delete routeRetryAt[cs];
+    else routeRetryAt[cs] = now + ROUTE_MISS_RETRY_MS;
+  }
+  for (var key in routeRetryAt) {
+    if (routeRetryAt[key] <= now) delete routeRetryAt[key];
+  }
 }
 
 function mergeRoutesetEntries(routes, sourcePlanes) {
@@ -3765,21 +4014,38 @@ function mergeRoutesetEntries(routes, sourcePlanes) {
   }
 }
 
+// One /routeset request at a time: a slow Worker would otherwise collect overlapping POSTs every poll. The
+// per-poll viewport request just skips a turn; the airport board (options.waitTurn) waits for the one in flight.
 async function fetchRoutesForPlanes(sourcePlanes, options) {
   if (!sourcePlanes || !sourcePlanes.length) return false;
   options = options || {};
+  if (routesetPending && options.waitTurn) await routesetPending;
+  if (routesetPending) return false;
   var candidates = options.sortFn ? sourcePlanes.slice().sort(options.sortFn) : sourcePlanes;
   var needed = buildRouteFetchPayload(candidates, options);
   if (!needed.length) return false;
+  var pending = postRouteset(needed, candidates);
+  routesetPending = pending;
   try {
-    var resp = await fetch(routesetUrl(), {
+    return await pending;
+  } finally {
+    if (routesetPending === pending) routesetPending = null;
+  }
+}
+
+// Never rejects. Misses are recorded only from a successful answer, so an outage doesn't blacklist a batch.
+async function postRouteset(needed, candidates) {
+  try {
+    var resp = await fetchWithTimeout(routesetUrl(), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ planes: needed })
-    });
+    }, 15000);
     if (!resp.ok) return false;
     var routes = await resp.json();
+    if (!Array.isArray(routes)) return false;
     mergeRoutesetEntries(routes, candidates);
+    noteRouteMisses(needed, routes);
     return true;
   } catch (e) {
     console.warn("Route fetch failed:", e);
@@ -3839,6 +4105,8 @@ function clientConvergenceRefine() {
       }
     }
     if (a.altFt != null && a.altFt < 15000 && a.vRate != null && a.vRate * 60 > 100) continue;
+    // A destination from FR24, the schedule, or two agreeing sources outranks a guess from the track.
+    if (rc && rc.destination && isAuthoritativeDestSource(rc.destSource)) continue;
     var h = posHistory[a.icao24];
     if (!h) continue;
     var realH = [];
@@ -3987,7 +4255,7 @@ function proactiveFetchTracks() {
   var targets = [];
   for (var i = 0; i < aircraft.length; i++) {
     var a = aircraft[i];
-    if (!a.callsign || a.private || a.ground || isFiltered(a)) continue;
+    if (!a.callsign || a.private || a.ground || isFiltered(a) || !isIcaoHex(a.icao24)) continue;
     if (trackExtended[a.icao24] || proactivePending[a.icao24]) continue;
     var rc = routeCache[a.callsign];
     if (rc && ((rc.origin && rc.originSource === "track") || rc.confidence === "high")) continue;
@@ -3997,8 +4265,11 @@ function proactiveFetchTracks() {
   for (var j = 0; j < targets.length; j++) {
     (function(hex) {
       proactivePending[hex] = true;
-      fetch(trackUrl(hex))
-        .then(function(r) { return r.json(); })
+      fetchWithTimeout(trackUrl(hex))
+        .then(function(r) {
+          if (!r.ok) throw new Error("HTTP " + r.status);
+          return r.json();
+        })
         .then(function(data) {
           delete proactivePending[hex];
           if (data && (data.path ? data.path.length : data.length)) {
@@ -4164,8 +4435,10 @@ function buildDisplayTrailSegments(trail, a, displayPose, displayTime) {
     }
 
     if (visibleEnd.ts <= visibleStart.ts) continue;
+    // The end is unwrapped toward the start so a segment across ±180 is drawn as a short hop over the
+    // antimeridian (the map accepts longitudes past ±180) instead of a line across the whole world.
     built.push({
-      latlngs: [[visibleStart.lat, visibleStart.lng], [visibleEnd.lat, visibleEnd.lng]],
+      latlngs: [[visibleStart.lat, visibleStart.lng], [visibleEnd.lat, unwrapLngNear(visibleEnd.lng, visibleStart.lng)]],
       startTs: visibleStart.ts,
       endTs: visibleEnd.ts,
       altFt: visibleEnd.altFt,
@@ -4179,7 +4452,7 @@ function buildDisplayTrailSegments(trail, a, displayPose, displayTime) {
   var last = trail[trail.length - 1];
   if (displayPose.ts > last[2] && last[2] >= windowStart) {
     built.push({
-      latlngs: [[last[0], last[1]], [displayPose.lat, displayPose.lng]],
+      latlngs: [[last[0], last[1]], [displayPose.lat, unwrapLngNear(displayPose.lng, last[1])]],
       startTs: last[2],
       endTs: displayPose.ts,
       altFt: last[3],
@@ -4597,21 +4870,29 @@ function buildPopupSubheader(a, routeEntry) {
   return html;
 }
 
+// 400/404/410 are a definite answer for this plane; anything else (5xx, 429, a network error) is not, so it
+// isn't cached and the next popup open asks again.
+function popupLookupJson(r) {
+  if (r.ok) return r.json();
+  if (r.status === 400 || r.status === 404 || r.status === 410) return null;
+  throw new Error("HTTP " + r.status);
+}
+
 function loadPopupPhoto(container) {
   var hex = container.getAttribute("data-hex");
-  if (!hex) return;
+  if (!hex || !isIcaoHex(hex)) return;
   if (photoCache[hex] === null) return;
   if (photoCache[hex]) return;
   if (photoPending[hex]) return;
   photoPending[hex] = true;
-  fetch(photoUrl(hex))
-    .then(function(r) { return r.json(); })
+  fetchWithTimeout(photoUrl(hex))
+    .then(popupLookupJson)
     .then(function(data) {
       if (!data || !data.src) { photoCache[hex] = null; return; }
       photoCache[hex] = data;
       renderPhoto(container, data);
     })
-    .catch(function() { photoCache[hex] = null; })
+    .catch(function() {})
     .finally(function() {
       delete photoPending[hex];
     });
@@ -4650,20 +4931,20 @@ function renderAircraftInfo(container, info) {
 
 function loadPopupAircraftInfo(container) {
   var hex = container.getAttribute("data-hex");
-  if (!hex) return;
+  if (!hex || !isIcaoHex(hex)) return;
   if (aircraftInfoCache[hex] !== undefined) {
     renderAircraftInfo(container, aircraftInfoCache[hex]);
     return;
   }
   if (aircraftInfoPending[hex]) return;
   aircraftInfoPending[hex] = true;
-  fetch(aircraftUrl(hex))
-    .then(function(r) { return r.json(); })
+  fetchWithTimeout(aircraftUrl(hex))
+    .then(popupLookupJson)
     .then(function(data) {
       aircraftInfoCache[hex] = data || null;
       renderAircraftInfo(container, aircraftInfoCache[hex]);
     })
-    .catch(function() { aircraftInfoCache[hex] = null; })
+    .catch(function() {})
     .finally(function() { delete aircraftInfoPending[hex]; });
 }
 
@@ -4744,20 +5025,30 @@ function runOriginDetection(hex, data) {
   }
 }
 
+// trackExtended is set only once the Worker has answered (a 200 with no path included), so a failed fetch is
+// retried on the next popup open.
+var trackPending = {};
 function loadPopupTrack(hex) {
-  if (!hex || trackExtended[hex]) return;
-  trackExtended[hex] = true;
-  fetch(trackUrl(hex))
-    .then(function(r) { return r.json(); })
-    .then(function(data) { ingestTrackPath(hex, data); })
-    .catch(function() {});
+  if (!hex || !isIcaoHex(hex) || trackExtended[hex] || trackPending[hex]) return;
+  trackPending[hex] = true;
+  fetchWithTimeout(trackUrl(hex))
+    .then(function(r) {
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return r.json();
+    })
+    .then(function(data) {
+      trackExtended[hex] = true;
+      if (data) ingestTrackPath(hex, data);
+    })
+    .catch(function() {})
+    .finally(function() { delete trackPending[hex]; });
 }
 
 function fetchScheduleData(iata) {
   var cached = scheduleDataCache[iata];
   if (cached && Date.now() - cached.ts < SCHEDULE_CACHE_TTL) return Promise.resolve(cached.data);
   var url = WORKER_URL + "/schedule/" + encodeURIComponent(iata);
-  return fetch(url).then(function(r) {
+  return fetchWithTimeout(url).then(function(r) {
     if (!r.ok) return null;
     return r.json();
   }).then(function(data) {
@@ -5250,7 +5541,10 @@ function renderMarkers(now, displayPoses) {
     }
   }
   if (selectedAircraftId && !seen[selectedAircraftId]) {
+    // setSelectedAircraft(null)'s cleanup (follow mode, route line) without its re-render: we are mid-render.
     selectedAircraftId = null;
+    if (followMode) setFollowMode(false);
+    clearRouteLine();
     syncUrlState();
   }
   setPlaneLabelsShown(!!policy.showLabels);
@@ -6386,7 +6680,7 @@ function buildLiveScheduleData(airportIata, airportLat, airportLng, sourceAircra
   };
 }
 
-function buildScheduleCardContent(iata, name, liveData, dir, scopeId) {
+function buildScheduleCardContent(iata, name, liveData, dir, scopeId, staleNote) {
   var tab = scheduleTab(dir);
   dir = tab.dir;
   var items = liveData[dir] || [];
@@ -6401,6 +6695,7 @@ function buildScheduleCardContent(iata, name, liveData, dir, scopeId) {
     '<div class="sched-header"' + titleAttr + '>' +
       '<span class="sched-iata">' + escapeHtml(iata) + '</span> ' +
       '<span class="sched-name">' + escapeHtml(name) + '</span>' +
+      (staleNote ? ' <span class="sched-stale" style="opacity:0.7;font-size:0.85em;white-space:nowrap">' + escapeHtml(staleNote) + '</span>' : '') +
     '</div>' +
     '<div class="sched-toggle" role="group" aria-label="Airport traffic view">';
   for (var t = 0; t < SCHEDULE_TABS.length; t++) {
@@ -6509,7 +6804,7 @@ async function fetchAirportDatisActiveRunways(iata, entry) {
     return entry.datisActiveRunways || null;
   }
   try {
-    var resp = await fetch(datisUrl(iata));
+    var resp = await fetchWithTimeout(datisUrl(iata));
     if (!resp.ok) throw new Error("HTTP " + resp.status);
     var payload = await resp.json();
     var datisText = payload && (payload.datis || payload.text || payload.raw);
@@ -6579,22 +6874,27 @@ async function refreshActiveAirportPopup(options) {
     try {
       var datisPromise = fetchAirportDatisActiveRunways(iata, entry);
       var schedulePromise = fetchScheduleData(iata);
-      var resp = await fetch(trafficUrl(lat, lng, AIRPORT_POPUP_FETCH_KM));
+      var resp = await fetchWithTimeout(trafficUrl(lat, lng, AIRPORT_POPUP_FETCH_KM));
       if (!resp.ok) throw new Error("HTTP " + resp.status);
       var payload = await resp.json();
-      var datisActiveRunways = await datisPromise;
-      var snapshot = buildAircraftSnapshot(payload.ac || [], { includeProximity: false });
+      var snapshot = buildAircraftSnapshot(payload.ac || [], {
+        includeProximity: false,
+        positionNow: boardPositionNow(payload.now)
+      });
       entry.snapshot = snapshot.aircraft;
 
-      entry.data = buildLiveScheduleData(iata, lat, lng, snapshot.aircraft, datisActiveRunways);
+      // Traffic is shown as soon as it arrives, with the cached runway configuration if D-ATIS is still out.
+      entry.data = buildLiveScheduleData(iata, lat, lng, snapshot.aircraft, getCachedDatisActiveRunways(entry));
       entry.ts = Date.now();
       entry.error = null;
+      entry.stale = false;
       if (_activeAirportIata === iata && _activeAirportPopup) {
         _lastScheduleHtml = "";
         renderSchedulePopup(_activeScheduleDir);
       }
 
-      await fetchRoutesForPlanes(snapshot.aircraft, { sortFn: airportRouteCandidateComparator(lat, lng) });
+      var datisActiveRunways = await datisPromise;
+      await fetchRoutesForPlanes(snapshot.aircraft, { sortFn: airportRouteCandidateComparator(lat, lng), waitTurn: true });
       await schedulePromise;
       entry.data = buildLiveScheduleData(iata, lat, lng, snapshot.aircraft, datisActiveRunways);
       if (_activeAirportIata === iata && _activeAirportPopup) {
@@ -6604,6 +6904,7 @@ async function refreshActiveAirportPopup(options) {
     } catch (err) {
       console.warn("Airport popup traffic fetch failed:", err);
       if (!entry.data) entry.error = "Could not load airport traffic.";
+      else entry.stale = true;
     } finally {
       entry.loading = false;
       if (entry.pending === promise) entry.pending = null;
@@ -6618,6 +6919,14 @@ async function refreshActiveAirportPopup(options) {
 
   entry.pending = promise;
   return promise;
+}
+
+// The board's positions stamped on the same clock as the main feed's (see feedPositionClock), so rows can be
+// compared by reportTs. The offset is only read here, never updated.
+function boardPositionNow(feedNow) {
+  var receivedAt = Date.now();
+  if (!Number.isFinite(feedNow) || feedClockOffsetMs == null) return receivedAt;
+  return Math.min(receivedAt, feedNow + feedClockOffsetMs);
 }
 
 function patchAirportCacheFromViewport() {
@@ -6635,6 +6944,8 @@ function patchAirportCacheFromViewport() {
   for (var j = 0; j < snap.length; j++) {
     var fresh = lookup[snap[j].icao24];
     if (!fresh) continue;
+    // Only a newer position report replaces the board's own.
+    if (fresh.reportTs == null || (snap[j].reportTs != null && fresh.reportTs <= snap[j].reportTs)) continue;
     snap[j].lat = fresh.lat;
     snap[j].lng = fresh.lng;
     snap[j].altFt = fresh.altFt;
@@ -6649,6 +6960,13 @@ function patchAirportCacheFromViewport() {
   renderSchedulePopup(_activeScheduleDir);
 }
 
+// After a failed refresh the board keeps its last data; this says how old it is.
+function airportBoardStaleNote(entry) {
+  if (!entry || !entry.stale || !entry.data || !entry.ts) return "";
+  var minutes = Math.floor((Date.now() - entry.ts) / 60000);
+  return "stale \u00b7 updated " + (minutes < 1 ? "<1m" : minutes + "m") + " ago";
+}
+
 function renderSchedulePopup(dir) {
   if (!_activeAirportPopup || _activeAirportLat == null) return;
   _activeScheduleDir = dir;
@@ -6659,7 +6977,8 @@ function renderSchedulePopup(dir) {
       entry && entry.error ? entry.error : "Loading airport traffic…",
       entry && entry.error ? "error" : "loading"
     );
-  var html = buildScheduleCardContent(_activeAirportIata, _activeAirportName, liveData, dir, _activeAirportScopeId);
+  var html = buildScheduleCardContent(_activeAirportIata, _activeAirportName, liveData, dir, _activeAirportScopeId,
+    airportBoardStaleNote(entry));
   if (html === _lastScheduleHtml) return;
   _lastScheduleHtml = html;
   _activeAirportPopup.setHTML(html);

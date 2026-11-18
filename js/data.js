@@ -6,28 +6,51 @@ async function fetchAircraft(options) {
   if (!map) return;
   clearMapFetchTimer();
   clearRefreshTimer();
-  var spec = currentViewportFetchSpec();
-  if (!spec) {
-    scheduleRefreshTimer(adaptiveRefreshMs());
-    return;
-  }
-  syncUrlState();
-  var coverage = viewCoverage(spec);
-  var circles = coverage ? coverage.circles : [{ lat: spec.center.lat, lng: spec.center.lng, km: spec.fetchKm }];
-  var url = circles.map(function(c) { return trafficUrl(c.lat, c.lng, c.km); }).join(" ");
-  if (fetchAbortController && activeFetchUrl === url) return;
-  var requestSeq = ++fetchRequestSeq;
-  if (fetchAbortController && !options.skipAbort) fetchAbortController.abort();
-  var controller = new AbortController();
-  fetchAbortController = controller;
-  activeFetchUrl = url;
-
+  // Every path below reschedules the poll in `finally`, except a deduped call that leaves it to the request
+  // already in flight. Anything that throws (even syncUrlState) must not end polling for good.
+  var reschedule = true;
+  var controller = null;
+  var timeoutId = 0;
   try {
-    var data = await fetchTrafficCircles(circles, controller.signal);
+    var spec = currentViewportFetchSpec();
+    if (!spec) return;
+    syncUrlState();
+    var coverage = viewCoverage(spec);
+    var circles = coverage ? coverage.circles : [{ lat: spec.center.lat, lng: spec.center.lng, km: spec.fetchKm }];
+    var url = circles.map(function(c) { return trafficUrl(c.lat, c.lng, c.km); }).join(" ");
+    // A same-URL request already in flight is adopted, unless the page just resumed (it may be a request the
+    // OS froze) or it has outlived the timeout; then it is aborted and replaced.
+    if (fetchAbortController && activeFetchUrl === url && options.source !== "resume" &&
+        Date.now() - activeFetchStartedAt < TRAFFIC_FETCH_TIMEOUT_MS) {
+      reschedule = false;
+      return;
+    }
+    var requestSeq = ++fetchRequestSeq;
+    if (fetchAbortController && !options.skipAbort) fetchAbortController.abort();
+    controller = new AbortController();
+    fetchAbortController = controller;
+    activeFetchUrl = url;
+    activeFetchStartedAt = Date.now();
+    var timedOut = false;
+    timeoutId = setTimeout(function() {
+      timedOut = true;
+      controller.abort();
+    }, TRAFFIC_FETCH_TIMEOUT_MS);
+
+    var data;
+    try {
+      data = await abortablePromise(fetchTrafficCircles(circles, controller.signal), controller.signal);
+    } catch (fetchErr) {
+      if (fetchErr && fetchErr.name === "AbortError" && !timedOut) return;
+      if (requestSeq !== fetchRequestSeq) return;
+      noteTrafficFetchFailure();
+      return;
+    }
     if (requestSeq !== fetchRequestSeq) return;
     var prevSource = trafficSource;
     trafficFetchOk = true;
     trafficFailStreak = 0;
+    lastTrafficOkAt = Date.now();
     trafficSource = data.source || null;
     if (prevSource && trafficSource && prevSource !== trafficSource) {
       if (trafficSource === "backup") {
@@ -36,27 +59,52 @@ async function fetchAircraft(options) {
         setControlsFeedback("Primary traffic feed restored.", "success", { timeoutMs: 4000 });
       }
     }
+    setTrafficStale(false);
     processAircraft(data.ac || [], data.now);
   } catch (err) {
-    if (err && err.name === "AbortError") return;
-    trafficFailStreak++;
-    trafficFetchOk = false;
-    trafficSource = null;
-    updateControlsCompactSummary(0);
-    setControlsFeedback(
-      trafficFailStreak <= 1
-        ? "Could not reach the traffic feed \u2014 retrying\u2026"
-        : "Still trying to reach the traffic feed\u2026",
-      "warning", { timeoutMs: 8000 }
-    );
-    updateViewHint(0);
+    console.warn("Traffic refresh failed:", err);
   } finally {
-    if (fetchAbortController === controller) {
+    if (timeoutId) clearTimeout(timeoutId);
+    if (controller && fetchAbortController === controller) {
       fetchAbortController = null;
       activeFetchUrl = null;
     }
-    if (map) scheduleRefreshTimer(adaptiveRefreshMs());
+    if (map && reschedule) scheduleRefreshTimer(trafficRetryDelayMs(adaptiveRefreshMs(), trafficFailStreak, TRAFFIC_RETRY_MAX_MS));
   }
+}
+
+var TRAFFIC_FETCH_TIMEOUT_MS = 10000;
+// Consecutive failures back the poll off exponentially up to this.
+var TRAFFIC_RETRY_MAX_MS = 60000;
+
+// Rejects with an AbortError as soon as `signal` aborts, even if `promise` never settles (the boot prefetch
+// that fetchTrafficCircles may adopt can't be aborted).
+function abortablePromise(promise, signal) {
+  return new Promise(function(resolve, reject) {
+    function onAbort() {
+      var err = new Error("Aborted");
+      err.name = "AbortError";
+      reject(err);
+    }
+    if (signal.aborted) { onAbort(); return; }
+    signal.addEventListener("abort", onAbort);
+    promise.then(resolve, reject);
+  });
+}
+
+function noteTrafficFetchFailure() {
+  trafficFailStreak++;
+  trafficFetchOk = false;
+  trafficSource = null;
+  setTrafficStale(trafficOutage(trafficFailStreak, lastTrafficOkAt, Date.now()));
+  updateControlsCompactSummary();
+  setControlsFeedback(
+    trafficFailStreak <= 1
+      ? "Could not reach the traffic feed \u2014 retrying\u2026"
+      : "Still trying to reach the traffic feed\u2026",
+    "warning", { timeoutMs: 8000 }
+  );
+  updateViewHint(0);
 }
 
 // Both feeds take the radius in nautical miles.
@@ -219,6 +267,20 @@ function feedPositionClock(feedNow, receivedAt) {
   return positionNow;
 }
 
+// A plane missing from one poll (a dropped report, a coverage seam) is kept where it was for that poll, so a
+// single miss doesn't drop it, its popup, or the selection; it goes when it misses a second poll in a row.
+function carryOverMissedAircraft(previous, snapshot) {
+  for (var i = 0; i < previous.length; i++) {
+    var p = previous[i];
+    if (snapshot.activeIds[p.icao24] || p.missedPolls) continue;
+    var kept = {};
+    for (var k in p) kept[k] = p[k];
+    kept.missedPolls = 1;
+    snapshot.aircraft.push(kept);
+    snapshot.activeIds[p.icao24] = true;
+  }
+}
+
 function processAircraft(ac, feedNow) {
   var receivedAt = Date.now();
   var snapshot = buildAircraftSnapshot(ac, { now: receivedAt, positionNow: feedPositionClock(feedNow, receivedAt) });
@@ -226,6 +288,7 @@ function processAircraft(ac, feedNow) {
   if (lastFetchTs) updatePlaybackDelay(now - lastFetchTs);
   else updatePlaybackDelay(null);
   lastFetchTs = now;
+  carryOverMissedAircraft(aircraft, snapshot);
   aircraft = snapshot.aircraft;
   var activeIds = snapshot.activeIds;
 
@@ -275,29 +338,48 @@ function processAircraft(ac, feedNow) {
   if (_activeAirportPopup && _activeAirportIata) patchAirportCacheFromViewport();
 }
 
+// Callsigns the server could not resolve, mapped to when they may be asked again. Without this they would be
+// re-sent every poll and crowd everything else out of the 20-plane request.
+var routeRetryAt = {};
+var ROUTE_MISS_RETRY_MS = 10 * 60 * 1000;
+var routesetPending = null;
+
 function buildRouteFetchPayload(sourcePlanes, options) {
   options = options || {};
-  var maxPlanes = options.maxPlanes != null ? options.maxPlanes : 20;
-  var needed = [];
-  var now = Date.now();
-  for (var i = 0; i < sourcePlanes.length && needed.length < maxPlanes; i++) {
-    var a = sourcePlanes[i];
-    var cached = a.callsign ? routeCache[a.callsign] : null;
-    var hiConfSrc = cached && (cached.destSource === "fr24-search" || cached.destSource === "schedule" || cached.destSource === "cross-validated");
-    var stale = cached && !hiConfSrc && (!cached.fetchedAt || now - cached.fetchedAt > 10 * 60 * 1000);
-    if (a.callsign && !a.private && (!cached || stale)) {
-      needed.push({
-        callsign: a.callsign,
-        hex: a.icao24,
-        lat: a.lat,
-        lng: a.lng,
-        altFt: a.altFt,
-        vRate: a.vRate != null ? Math.round(a.vRate * 60) : null,
-        ground: a.ground
-      });
-    }
+  var picked = selectRouteFetchPlanes(sourcePlanes, routeCache, {
+    maxPlanes: options.maxPlanes != null ? options.maxPlanes : 20,
+    now: Date.now(),
+    retryAt: routeRetryAt
+  });
+  return picked.map(function(a) {
+    return {
+      callsign: a.callsign,
+      hex: isIcaoHex(a.icao24) ? a.icao24 : null,
+      lat: a.lat,
+      lng: a.lng,
+      altFt: a.altFt,
+      vRate: a.vRate != null ? Math.round(a.vRate * 60) : null,
+      ground: a.ground
+    };
+  });
+}
+
+// Planes that were asked about but came back without an origin or destination.
+function noteRouteMisses(needed, routes) {
+  var resolved = {};
+  for (var i = 0; i < routes.length; i++) {
+    var r = routes[i];
+    if (r && r.callsign && (r.origin || r.destination)) resolved[r.callsign] = true;
   }
-  return needed;
+  var now = Date.now();
+  for (var j = 0; j < needed.length; j++) {
+    var cs = needed[j].callsign;
+    if (resolved[cs]) delete routeRetryAt[cs];
+    else routeRetryAt[cs] = now + ROUTE_MISS_RETRY_MS;
+  }
+  for (var key in routeRetryAt) {
+    if (routeRetryAt[key] <= now) delete routeRetryAt[key];
+  }
 }
 
 function mergeRoutesetEntries(routes, sourcePlanes) {
@@ -343,21 +425,38 @@ function mergeRoutesetEntries(routes, sourcePlanes) {
   }
 }
 
+// One /routeset request at a time: a slow Worker would otherwise collect overlapping POSTs every poll. The
+// per-poll viewport request just skips a turn; the airport board (options.waitTurn) waits for the one in flight.
 async function fetchRoutesForPlanes(sourcePlanes, options) {
   if (!sourcePlanes || !sourcePlanes.length) return false;
   options = options || {};
+  if (routesetPending && options.waitTurn) await routesetPending;
+  if (routesetPending) return false;
   var candidates = options.sortFn ? sourcePlanes.slice().sort(options.sortFn) : sourcePlanes;
   var needed = buildRouteFetchPayload(candidates, options);
   if (!needed.length) return false;
+  var pending = postRouteset(needed, candidates);
+  routesetPending = pending;
   try {
-    var resp = await fetch(routesetUrl(), {
+    return await pending;
+  } finally {
+    if (routesetPending === pending) routesetPending = null;
+  }
+}
+
+// Never rejects. Misses are recorded only from a successful answer, so an outage doesn't blacklist a batch.
+async function postRouteset(needed, candidates) {
+  try {
+    var resp = await fetchWithTimeout(routesetUrl(), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ planes: needed })
-    });
+    }, 15000);
     if (!resp.ok) return false;
     var routes = await resp.json();
+    if (!Array.isArray(routes)) return false;
     mergeRoutesetEntries(routes, candidates);
+    noteRouteMisses(needed, routes);
     return true;
   } catch (e) {
     console.warn("Route fetch failed:", e);
@@ -417,6 +516,8 @@ function clientConvergenceRefine() {
       }
     }
     if (a.altFt != null && a.altFt < 15000 && a.vRate != null && a.vRate * 60 > 100) continue;
+    // A destination from FR24, the schedule, or two agreeing sources outranks a guess from the track.
+    if (rc && rc.destination && isAuthoritativeDestSource(rc.destSource)) continue;
     var h = posHistory[a.icao24];
     if (!h) continue;
     var realH = [];
@@ -565,7 +666,7 @@ function proactiveFetchTracks() {
   var targets = [];
   for (var i = 0; i < aircraft.length; i++) {
     var a = aircraft[i];
-    if (!a.callsign || a.private || a.ground || isFiltered(a)) continue;
+    if (!a.callsign || a.private || a.ground || isFiltered(a) || !isIcaoHex(a.icao24)) continue;
     if (trackExtended[a.icao24] || proactivePending[a.icao24]) continue;
     var rc = routeCache[a.callsign];
     if (rc && ((rc.origin && rc.originSource === "track") || rc.confidence === "high")) continue;
@@ -575,8 +676,11 @@ function proactiveFetchTracks() {
   for (var j = 0; j < targets.length; j++) {
     (function(hex) {
       proactivePending[hex] = true;
-      fetch(trackUrl(hex))
-        .then(function(r) { return r.json(); })
+      fetchWithTimeout(trackUrl(hex))
+        .then(function(r) {
+          if (!r.ok) throw new Error("HTTP " + r.status);
+          return r.json();
+        })
         .then(function(data) {
           delete proactivePending[hex];
           if (data && (data.path ? data.path.length : data.length)) {
@@ -742,8 +846,10 @@ function buildDisplayTrailSegments(trail, a, displayPose, displayTime) {
     }
 
     if (visibleEnd.ts <= visibleStart.ts) continue;
+    // The end is unwrapped toward the start so a segment across ±180 is drawn as a short hop over the
+    // antimeridian (the map accepts longitudes past ±180) instead of a line across the whole world.
     built.push({
-      latlngs: [[visibleStart.lat, visibleStart.lng], [visibleEnd.lat, visibleEnd.lng]],
+      latlngs: [[visibleStart.lat, visibleStart.lng], [visibleEnd.lat, unwrapLngNear(visibleEnd.lng, visibleStart.lng)]],
       startTs: visibleStart.ts,
       endTs: visibleEnd.ts,
       altFt: visibleEnd.altFt,
@@ -757,7 +863,7 @@ function buildDisplayTrailSegments(trail, a, displayPose, displayTime) {
   var last = trail[trail.length - 1];
   if (displayPose.ts > last[2] && last[2] >= windowStart) {
     built.push({
-      latlngs: [[last[0], last[1]], [displayPose.lat, displayPose.lng]],
+      latlngs: [[last[0], last[1]], [displayPose.lat, unwrapLngNear(displayPose.lng, last[1])]],
       startTs: last[2],
       endTs: displayPose.ts,
       altFt: last[3],

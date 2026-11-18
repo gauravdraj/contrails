@@ -853,7 +853,7 @@ function buildLiveScheduleData(airportIata, airportLat, airportLng, sourceAircra
   };
 }
 
-function buildScheduleCardContent(iata, name, liveData, dir, scopeId) {
+function buildScheduleCardContent(iata, name, liveData, dir, scopeId, staleNote) {
   var tab = scheduleTab(dir);
   dir = tab.dir;
   var items = liveData[dir] || [];
@@ -868,6 +868,7 @@ function buildScheduleCardContent(iata, name, liveData, dir, scopeId) {
     '<div class="sched-header"' + titleAttr + '>' +
       '<span class="sched-iata">' + escapeHtml(iata) + '</span> ' +
       '<span class="sched-name">' + escapeHtml(name) + '</span>' +
+      (staleNote ? ' <span class="sched-stale" style="opacity:0.7;font-size:0.85em;white-space:nowrap">' + escapeHtml(staleNote) + '</span>' : '') +
     '</div>' +
     '<div class="sched-toggle" role="group" aria-label="Airport traffic view">';
   for (var t = 0; t < SCHEDULE_TABS.length; t++) {
@@ -976,7 +977,7 @@ async function fetchAirportDatisActiveRunways(iata, entry) {
     return entry.datisActiveRunways || null;
   }
   try {
-    var resp = await fetch(datisUrl(iata));
+    var resp = await fetchWithTimeout(datisUrl(iata));
     if (!resp.ok) throw new Error("HTTP " + resp.status);
     var payload = await resp.json();
     var datisText = payload && (payload.datis || payload.text || payload.raw);
@@ -1046,22 +1047,27 @@ async function refreshActiveAirportPopup(options) {
     try {
       var datisPromise = fetchAirportDatisActiveRunways(iata, entry);
       var schedulePromise = fetchScheduleData(iata);
-      var resp = await fetch(trafficUrl(lat, lng, AIRPORT_POPUP_FETCH_KM));
+      var resp = await fetchWithTimeout(trafficUrl(lat, lng, AIRPORT_POPUP_FETCH_KM));
       if (!resp.ok) throw new Error("HTTP " + resp.status);
       var payload = await resp.json();
-      var datisActiveRunways = await datisPromise;
-      var snapshot = buildAircraftSnapshot(payload.ac || [], { includeProximity: false });
+      var snapshot = buildAircraftSnapshot(payload.ac || [], {
+        includeProximity: false,
+        positionNow: boardPositionNow(payload.now)
+      });
       entry.snapshot = snapshot.aircraft;
 
-      entry.data = buildLiveScheduleData(iata, lat, lng, snapshot.aircraft, datisActiveRunways);
+      // Traffic is shown as soon as it arrives, with the cached runway configuration if D-ATIS is still out.
+      entry.data = buildLiveScheduleData(iata, lat, lng, snapshot.aircraft, getCachedDatisActiveRunways(entry));
       entry.ts = Date.now();
       entry.error = null;
+      entry.stale = false;
       if (_activeAirportIata === iata && _activeAirportPopup) {
         _lastScheduleHtml = "";
         renderSchedulePopup(_activeScheduleDir);
       }
 
-      await fetchRoutesForPlanes(snapshot.aircraft, { sortFn: airportRouteCandidateComparator(lat, lng) });
+      var datisActiveRunways = await datisPromise;
+      await fetchRoutesForPlanes(snapshot.aircraft, { sortFn: airportRouteCandidateComparator(lat, lng), waitTurn: true });
       await schedulePromise;
       entry.data = buildLiveScheduleData(iata, lat, lng, snapshot.aircraft, datisActiveRunways);
       if (_activeAirportIata === iata && _activeAirportPopup) {
@@ -1071,6 +1077,7 @@ async function refreshActiveAirportPopup(options) {
     } catch (err) {
       console.warn("Airport popup traffic fetch failed:", err);
       if (!entry.data) entry.error = "Could not load airport traffic.";
+      else entry.stale = true;
     } finally {
       entry.loading = false;
       if (entry.pending === promise) entry.pending = null;
@@ -1085,6 +1092,14 @@ async function refreshActiveAirportPopup(options) {
 
   entry.pending = promise;
   return promise;
+}
+
+// The board's positions stamped on the same clock as the main feed's (see feedPositionClock), so rows can be
+// compared by reportTs. The offset is only read here, never updated.
+function boardPositionNow(feedNow) {
+  var receivedAt = Date.now();
+  if (!Number.isFinite(feedNow) || feedClockOffsetMs == null) return receivedAt;
+  return Math.min(receivedAt, feedNow + feedClockOffsetMs);
 }
 
 function patchAirportCacheFromViewport() {
@@ -1102,6 +1117,8 @@ function patchAirportCacheFromViewport() {
   for (var j = 0; j < snap.length; j++) {
     var fresh = lookup[snap[j].icao24];
     if (!fresh) continue;
+    // Only a newer position report replaces the board's own.
+    if (fresh.reportTs == null || (snap[j].reportTs != null && fresh.reportTs <= snap[j].reportTs)) continue;
     snap[j].lat = fresh.lat;
     snap[j].lng = fresh.lng;
     snap[j].altFt = fresh.altFt;
@@ -1116,6 +1133,13 @@ function patchAirportCacheFromViewport() {
   renderSchedulePopup(_activeScheduleDir);
 }
 
+// After a failed refresh the board keeps its last data; this says how old it is.
+function airportBoardStaleNote(entry) {
+  if (!entry || !entry.stale || !entry.data || !entry.ts) return "";
+  var minutes = Math.floor((Date.now() - entry.ts) / 60000);
+  return "stale \u00b7 updated " + (minutes < 1 ? "<1m" : minutes + "m") + " ago";
+}
+
 function renderSchedulePopup(dir) {
   if (!_activeAirportPopup || _activeAirportLat == null) return;
   _activeScheduleDir = dir;
@@ -1126,7 +1150,8 @@ function renderSchedulePopup(dir) {
       entry && entry.error ? entry.error : "Loading airport traffic…",
       entry && entry.error ? "error" : "loading"
     );
-  var html = buildScheduleCardContent(_activeAirportIata, _activeAirportName, liveData, dir, _activeAirportScopeId);
+  var html = buildScheduleCardContent(_activeAirportIata, _activeAirportName, liveData, dir, _activeAirportScopeId,
+    airportBoardStaleNote(entry));
   if (html === _lastScheduleHtml) return;
   _lastScheduleHtml = html;
   _activeAirportPopup.setHTML(html);

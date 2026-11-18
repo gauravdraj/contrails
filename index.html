@@ -23,7 +23,7 @@
   try {
     var q = new URLSearchParams(location.search);
     var lat = parseFloat(q.get("lat")), lng = parseFloat(q.get("lng")), zoom = parseFloat(q.get("zoom"));
-    if (!isFinite(lat) || !isFinite(lng) || Math.abs(lat) > 85) return;
+    if (!isFinite(lat) || !isFinite(lng) || Math.abs(lat) > 85 || Math.abs(lng) > 180) return;
     zoom = Math.max(5, Math.min(18, isFinite(zoom) ? zoom : 11));
     // Center-to-corner distance on a 256-px-tile Web Mercator map, padded like the app's own estimate plus 10%.
     var metersPerPx = 156543.03 * Math.cos(lat * Math.PI / 180) / Math.pow(2, zoom);

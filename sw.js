@@ -9,7 +9,7 @@
 // Bump VERSION in lockstep with APP_VERSION in js/app-core.js so a new deploy supersedes
 // the cached shell within one launch.
 
-const VERSION = "2.43";
+const VERSION = "2.44";
 const CACHE = "contrails-" + VERSION;
 
 const CORE_ASSETS = [
@@ -27,10 +27,17 @@ const CORE_ASSETS = [
   "./vendor/maplibre-gl-5.24.0/maplibre-gl.css",
 ];
 
+// The app is served from the service worker's own directory ("./" or "./index.html" under its scope).
+function isAppEntry(url) {
+  const base = new URL("./", self.location.href).pathname;
+  return url.origin === self.location.origin && (url.pathname === base || url.pathname === base + "index.html");
+}
+
 self.addEventListener("install", (event) => {
   event.waitUntil((async () => {
     const cache = await caches.open(CACHE);
-    await cache.addAll(CORE_ASSETS);
+    // "reload" skips the HTTP cache, so a version bump never stores a bundle the CDN cached minutes ago.
+    await cache.addAll(CORE_ASSETS.map((asset) => new Request(asset, { cache: "reload" })));
     await self.skipWaiting();
   })());
 });
@@ -56,17 +63,22 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  // App launches: serve the cached shell instantly, refresh it in the background.
+  // App launches: serve the cached shell instantly, refresh it in the background. Only an HTML response for
+  // the app's own entry URL may replace the shell; navigating to e.g. airports.json must not.
   if (request.mode === "navigate") {
     event.respondWith((async () => {
       const cache = await caches.open(CACHE);
       const cached = await cache.match("./index.html");
       const network = fetch(request)
-        .then((resp) => {
-          if (resp && resp.ok) cache.put("./index.html", resp.clone());
+        .then(async (resp) => {
+          const type = (resp && resp.headers.get("content-type")) || "";
+          if (resp && resp.ok && isAppEntry(url) && type.includes("text/html")) {
+            await cache.put("./index.html", resp.clone());
+          }
           return resp;
         })
         .catch(() => null);
+      event.waitUntil(network);
       return cached || (await network) || Response.error();
     })());
     return;
@@ -84,14 +96,14 @@ self.addEventListener("fetch", (event) => {
       if (immutable) return cached;
       event.waitUntil(
         fetch(request)
-          .then((resp) => { if (resp && resp.ok) cache.put(request, resp.clone()); })
+          .then((resp) => { if (resp && resp.ok) return cache.put(request, resp.clone()); })
           .catch(() => {}),
       );
       return cached;
     }
     try {
       const fresh = await fetch(request);
-      if (fresh && fresh.ok) cache.put(request, fresh.clone());
+      if (fresh && fresh.ok) event.waitUntil(cache.put(request, fresh.clone()).catch(() => {}));
       return fresh;
     } catch (_) {
       return Response.error();
