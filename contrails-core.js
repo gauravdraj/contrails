@@ -256,6 +256,63 @@
     return { circles: circles, total: cells.length, complete: cells.length <= maxCircles };
   }
 
+  // Prove that the whole rectangle is covered, not just its corners (a union can have holes).
+  // Each subrectangle fits inside a conservative spherical cap: latitude then longitude along a parallel.
+  function trafficCirclesCoverBounds(circles, bounds) {
+    if (!circles || !circles.length || !bounds) return false;
+    function covered(south, north, west, east, depth) {
+      var lat = (south + north) / 2, lng = (west + east) / 2;
+      var latKm = (north - south) * Math.PI / 180 * 6371 / 2;
+      var lngKm = (east - west) * Math.PI / 180 * 6371 / 2 * Math.cos(lat * Math.PI / 180);
+      var radius = latKm + lngKm;
+      var centerCovered = false;
+      for (var i = 0; i < circles.length; i++) {
+        var c = circles[i];
+        var distance = haversineKm(lat, lng, c.lat, c.lng);
+        if (distance + radius <= c.km) return true;
+        if (distance <= c.km) centerCovered = true;
+      }
+      if (!centerCovered || depth === 10) return false;
+      return latKm > lngKm
+        ? covered(south, lat, west, east, depth + 1) && covered(lat, north, west, east, depth + 1)
+        : covered(south, north, west, lng, depth + 1) && covered(south, north, lng, east, depth + 1);
+    }
+    return covered(Math.max(-90, bounds.south), Math.min(90, bounds.north), bounds.west, bounds.east, 0);
+  }
+
+  // One-degree cells; store catalog positions so queries retain its order for equal-distance ties.
+  function buildAirportGrid(airports) {
+    var cells = {};
+    for (var i = 0; i < airports.length; i++) {
+      var ap = airports[i];
+      var row = Math.min(179, Math.floor(ap[1] + 90));
+      var col = Math.floor(((ap[2] + 180) % 360 + 360) % 360);
+      var key = row + ":" + col;
+      (cells[key] || (cells[key] = [])).push(i);
+    }
+    return { airports: airports, cells: cells };
+  }
+
+  function airportGridCandidates(grid, lat, lng, km) {
+    var angular = km / 6371;
+    var latPad = angular * 180 / Math.PI + 1e-9;
+    var lngPad = Math.abs(lat) + latPad >= 90 ? 180
+      : Math.asin(Math.min(1, Math.sin(angular) / Math.cos(lat * Math.PI / 180))) * 180 / Math.PI + 1e-9;
+    var south = Math.max(0, Math.floor(lat - latPad + 90));
+    var north = Math.min(179, Math.floor(lat + latPad + 90));
+    var west = Math.floor(lng - lngPad + 180);
+    var east = Math.min(west + 359, Math.floor(lng + lngPad + 180));
+    var indices = [];
+    for (var row = south; row <= north; row++) {
+      for (var col = west; col <= east; col++) {
+        var cell = grid.cells[row + ":" + ((col % 360 + 360) % 360)];
+        if (cell) for (var i = 0; i < cell.length; i++) indices.push(cell[i]);
+      }
+    }
+    indices.sort(function(a, b) { return a - b; });
+    return indices.map(function(i) { return grid.airports[i]; });
+  }
+
   // Ground planes per airport: each plane counts toward the nearest airport within `maxKm`.
   function countGroundByAirport(planes, airports, maxKm) {
     var counts = {};
@@ -356,6 +413,28 @@
     return variants;
   }
 
+  // Schedule payloads are replaced on fetch. Weak keys let expired snapshots and their indexes be collected.
+  var scheduleIndexes = new WeakMap();
+  function scheduleFlightIndex(data) {
+    var cached = scheduleIndexes.get(data);
+    if (cached) return cached;
+    cached = {};
+    ["arrivals", "departures"].forEach(function(dir) {
+      var index = Object.create(null);
+      var rows = data[dir] || [];
+      for (var i = 0; i < rows.length; i++) {
+        var row = rows[i];
+        if (!row) continue;
+        var callsign = normalizeSearchText(row.callsign), flight = normalizeSearchText(row.flight);
+        if (callsign) (index[callsign] || (index[callsign] = [])).push(i);
+        if (flight && flight !== callsign) (index[flight] || (index[flight] = [])).push(i);
+      }
+      cached[dir] = index;
+    });
+    scheduleIndexes.set(data, cached);
+    return cached;
+  }
+
   // Sources are { iata, data, lat, lng }; schedule times are Unix seconds, aircraft vRate is ft/sec.
   // Compare every airport/alias together so neither feed row order nor cache insertion order chooses a leg.
   function selectScheduleMatch(variants, sources, aircraft, nowMs) {
@@ -376,13 +455,15 @@
       }
       ["arrival", "departure"].forEach(function(dir) {
         if (direction && dir !== direction) return;
-        var rows = data[dir === "arrival" ? "arrivals" : "departures"] || [];
+        var directionKey = dir === "arrival" ? "arrivals" : "departures";
+        var allRows = data[directionKey] || [];
+        var index = scheduleFlightIndex(data)[directionKey];
+        var positions = new Set();
+        wanted.forEach(function(v) { (index[v] || []).forEach(function(i) { positions.add(i); }); });
+        var rows = Array.from(positions).sort(function(a, b) { return a - b; }).map(function(i) { return allRows[i]; });
         var suffix = dir === "arrival" ? "arr" : "dep";
         for (var i = 0; i < rows.length; i++) {
           var row = rows[i];
-          if (!row || !wanted.some(function(v) {
-            return v && (normalizeSearchText(row.callsign) === v || normalizeSearchText(row.flight) === v);
-          })) continue;
           var status = String(row.status || "").toLowerCase();
           if (/cancel|landed|arrived/.test(status) || row.actual_arr > 0) continue;
           var time = null;
@@ -1550,6 +1631,9 @@
     closingKm: closingKm,
     describeAirportDepartureStatus: describeAirportDepartureStatus,
     buildCoverageCircles: buildCoverageCircles,
+    trafficCirclesCoverBounds: trafficCirclesCoverBounds,
+    buildAirportGrid: buildAirportGrid,
+    airportGridCandidates: airportGridCandidates,
     buildViewPolicy: buildViewPolicy,
     buildViewportFetchSpec: buildViewportFetchSpec,
     cardinalDir: cardinalDir,

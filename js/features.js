@@ -522,8 +522,9 @@ function isLatLngInView(lat, lng, padRatio) {
 
 function visibleAircraftCount() {
   var count = 0;
+  var filterContext = aircraftFilterContext();
   for (var i = 0; i < aircraft.length; i++) {
-    if (!isFiltered(aircraft[i])) count++;
+    if (!isFiltered(aircraft[i], filterContext)) count++;
   }
   return count;
 }

@@ -260,6 +260,63 @@ var AIRLINES_DATA = {"airlines":{"AAL":{"name":"American","iata":"AA"},"AAR":{"n
     return { circles: circles, total: cells.length, complete: cells.length <= maxCircles };
   }
 
+  // Prove that the whole rectangle is covered, not just its corners (a union can have holes).
+  // Each subrectangle fits inside a conservative spherical cap: latitude then longitude along a parallel.
+  function trafficCirclesCoverBounds(circles, bounds) {
+    if (!circles || !circles.length || !bounds) return false;
+    function covered(south, north, west, east, depth) {
+      var lat = (south + north) / 2, lng = (west + east) / 2;
+      var latKm = (north - south) * Math.PI / 180 * 6371 / 2;
+      var lngKm = (east - west) * Math.PI / 180 * 6371 / 2 * Math.cos(lat * Math.PI / 180);
+      var radius = latKm + lngKm;
+      var centerCovered = false;
+      for (var i = 0; i < circles.length; i++) {
+        var c = circles[i];
+        var distance = haversineKm(lat, lng, c.lat, c.lng);
+        if (distance + radius <= c.km) return true;
+        if (distance <= c.km) centerCovered = true;
+      }
+      if (!centerCovered || depth === 10) return false;
+      return latKm > lngKm
+        ? covered(south, lat, west, east, depth + 1) && covered(lat, north, west, east, depth + 1)
+        : covered(south, north, west, lng, depth + 1) && covered(south, north, lng, east, depth + 1);
+    }
+    return covered(Math.max(-90, bounds.south), Math.min(90, bounds.north), bounds.west, bounds.east, 0);
+  }
+
+  // One-degree cells; store catalog positions so queries retain its order for equal-distance ties.
+  function buildAirportGrid(airports) {
+    var cells = {};
+    for (var i = 0; i < airports.length; i++) {
+      var ap = airports[i];
+      var row = Math.min(179, Math.floor(ap[1] + 90));
+      var col = Math.floor(((ap[2] + 180) % 360 + 360) % 360);
+      var key = row + ":" + col;
+      (cells[key] || (cells[key] = [])).push(i);
+    }
+    return { airports: airports, cells: cells };
+  }
+
+  function airportGridCandidates(grid, lat, lng, km) {
+    var angular = km / 6371;
+    var latPad = angular * 180 / Math.PI + 1e-9;
+    var lngPad = Math.abs(lat) + latPad >= 90 ? 180
+      : Math.asin(Math.min(1, Math.sin(angular) / Math.cos(lat * Math.PI / 180))) * 180 / Math.PI + 1e-9;
+    var south = Math.max(0, Math.floor(lat - latPad + 90));
+    var north = Math.min(179, Math.floor(lat + latPad + 90));
+    var west = Math.floor(lng - lngPad + 180);
+    var east = Math.min(west + 359, Math.floor(lng + lngPad + 180));
+    var indices = [];
+    for (var row = south; row <= north; row++) {
+      for (var col = west; col <= east; col++) {
+        var cell = grid.cells[row + ":" + ((col % 360 + 360) % 360)];
+        if (cell) for (var i = 0; i < cell.length; i++) indices.push(cell[i]);
+      }
+    }
+    indices.sort(function(a, b) { return a - b; });
+    return indices.map(function(i) { return grid.airports[i]; });
+  }
+
   // Ground planes per airport: each plane counts toward the nearest airport within `maxKm`.
   function countGroundByAirport(planes, airports, maxKm) {
     var counts = {};
@@ -360,6 +417,28 @@ var AIRLINES_DATA = {"airlines":{"AAL":{"name":"American","iata":"AA"},"AAR":{"n
     return variants;
   }
 
+  // Schedule payloads are replaced on fetch. Weak keys let expired snapshots and their indexes be collected.
+  var scheduleIndexes = new WeakMap();
+  function scheduleFlightIndex(data) {
+    var cached = scheduleIndexes.get(data);
+    if (cached) return cached;
+    cached = {};
+    ["arrivals", "departures"].forEach(function(dir) {
+      var index = Object.create(null);
+      var rows = data[dir] || [];
+      for (var i = 0; i < rows.length; i++) {
+        var row = rows[i];
+        if (!row) continue;
+        var callsign = normalizeSearchText(row.callsign), flight = normalizeSearchText(row.flight);
+        if (callsign) (index[callsign] || (index[callsign] = [])).push(i);
+        if (flight && flight !== callsign) (index[flight] || (index[flight] = [])).push(i);
+      }
+      cached[dir] = index;
+    });
+    scheduleIndexes.set(data, cached);
+    return cached;
+  }
+
   // Sources are { iata, data, lat, lng }; schedule times are Unix seconds, aircraft vRate is ft/sec.
   // Compare every airport/alias together so neither feed row order nor cache insertion order chooses a leg.
   function selectScheduleMatch(variants, sources, aircraft, nowMs) {
@@ -380,13 +459,15 @@ var AIRLINES_DATA = {"airlines":{"AAL":{"name":"American","iata":"AA"},"AAR":{"n
       }
       ["arrival", "departure"].forEach(function(dir) {
         if (direction && dir !== direction) return;
-        var rows = data[dir === "arrival" ? "arrivals" : "departures"] || [];
+        var directionKey = dir === "arrival" ? "arrivals" : "departures";
+        var allRows = data[directionKey] || [];
+        var index = scheduleFlightIndex(data)[directionKey];
+        var positions = new Set();
+        wanted.forEach(function(v) { (index[v] || []).forEach(function(i) { positions.add(i); }); });
+        var rows = Array.from(positions).sort(function(a, b) { return a - b; }).map(function(i) { return allRows[i]; });
         var suffix = dir === "arrival" ? "arr" : "dep";
         for (var i = 0; i < rows.length; i++) {
           var row = rows[i];
-          if (!row || !wanted.some(function(v) {
-            return v && (normalizeSearchText(row.callsign) === v || normalizeSearchText(row.flight) === v);
-          })) continue;
           var status = String(row.status || "").toLowerCase();
           if (/cancel|landed|arrived/.test(status) || row.actual_arr > 0) continue;
           var time = null;
@@ -1554,6 +1635,9 @@ var AIRLINES_DATA = {"airlines":{"AAL":{"name":"American","iata":"AA"},"AAR":{"n
     closingKm: closingKm,
     describeAirportDepartureStatus: describeAirportDepartureStatus,
     buildCoverageCircles: buildCoverageCircles,
+    trafficCirclesCoverBounds: trafficCirclesCoverBounds,
+    buildAirportGrid: buildAirportGrid,
+    airportGridCandidates: airportGridCandidates,
     buildViewPolicy: buildViewPolicy,
     buildViewportFetchSpec: buildViewportFetchSpec,
     cardinalDir: cardinalDir,
@@ -2303,7 +2387,9 @@ var EMPTY_COLLECTION = { type: "FeatureCollection", features: [] };
 // swallow its own label. Labels still collide with each other and push basemap text aside.
 function addAppLayers() {
   ["runways", "route", "trails", "planes"].forEach(function(id) {
-    map.addSource(id, { type: "geojson", data: EMPTY_COLLECTION });
+    var options = { type: "geojson", data: EMPTY_COLLECTION };
+    if (id === "planes") options.promoteId = "hex";
+    map.addSource(id, options);
   });
   map.addLayer({
     id: "runways", type: "line", source: "runways", minzoom: 8,
@@ -2965,10 +3051,7 @@ function updateControlsCompactSummary(visibleCount) {
   var el = document.getElementById("controls-compact-summary");
   if (!el) return;
   if (visibleCount == null) {
-    visibleCount = 0;
-    for (var i = 0; i < aircraft.length; i++) {
-      if (!isFiltered(aircraft[i])) visibleCount++;
-    }
+    visibleCount = visibleAircraftCount();
   }
   var summary;
   // After repeated failures the planes on the map are frozen at their last positions; say so here, since this
@@ -3555,8 +3638,9 @@ function isLatLngInView(lat, lng, padRatio) {
 
 function visibleAircraftCount() {
   var count = 0;
+  var filterContext = aircraftFilterContext();
   for (var i = 0; i < aircraft.length; i++) {
-    if (!isFiltered(aircraft[i])) count++;
+    if (!isFiltered(aircraft[i], filterContext)) count++;
   }
   return count;
 }
@@ -3694,6 +3778,7 @@ function pruneStaleHistoryEntries(activeIds, now) {
 // Traffic, route, airport, and runway data fetching.
 
 // --- Data fetching ---
+var activeFetchCircles = null;
 async function fetchAircraft(options) {
   options = options || {};
   if (!map) return;
@@ -3711,10 +3796,11 @@ async function fetchAircraft(options) {
     var coverage = viewCoverage(spec);
     var circles = coverage ? coverage.circles : [{ lat: spec.center.lat, lng: spec.center.lng, km: spec.fetchKm }];
     var url = circles.map(function(c) { return trafficUrl(c.lat, c.lng, c.km); }).join(" ");
-    // A same-URL request already in flight is adopted, unless the page just resumed (it may be a request the
-    // OS froze) or it has outlived the timeout; then it is aborted and replaced.
-    if (fetchAbortController && activeFetchUrl === url && options.source !== "resume" &&
-        Date.now() - activeFetchStartedAt < TRAFFIC_FETCH_TIMEOUT_MS) {
+    // Keep a slow request through pans inside its coverage, including the renderer's padded view.
+    // A resumed or timed-out request must still be replaced even when its coverage matches.
+    if (fetchAbortController && options.source !== "resume" &&
+        Date.now() - activeFetchStartedAt < TRAFFIC_FETCH_TIMEOUT_MS &&
+        (activeFetchUrl === url || core.trafficCirclesCoverBounds(activeFetchCircles, spec.bounds.pad(VIEW_FILTER_PAD)))) {
       reschedule = false;
       return;
     }
@@ -3723,6 +3809,9 @@ async function fetchAircraft(options) {
     controller = new AbortController();
     fetchAbortController = controller;
     activeFetchUrl = url;
+    activeFetchCircles = circles.map(function(c) {
+      return { lat: +c.lat.toFixed(4), lng: +c.lng.toFixed(4), km: Math.ceil(c.km / 1.852) * 1.852 };
+    });
     activeFetchStartedAt = Date.now();
     var timedOut = false;
     timeoutId = setTimeout(function() {
@@ -3772,6 +3861,7 @@ async function fetchAircraft(options) {
     if (controller && fetchAbortController === controller) {
       fetchAbortController = null;
       activeFetchUrl = null;
+      activeFetchCircles = null;
     }
     if (map && reschedule) scheduleRefreshTimer(trafficRetryDelayMs(adaptiveRefreshMs(), trafficFailStreak, TRAFFIC_RETRY_MAX_MS));
   }
@@ -4003,6 +4093,7 @@ function processAircraft(ac, feedNow) {
 
   sortAircraftList();
 
+  var trailBounds = currentViewBounds(TRAIL_VIEW_PAD);
   for (var j = 0; j < aircraft.length; j++) {
     var a = aircraft[j];
     if (dormantHistory[a.icao24]) {
@@ -4013,7 +4104,7 @@ function processAircraft(ac, feedNow) {
     if (!posHistory[a.icao24]) posHistory[a.icao24] = [];
     var h = posHistory[a.icao24];
     var reportTs = a.reportTs;
-    seedSyntheticTrail(h, a, reportTs);
+    seedSyntheticTrail(h, a, reportTs, trailBounds);
     var lastPt = h.length ? h[h.length - 1] : null;
     if (lastPt && reportTs <= lastPt[2]) reportTs = lastPt[2] + 1;
     var breakBefore = !!trailBreakPending[a.icao24] && !!lastPt;
@@ -4177,10 +4268,17 @@ async function postRouteset(needed, candidates) {
 
 async function fetchRoutes() {
   if (!aircraft.length) return;
-  var visible = aircraft.filter(function(a) { return !isFiltered(a); });
+  var filterContext = aircraftFilterContext();
+  var visible = aircraft.filter(function(a) { return !isFiltered(a, filterContext); });
   var policy = currentViewPolicy(visible.length);
   if (!policy.allowRoutes) return;
   await fetchRoutesForPlanes(visible);
+}
+
+var airportGrid = null;
+function nearbyAirportCandidates(lat, lng, km) {
+  if (!airportGrid || airportGrid.airports !== airportData) airportGrid = core.buildAirportGrid(airportData);
+  return core.airportGridCandidates(airportGrid, lat, lng, km);
 }
 
 function clientConvergenceRefine() {
@@ -4194,8 +4292,9 @@ function clientConvergenceRefine() {
       var hiSrc = ["adsbdb", "track", "cross-validated", "schedule", "fr24-search"];
       if (!rc || !rc.origin || hiSrc.indexOf(rc.originSource) === -1) {
         var depCands = [];
-        for (var dc = 0; dc < airportData.length; dc++) {
-          var dap = airportData[dc];
+        var nearbyDepartures = nearbyAirportCandidates(a.lat, a.lng, 30);
+        for (var dc = 0; dc < nearbyDepartures.length; dc++) {
+          var dap = nearbyDepartures[dc];
           var dd = haversineKm(a.lat, a.lng, dap[1], dap[2]);
           if (dd < 30) depCands.push({ iata: dap[0], name: dap[3], dist: dd });
         }
@@ -4242,8 +4341,9 @@ function clientConvergenceRefine() {
     if (minAlt > 10000) continue;
     var last = tail[tail.length - 1];
     var candidates = [];
-    for (var j = 0; j < airportData.length; j++) {
-      var ap = airportData[j];
+    var nearbyArrivals = nearbyAirportCandidates(last[0], last[1], 80);
+    for (var j = 0; j < nearbyArrivals.length; j++) {
+      var ap = nearbyArrivals[j];
       var d = haversineKm(last[0], last[1], ap[1], ap[2]);
       if (d < 80) candidates.push({ iata: ap[0], name: ap[3], lat: ap[1], lon: ap[2], dist: d });
     }
@@ -4375,9 +4475,10 @@ function proactiveFetchTracks() {
   if (now - lastProactiveFetch < 30000) return;
   lastProactiveFetch = now;
   var targets = [];
+  var filterContext = aircraftFilterContext();
   for (var i = 0; i < aircraft.length; i++) {
     var a = aircraft[i];
-    if (!a.callsign || a.private || a.ground || isFiltered(a) || !isIcaoHex(a.icao24)) continue;
+    if (!a.callsign || a.private || a.ground || isFiltered(a, filterContext) || !isIcaoHex(a.icao24)) continue;
     if (trackExtended[a.icao24] || proactivePending[a.icao24]) continue;
     var rc = routeCache[a.callsign];
     if (rc && ((rc.origin && rc.originSource === "track") || rc.confidence === "high")) continue;
@@ -4601,8 +4702,9 @@ function buildDisplayTrailSegments(trail, a, displayPose, displayTime) {
   return segments;
 }
 
-function seedSyntheticTrail(history, a, reportTs) {
+function seedSyntheticTrail(history, a, reportTs, bounds) {
   if (history.length || a.ground) return;
+  if (bounds === undefined) bounds = currentViewBounds(TRAIL_VIEW_PAD);
   var trailTrack = a.track != null ? a.track : a.bearingDeg;
   if (trailTrack == null) return;
   var speedMs = Math.max(SEEDED_MIN_DISPLAY_SPEED_KTS, a.speedKts || 0) * 0.514444;
@@ -4611,7 +4713,7 @@ function seedSyntheticTrail(history, a, reportTs) {
   for (var i = SEEDED_TRAIL_POINTS; i >= 1; i--) {
     var ageMs = stepMs * i;
     var point = projectLatLng(a.lat, a.lng, reverseTrack, speedMs * ageMs / 1000);
-    if (!isLatLngInView(point[0], point[1], TRAIL_VIEW_PAD)) continue;
+    if (bounds && !bounds.contains(point[0], point[1])) continue;
     history.push([point[0], point[1], reportTs - ageMs, a.altFt, false, false, true]);
   }
 }
@@ -4739,13 +4841,13 @@ function updateAirportGroundCounts() {
   var counts = {};
   if (airportData && filters.ground && !groundPlanesShown()) {
     var planes = [];
+    var bounds = currentViewBounds(AIRPORT_VIEW_PAD);
     for (var i = 0; i < aircraft.length; i++) {
       var a = aircraft[i];
-      if (!a.ground || (!filters.private && a.private) || !isLatLngInView(a.lat, a.lng, AIRPORT_VIEW_PAD)) continue;
+      if (!a.ground || (!filters.private && a.private) || (bounds && !bounds.contains(a.lat, a.lng))) continue;
       planes.push(a);
     }
     if (planes.length) {
-      var bounds = currentViewBounds(AIRPORT_VIEW_PAD);
       var airports = [];
       for (var j = 0; j < airportData.length; j++) {
         var ap = airportData[j];
@@ -4798,16 +4900,16 @@ function renderRunways() {
 }
 
 function updateStatus() {
-  var visible = aircraft.filter(function(a) { return !isFiltered(a); });
-  updateControlsCompactSummary(visible.length);
+  updateControlsCompactSummary(visibleAircraftCount());
 }
 
 function updateAlerts() {
   var bar = document.getElementById("alert-bar");
   var alerts = [];
+  var filterContext = aircraftFilterContext();
   for (var i = 0; i < aircraft.length; i++) {
     var a = aircraft[i];
-    if (isFiltered(a)) continue;
+    if (isFiltered(a, filterContext)) continue;
     var label = SQUAWK_ALERT[a.squawk];
     if (label || a.emergency) {
       var name = a.callsign || a.icao24;
@@ -4878,7 +4980,9 @@ function trailStyle(ageNorm, isSelected, isSynthetic) {
 }
 
 var _trailsShown = false;
-function renderTrails(now, displayPoses) {
+var _trailCache = {};
+var _trailOrder = [];
+function renderTrails(now, displayPoses, filterContext) {
   if (!mapReady) return;
   now = now || Date.now();
   var markerCount = Object.keys(markerMap).length;
@@ -4886,27 +4990,59 @@ function renderTrails(now, displayPoses) {
   if (trailsOff) {
     if (_trailsShown) map.getSource("trails").setData(EMPTY_COLLECTION);
     _trailsShown = false;
+    _trailCache = {};
+    _trailOrder = [];
     return;
   }
 
+  filterContext = filterContext || aircraftFilterContext();
   var displayTime = currentDisplayTime(now);
-  var features = [];
+  var nextCache = {};
+  var nextOrder = [];
+  var changed = false;
   for (var i = 0; i < aircraft.length; i++) {
     var a = aircraft[i];
-    if (isFiltered(a)) continue;
+    if (isFiltered(a, filterContext)) continue;
+    if (_trailOrder[nextOrder.length] !== a.icao24) changed = true;
+    nextOrder.push(a.icao24);
     var pose = displayPoses && displayPoses[a.icao24] ? displayPoses[a.icao24] : getDisplayPoseForAircraft(a.icao24, displayTime);
-    var segments = buildDisplayTrailSegments(posHistory[a.icao24], a, pose, displayTime);
+    var trail = posHistory[a.icao24];
+    var length = trail ? trail.length : 0;
+    var trailMs = trailWindowMs(a);
+    var selected = selectedAircraftId === a.icao24;
+    var cached = _trailCache[a.icao24];
+    // Fade is tied to the display head's timestamp, not wall time. Only a held head can reuse its styles.
+    // Histories are appended/trimmed or replaced; the endpoints also catch same-length pruning/track loads.
+    if (!cached || cached.trail !== trail || cached.length !== length ||
+        cached.first !== (length && trail[0]) || cached.last !== (length && trail[length - 1]) ||
+        cached.trailMs !== trailMs || cached.selected !== selected ||
+        cached.ts !== (pose && pose.ts) || cached.lat !== (pose && pose.lat) || cached.lng !== (pose && pose.lng)) {
+      cached = { aircraft: a, pose: pose, trail: trail, length: length,
+        first: length && trail[0], last: length && trail[length - 1],
+        trailMs: trailMs, selected: selected, ts: pose && pose.ts, lat: pose && pose.lat, lng: pose && pose.lng };
+      changed = true;
+    }
+    nextCache[a.icao24] = cached;
+  }
+  if (_trailOrder.length !== nextOrder.length) changed = true;
+  _trailCache = nextCache;
+  _trailOrder = nextOrder;
+  if (!changed) return;
+  // Retain only the inputs used to detect a held frame, not another copy of thousands of GeoJSON features.
+  var features = [];
+  for (var ti = 0; ti < nextOrder.length; ti++) {
+    var entry = nextCache[nextOrder[ti]];
+    var segments = buildDisplayTrailSegments(entry.trail, entry.aircraft, entry.pose, displayTime);
     for (var si = 0; si < segments.length; si++) {
       var seg = segments[si];
-      features.push({
-        type: "Feature",
-        properties: { color: seg.color, opacity: seg.opacity, width: seg.weight },
-        geometry: { type: "LineString", coordinates: [[seg.latlngs[0][1], seg.latlngs[0][0]], [seg.latlngs[1][1], seg.latlngs[1][0]]] }
-      });
+      features.push({ type: "Feature", properties: { color: seg.color, opacity: seg.opacity, width: seg.weight },
+        geometry: { type: "LineString", coordinates: [[seg.latlngs[0][1], seg.latlngs[0][0]], [seg.latlngs[1][1], seg.latlngs[1][0]]] } });
     }
   }
-  map.getSource("trails").setData({ type: "FeatureCollection", features: features });
-  _trailsShown = true;
+  if (features.length || _trailsShown) {
+    map.getSource("trails").setData({ type: "FeatureCollection", features: features });
+  }
+  _trailsShown = features.length > 0;
 }
 
 function buildPopup(a, policy) {
@@ -5276,6 +5412,12 @@ function proactiveScheduleSweep() {
 
 function cascadeScheduleMatches() {
   var updated = 0;
+  var sources = [];
+  var now = Date.now();
+  for (var iata in scheduleDataCache) {
+    var cached = scheduleDataCache[iata];
+    if (cached && now - cached.ts <= SCHEDULE_CACHE_TTL) sources.push({ iata: iata, data: cached.data });
+  }
   for (var i = 0; i < aircraft.length; i++) {
     var a = aircraft[i];
     if (!a.callsign || a.private) continue;
@@ -5283,12 +5425,6 @@ function cascadeScheduleMatches() {
     if (rc && rc.destSource === "schedule") continue;
     var variants = callsignVariants(a.callsign);
     if (!variants.length) continue;
-    var sources = [];
-    for (var iata in scheduleDataCache) {
-      var cached = scheduleDataCache[iata];
-      if (!cached || Date.now() - cached.ts > SCHEDULE_CACHE_TTL) continue;
-      sources.push({ iata: iata, data: cached.data });
-    }
     var match = selectClientScheduleMatch(variants, sources, a);
     if (match && applyScheduleMatch(a, match)) updated++;
   }
@@ -5483,14 +5619,46 @@ function planeRecordProps(a, isSelected) {
   };
 }
 
+var _planeSource = null;
+var _planeLayerRecords = {};
 function pushPlaneLayer() {
   if (!mapReady) return;
-  var features = [];
+  var source = map.getSource("planes");
+  if (source !== _planeSource) { _planeSource = source; _planeLayerRecords = {}; }
+  var diff = { add: [], update: [], remove: [] };
   for (var hex in markerMap) {
     var rec = markerMap[hex];
-    features.push({ type: "Feature", properties: rec.props, geometry: { type: "Point", coordinates: [rec.lng, rec.lat] } });
+    var prev = _planeLayerRecords[hex];
+    if (!prev) {
+      diff.add.push({ type: "Feature", id: hex, properties: rec.props, geometry: { type: "Point", coordinates: [rec.lng, rec.lat] } });
+    } else {
+      var update = { id: hex };
+      if (rec.lat !== prev.lat || rec.lng !== prev.lng) update.newGeometry = { type: "Point", coordinates: [rec.lng, rec.lat] };
+      if (rec.props !== prev.props) {
+        var properties = [];
+        for (var key in rec.props) {
+          if (rec.props[key] !== prev.props[key]) properties.push({ key: key, value: rec.props[key] });
+        }
+        if (properties.length) update.addOrUpdateProperties = properties;
+      }
+      // MapLibre moves updated features behind untouched ones. Include the remaining IDs in order so
+      // equal-rank labels (and coincident icons) keep exactly the placement priority of the full collection.
+      if (update.newGeometry || update.addOrUpdateProperties || diff.update.length) diff.update.push(update);
+    }
+    _planeLayerRecords[hex] = { lat: rec.lat, lng: rec.lng, props: rec.props };
   }
-  map.getSource("planes").setData({ type: "FeatureCollection", features: features });
+  for (var oldHex in _planeLayerRecords) {
+    if (!markerMap[oldHex]) { diff.remove.push(oldHex); delete _planeLayerRecords[oldHex]; }
+  }
+  if (diff.add.length || diff.remove.length) {
+    // Numeric-looking hex keys can be inserted before existing keys; a membership change resets that order.
+    var features = [];
+    for (var id in markerMap) {
+      var plane = markerMap[id];
+      features.push({ type: "Feature", id: id, properties: plane.props, geometry: { type: "Point", coordinates: [plane.lng, plane.lat] } });
+    }
+    source.setData({ type: "FeatureCollection", features: features });
+  } else if (diff.update.length) source.updateData({ update: diff.update });
   if (planePopupHex && markerMap[planePopupHex]) {
     activeMapPopup.setLngLat([markerMap[planePopupHex].lng, markerMap[planePopupHex].lat]);
   }
@@ -5545,11 +5713,16 @@ function groundPlanesShown() {
   return !!map && viewZoom() >= GROUND_PLANES_MIN_ZOOM;
 }
 
-function isFiltered(a) {
+function aircraftFilterContext() {
+  return { bounds: currentViewBounds(VIEW_FILTER_PAD), groundShown: groundPlanesShown() };
+}
+
+function isFiltered(a, context) {
+  context = context || aircraftFilterContext();
   if (!filters.ground && a.ground) return true;
-  if (a.ground && a.icao24 !== selectedAircraftId && !groundPlanesShown()) return true;
+  if (a.ground && a.icao24 !== selectedAircraftId && !context.groundShown) return true;
   if (!filters.private && a.private) return true;
-  if (!isLatLngInView(a.lat, a.lng, VIEW_FILTER_PAD)) return true;
+  if (context.bounds && !context.bounds.contains(a.lat, a.lng)) return true;
   return false;
 }
 
@@ -5561,18 +5734,19 @@ function markerAnimationIntervalMs(markerCount) {
   return MARKER_TARGET_INTERVAL_MS;
 }
 
-function renderMarkers(now, displayPoses) {
+function renderMarkers(now, displayPoses, filterContext) {
   now = now || Date.now();
+  filterContext = filterContext || aircraftFilterContext();
   var displayTime = currentDisplayTime(now);
   var seen = {};
   var visibleCount = 0;
   for (var vc = 0; vc < aircraft.length; vc++) {
-    if (!isFiltered(aircraft[vc])) visibleCount++;
+    if (!isFiltered(aircraft[vc], filterContext)) visibleCount++;
   }
   var policy = currentViewPolicy(visibleCount);
   for (var i = 0; i < aircraft.length; i++) {
     var a = aircraft[i];
-    if (isFiltered(a)) continue;
+    if (isFiltered(a, filterContext)) continue;
     seen[a.icao24] = true;
 
     var state = extraState[a.icao24] || {};
@@ -5635,6 +5809,7 @@ function renderMarkers(now, displayPoses) {
   }
   setPlaneLabelsShown(!!policy.showLabels);
   pushPlaneLayer();
+  if (visibleCount) scheduleMarkerAnimation();
 }
 
 var _lastAnimateTs = 0;
@@ -5643,6 +5818,11 @@ function animateMarkers() {
   markerAnimationFrame = 0;
   var now = Date.now();
   var markerCount = Object.keys(markerMap).length;
+  if (!markerCount) {
+    _lastAnimateTs = 0;
+    renderTrails(now);
+    return;
+  }
   var minInterval = markerAnimationIntervalMs(markerCount);
   var elapsedMs = now - _lastAnimateTs;
   if (_lastAnimateTs && minInterval > 0 && elapsedMs < minInterval) {
@@ -5673,8 +5853,9 @@ function animateMarkers() {
 }
 
 function renderMap(now, displayPoses) {
-  renderMarkers(now, displayPoses);
-  renderTrails(now, displayPoses);
+  var filterContext = aircraftFilterContext();
+  renderMarkers(now, displayPoses, filterContext);
+  renderTrails(now, displayPoses, filterContext);
   updateRouteLine();
   applyFollow(currentDisplayTime(now || Date.now()));
 }

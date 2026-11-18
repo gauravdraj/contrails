@@ -1952,3 +1952,209 @@ test("airline data: the inlined browser core and Node expose the same data and c
     assert.equal(context.ContrailsCore.isLikelyPrivateCallsign(row.callsign), row.core[1], String(row.callsign));
   }
 });
+
+function hotPathRenderContext() {
+  const uploads = [], diffs = [], frames = [];
+  let boundsReads = 0;
+  const source = { setData: data => uploads.push(data), updateData: diff => diffs.push(diff) };
+  const context = classicScript("./js/render.js", {
+    mapReady: true, map: { getSource: () => source, getZoom: () => 10, setLayoutProperty() {},
+      getBounds() { boundsReads++; return { getNorth: () => 2, getSouth: () => -2, getEast: () => 2, getWest: () => -2 }; } },
+    aircraft: [], markerMap: {}, extraState: {}, posHistory: {}, selectedAircraftId: null, planePopupHex: null,
+    filters: { ground: true, private: true, trails: true, labels: true }, VIEW_FILTER_PAD: 0.1,
+    GROUND_PLANES_MIN_ZOOM: 10, EMPTY_COLLECTION: { type: "FeatureCollection", features: [] },
+    currentDisplayTime: now => now, updateRouteLine() {}, applyFollow() {},
+    markerAnimationFrame: 0, markerAnimationTimer: 0, MARKER_TARGET_INTERVAL_MS: 0, TRAIL_FRAME_MS: 67,
+    requestAnimationFrame: fn => { frames.push(fn); return frames.length; }, cancelAnimationFrame() {},
+    setTimeout: fn => { frames.push(fn); return frames.length; }, clearTimeout() {},
+    getDisplayPoseForAircraft: () => ({ lat: 0, lng: 0, ts: 1000 }),
+    getDisplayPoseForSamples: () => ({ lat: 0, lng: 0, ts: 1000 }),
+    planeStyle: () => ({ icon: "plane", size: 1, color: "red", radiusPx: 5 })
+  });
+  for (const file of ["./js/features.js", "./js/map.js"]) {
+    vm.runInContext(fs.readFileSync(require.resolve(file), "utf8"), context);
+  }
+  context.currentViewPolicy = () => ({ showLabels: true });
+  context.updateRouteLine = () => {};
+  return { context, uploads, diffs, frames, boundsReads: () => boundsReads };
+}
+
+test("hot path: render filtering reads bounds once per pass and keeps selected ground planes", () => {
+  const { context: c, uploads, boundsReads } = hotPathRenderContext();
+  c.map.getZoom = () => 7;
+  c.selectedAircraftId = "000000";
+  c.aircraft = Array.from({ length: 100 }, (_, i) => ({ icao24: i.toString(16).padStart(6, "0"),
+    lat: i < 90 ? 0 : 10, lng: 0, ground: i < 2 }));
+  c.buildDisplayTrailSegments = () => [{ latlngs: [[0, 0], [1, 1]], color: "red", opacity: 0.5, weight: 2.5 }];
+  c.renderTrails(1000);
+  assert.equal(uploads[0].features.length, 89);
+  assert.equal(boundsReads(), 1);
+  c.renderMarkers(1000);
+  assert.equal(Object.keys(c.markerMap).length, 89);
+  assert.equal(boundsReads(), 2);
+});
+
+test("hot path: plane diffs send only changed geometry and properties, including removal and re-add", () => {
+  const { context: c, uploads, diffs } = hotPathRenderContext();
+  c.markerMap = { abc123: { lat: 1, lng: 2, props: { hex: "abc123", label: "A", selected: false } },
+    def456: { lat: 3, lng: 4, props: { hex: "def456", label: "B", selected: false } } };
+  c.pushPlaneLayer();
+  assert.equal(uploads.length, 1);
+  assert.equal(uploads[0].features.length, 2);
+  assert.equal(uploads[0].features[0].id, "abc123");
+  c.pushPlaneLayer();
+  assert.equal(uploads.length, 1);
+  assert.equal(diffs.length, 0);
+  c.markerMap.abc123.lat = 1.25;
+  c.markerMap.abc123.props = { ...c.markerMap.abc123.props, selected: true };
+  c.pushPlaneLayer();
+  assert.deepEqual(JSON.parse(JSON.stringify(diffs[0].update)), [{ id: "abc123",
+    newGeometry: { type: "Point", coordinates: [2, 1.25] }, addOrUpdateProperties: [{ key: "selected", value: true }] }, { id: "def456" }]);
+  delete c.markerMap.def456;
+  c.pushPlaneLayer();
+  assert.deepEqual(Array.from(uploads[1].features, f => f.id), ["abc123"]);
+  c.markerMap.def456 = { lat: 5, lng: 6, props: { hex: "def456", label: "C" } };
+  c.pushPlaneLayer();
+  assert.equal(uploads[2].features[1].properties.label, "C");
+});
+
+test("hot path: held trails reuse geometry but moving time, history, selection and zoom keep exact styles", () => {
+  const { context: c, uploads } = hotPathRenderContext();
+  c.FETCH_TIMEOUT_MS = 20000;
+  vm.runInContext(fs.readFileSync(require.resolve("./js/data.js"), "utf8"), c);
+  c.currentDisplayTime = now => now;
+  c.altColor = alt => "alt-" + alt;
+  c.GROUND_COLOR = "gray";
+  const a = { icao24: "abc123", lat: 0, lng: 0, ground: false };
+  c.aircraft = [a];
+  c.posHistory.abc123 = [[0, 0, 1000, 1000, false], [0.1, 0.1, 2000, 2000, false], [0.2, 0.2, 3000, 3000, false]];
+  let pose = { lat: 0.15, lng: 0.15, ts: 2500 };
+  const build = c.buildDisplayTrailSegments;
+  let builds = 0;
+  c.buildDisplayTrailSegments = (...args) => { builds++; return build(...args); };
+  const draw = () => c.renderTrails(10000, { abc123: pose });
+  draw(); draw();
+  assert.equal(builds, 1);
+  assert.equal(uploads.length, 1);
+  const verify = () => {
+    draw();
+    const expected = build(c.posHistory.abc123, a, pose, 10000).map(seg => ({ type: "Feature",
+      properties: { color: seg.color, opacity: seg.opacity, width: seg.weight },
+      geometry: { type: "LineString", coordinates: seg.latlngs.map(p => [p[1], p[0]]) } }));
+    assert.deepEqual(JSON.parse(JSON.stringify(uploads.at(-1).features)), JSON.parse(JSON.stringify(expected)));
+  };
+  pose = { ...pose, ts: 2750 }; verify();
+  c.posHistory.abc123.push([0.3, 0.3, 4000, 4000, false]); verify();
+  c.selectedAircraftId = a.icao24; verify();
+  c.map.getZoom = () => 11; verify();
+  assert.equal(builds, 5);
+  c.aircraft = []; draw(); draw();
+  assert.equal(uploads.at(-1).features.length, 0);
+  assert.equal(uploads.length, 6);
+});
+
+test("hot path: airport grid preserves nearby candidates at cell edges, poles and dateline", () => {
+  const airports = JSON.parse(fs.readFileSync(require.resolve("./airports.json"), "utf8"));
+  airports.push(["EAST", 0, 179.95], ["WEST", 0, -179.95], ["POLE", 89.9, 130]);
+  const grid = core.buildAirportGrid(airports);
+  for (const [lat, lng] of [[51.4776, -0.38], [0, 180], [0, -180], [89.9, -40], [-89.9, 40], [40, -74]]) {
+    for (const km of [30, 80]) {
+      const expected = airports.filter(ap => core.haversineKm(lat, lng, ap[1], ap[2]) < km);
+      const nearby = core.airportGridCandidates(grid, lat, lng, km);
+      assert.deepEqual(nearby.filter(ap => core.haversineKm(lat, lng, ap[1], ap[2]) < km), expected);
+      assert.ok(nearby.length < airports.length / 4);
+    }
+  }
+});
+
+test("hot path: convergence tests nearby airport cells instead of the full catalog", () => {
+  let distances = 0;
+  const c = classicScript("./js/data.js", {
+    FETCH_TIMEOUT_MS: 20000, airportData: [["LHR", 51.4776, -0.38, "Heathrow"],
+      ...Array.from({ length: 1000 }, (_, i) => ["FAR" + i, -40, i / 10, "Far"])],
+    aircraft: [{ icao24: "abc123", callsign: "BAW1", lat: 51.48, lng: -0.38, altFt: 2000, vRate: 10 }],
+    routeCache: {}, haversineKm: (...args) => { distances++; return core.haversineKm(...args); },
+    formatClientRouteLabel: origin => origin.iata
+  });
+  c.clientConvergenceRefine();
+  assert.equal(c.routeCache.BAW1.origin.iata, "LHR");
+  assert.ok(distances < 10, "distance checks: " + distances);
+});
+
+test("hot path: schedule cascade indexes flight aliases once per fetched snapshot", () => {
+  let reads = 0;
+  const data = { departures: Array.from({ length: 1000 }, (_, i) => ({
+    get flight() { reads++; return "UA" + (i + 1); }, to_iata: "LAX", sched_dep: SCHEDULE_SEC, live: true
+  })) };
+  const c = classicScript("./js/render.js", {
+    Date: class extends Date { static now() { return SCHEDULE_NOW; } },
+    airportData: [["SFO", 37.62, -122.375, "San Francisco"]],
+    aircraft: Array.from({ length: 20 }, (_, i) => ({ ...schedulePlane, callsign: "UAL" + (i + 1) })),
+    routeCache: {}, SCHEDULE_CACHE_TTL: 300000, scheduleDataCache: { SFO: { ts: SCHEDULE_NOW, data } },
+    formatClientRouteLabel: (o, d) => o.iata + " to " + d.iata
+  });
+  assert.equal(c.cascadeScheduleMatches(), 20);
+  assert.equal(c.routeCache.UAL20.destination.iata, "LAX");
+  c.routeCache = {};
+  const firstReads = reads;
+  assert.equal(c.cascadeScheduleMatches(), 20);
+  assert.ok(firstReads <= 1100, "first snapshot reads: " + firstReads);
+  assert.ok(reads - firstReads < 100, "cached snapshot must not scan rows");
+  c.scheduleDataCache.SFO = { ts: SCHEDULE_NOW, data: { departures: [departureRow("JFK", { callsign: "UAL1" })] } };
+  c.routeCache = {};
+  assert.equal(c.cascadeScheduleMatches(), 1);
+  assert.equal(c.routeCache.UAL1.destination.iata, "JFK");
+});
+
+test("hot path: empty animation stops without uploading and restarts when markers arrive", () => {
+  const { context: c, uploads, frames } = hotPathRenderContext();
+  c.animateMarkers();
+  c.renderTrails(1000);
+  assert.equal(frames.length, 0);
+  assert.equal(uploads.length, 0);
+  c.aircraft = [{ icao24: "abc123", lat: 0, lng: 0, reportTs: 1000 }];
+  c.renderMarkers(1000);
+  assert.equal(frames.length, 1);
+});
+
+test("hot path: coverage checks circle unions, holes, dateline and high latitudes", () => {
+  const covers = core.trafficCirclesCoverBounds;
+  assert.equal(covers([{ lat: 0, lng: -0.8, km: 110 }, { lat: 0, lng: 0.8, km: 110 }], core.viewBounds(0.2, -0.2, 1.5, -1.5)), true);
+  const corners = [-1, 1].flatMap(lat => [-1, 1].map(lng => ({ lat, lng, km: 40 })));
+  assert.equal(covers(corners, core.viewBounds(1, -1, 1, -1)), false);
+  assert.equal(covers([{ lat: 0, lng: -179.9, km: 100 }], core.viewBounds(0.1, -0.1, 180.2, 179.8)), true);
+  assert.equal(covers([{ lat: 89, lng: 0, km: 160 }], core.viewBounds(89.2, 88.8, 45, -45)), true);
+});
+
+test("hot path: covered viewport requests survive pans while uncovered views and resume replace them", async () => {
+  const pending = [];
+  let spec = { center: { lat: 0, lng: 0 }, bounds: core.viewBounds(0.05, -0.05, 0.05, -0.05), visibleKm: 8, fetchKm: 50 };
+  const c = classicScript("./js/data.js", {
+    FETCH_TIMEOUT_MS: 20000, map: {}, AbortController, setTimeout: () => 1, clearTimeout() {},
+    clearMapFetchTimer() {}, clearRefreshTimer() {}, syncUrlState() {}, scheduleRefreshTimer() {}, adaptiveRefreshMs: () => 5000,
+    fetchAbortController: null, activeFetchUrl: null, activeFetchStartedAt: 0, fetchRequestSeq: 0,
+    trafficFailStreak: 0, currentViewportFetchSpec: () => spec, VIEW_FILTER_PAD: 0.1
+  });
+  c.viewCoverage = () => null;
+  c.trafficUrl = (lat, lng, km) => [lat, lng, km].join("/");
+  c.fetchTrafficCircles = (circles, signal) => new Promise(resolve => pending.push({ signal, resolve }));
+  c.processAircraft = () => {};
+  c.trafficSource = null;
+  c.setTrafficStale = c.updateControlsCompactSummary = c.updateViewHint = () => {};
+  c.visibleAircraftCount = () => 0;
+  const first = c.fetchAircraft();
+  spec = { ...spec, center: { lat: 0, lng: 0.1 }, bounds: core.viewBounds(0.05, -0.05, 0.15, 0.05) };
+  const covered = c.fetchAircraft({ source: "viewport" });
+  assert.equal(pending.length, 1);
+  assert.equal(pending[0].signal.aborted, false);
+  await covered;
+  spec = { ...spec, center: { lat: 0, lng: 2 }, bounds: core.viewBounds(0.05, -0.05, 2.05, 1.95) };
+  const moved = c.fetchAircraft({ source: "viewport" });
+  assert.equal(pending[0].signal.aborted, true);
+  assert.equal(pending.length, 2);
+  const resumed = c.fetchAircraft({ source: "resume" });
+  assert.equal(pending[1].signal.aborted, true);
+  pending[2].resolve({ ac: [] });
+  await Promise.all([first, moved, resumed]);
+  assert.equal(c.fetchAbortController, null);
+});
