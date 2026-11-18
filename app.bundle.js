@@ -2876,7 +2876,7 @@ function updateControlsCompactSummary(visibleCount) {
   var outage = trafficFetchOk === false && trafficOutage(trafficFailStreak, lastTrafficOkAt, Date.now());
   var degraded = trafficSource === "backup" && trafficFetchOk === true;
   if (outage) {
-    summary = aircraft.length ? "Live traffic unavailable \u00b7 retrying" : "Live traffic temporarily unavailable";
+    summary = aircraft.length ? "Feed offline \u00b7 retrying" : "Live traffic temporarily unavailable";
   } else if (visibleCount > 0) {
     summary = visibleCount + " planes in view";
   } else if (aircraft.length) {
