@@ -5,7 +5,7 @@
     {"callsign":"JAL1","core":["Japan Airlines",false],"frontendRegional":false,"nearby":["Japan Airlines",false],"airport":["Japan Airlines",false],"routes":false},
     {"callsign":"JA123A","core":[null,true],"frontendRegional":true,"nearby":[null,true],"airport":[null,true],"routes":true},
     {"callsign":"JA01KZ","core":[null,true],"frontendRegional":true,"nearby":[null,true],"airport":[null,true],"routes":true},
-    {"callsign":"HLF123","core":[null,false],"frontendRegional":true,"nearby":[null,false],"airport":[null,false],"routes":false,"regionalFix":{"frontendRegional":false}},
+    {"callsign":"HLF123","core":[null,false],"frontendRegional":true,"nearby":[null,false],"airport":[null,false],"routes":false},
     {"callsign":"HL7612","core":[null,true],"frontendRegional":true,"nearby":[null,true],"airport":[null,true],"routes":true},
     {"callsign":"N123AB","core":[null,true],"frontendRegional":true,"nearby":[null,true],"airport":[null,true],"routes":true},
     {"callsign":"N12345","core":[null,true],"frontendRegional":true,"nearby":[null,true],"airport":[null,true],"routes":true},
@@ -26,8 +26,8 @@
     {"callsign":"EDV4800","core":[null,false],"frontendRegional":true,"nearby":[null,false],"airport":[null,false],"routes":false,"regionalFix":{"core":["Endeavor",false],"nearby":["Endeavor",false],"airport":["Endeavor",false],"frontendRegional":false}},
     {"callsign":"~abcdef","core":[null,true],"frontendRegional":true,"nearby":[null,true],"airport":[null,true],"routes":true},
     {"callsign":"abcdef","core":[null,true],"frontendRegional":true,"nearby":[null,true],"airport":[null,true],"routes":false},
-    {"callsign":"ABC123","core":[null,true],"frontendRegional":true,"nearby":[null,true],"airport":[null,true],"routes":false,"regionalFix":{"core":[null,false],"nearby":[null,false],"airport":[null,false],"frontendRegional":false}},
-    {"callsign":"ZZZ42AB","core":[null,false],"frontendRegional":true,"nearby":[null,false],"airport":[null,false],"routes":false,"regionalFix":{"frontendRegional":false}},
+    {"callsign":"ABC123","core":[null,true],"frontendRegional":true,"nearby":[null,true],"airport":[null,true],"routes":false},
+    {"callsign":"ZZZ42AB","core":[null,false],"frontendRegional":true,"nearby":[null,false],"airport":[null,false],"routes":false},
     {"callsign":"","core":[null,false],"frontendRegional":true,"nearby":[null,false],"airport":[null,false],"routes":true},
     {"callsign":null,"core":[null,false],"frontendRegional":true,"nearby":[null,false],"airport":[null,false],"routes":true}
   ]

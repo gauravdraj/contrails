@@ -4,6 +4,7 @@
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   root.ContrailsCore = api;
 })(typeof globalThis !== "undefined" ? globalThis : this, function(airlinesData) {
+  airlinesData = airlinesData || { airlines: {}, privateRegistrationPrefixes: [], fractionalCallsignPrefixes: [] };
   var CARDINALS = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
 
   function roundTenths(value) {
@@ -449,7 +450,7 @@
         Number.isFinite(source.lat) && Number.isFinite(source.lng) &&
         haversineKm(aircraft.lat, aircraft.lng, source.lat, source.lng) < 80;
       var direction = null;
-      if (near && aircraft.altFt != null && aircraft.altFt < 18000 && aircraft.vRate != null) {
+      if (near && !aircraft.ground && aircraft.altFt != null && aircraft.altFt < 18000 && aircraft.vRate != null) {
         if (aircraft.vRate * 60 > 200) direction = "departure";
         if (aircraft.vRate * 60 < -200) direction = "arrival";
       }
@@ -465,7 +466,9 @@
         for (var i = 0; i < rows.length; i++) {
           var row = rows[i];
           var status = String(row.status || "").toLowerCase();
-          if (/cancel|landed|arrived/.test(status) || row.actual_arr > 0) continue;
+          var recentArrival = aircraft.ground && dir === "arrival" && Number.isFinite(row.actual_arr) &&
+            row.actual_arr > 0 && row.actual_arr <= nowSec && nowSec - row.actual_arr <= 90 * 60;
+          if (/cancel/.test(status) || (!recentArrival && (/landed|arrived/.test(status) || row.actual_arr > 0))) continue;
           var time = null;
           ["actual_", "est_", "sched_"].some(function(key) {
             var value = row[key + suffix];
@@ -480,9 +483,9 @@
           var match = { dir: dir, airport: source.iata, airportName: data.name || source.iata, row: row };
           if (dir === "arrival") match.from = row.from_iata || null;
           else match.to = row.to_iata || null;
-          candidates.push({ match: match, directionRank: direction ? 0 : 1,
-            score: distance + (live ? 0 : 3600),
-            route: [dir, source.iata, match.from || match.to || ""].join(":") });
+          candidates.push({ match: match, directionRank: recentArrival ? -1 : (direction ? 0 : 1),
+            score: distance + (live || recentArrival ? 0 : 3600),
+            route: (dir === "arrival" ? [match.from || "", source.iata] : [source.iata, match.to || ""]).join(":") });
         }
       });
     }
@@ -560,7 +563,7 @@
 
   // Registration-shaped callsigns. Japan (JA) and Korea (HL) write registrations without a dash, so only
   // JA/HL followed by a digit count; JAL123 is an airline flight.
-  var _PRIV_REG = new RegExp("^(?:" + airlinesData.privateRegistrationPrefixes.join("|") + ")", "i");
+  var _PRIV_REG = new RegExp("^(?:" + (airlinesData.privateRegistrationPrefixes.join("|") || "(?!)") + ")", "i");
   var _PRIV_ANON_HEX = /^~[0-9a-f]{4,}$/i;
   var _PRIV_HEXLIKE = /^(?:~)?[0-9a-f]{6}$/i;
 
@@ -568,7 +571,7 @@
     if (!callsign || _PRIV_REG.test(callsign) || _PRIV_ANON_HEX.test(callsign)) return false;
     // Fractional operators retain the aircraft-size fallback (e.g. EJA on a business jet is private).
     if (airlinesData.fractionalCallsignPrefixes.indexOf(callsign.substring(0, 3).toUpperCase()) !== -1) return false;
-    return !!airlineName(callsign) || /^[A-Z]{3}\d{1,4}[A-Z]{0,2}$/i.test(callsign);
+    return !!airlineName(callsign);
   }
 
   function isLikelyPrivateCallsign(callsign) {
@@ -618,9 +621,19 @@
     return Math.max(groundBound, gapBound);
   }
 
+  function normalizeRunwayDesignator(designator) {
+    return String(designator).trim().toUpperCase().replace(/^0+/, "");
+  }
+
+  function reciprocalRunwayDesignator(designator) {
+    var match = normalizeRunwayDesignator(designator).match(/^(\d{1,2})([LRC]?)$/);
+    if (!match || +match[1] < 1 || +match[1] > 36) return null;
+    return String((+match[1] + 17) % 36 + 1) + (match[2] === "L" ? "R" : match[2] === "R" ? "L" : match[2]);
+  }
+
   function matchRunwayDesignator(runwayEntries, iata, designator) {
     if (!runwayEntries || !runwayEntries.length || !iata || !designator) return null;
-    var desig = String(designator).toUpperCase().replace(/^0+/, "");
+    var desig = normalizeRunwayDesignator(designator);
     if (!desig) return null;
     var numMatch = desig.match(/^(\d{1,2})/);
     if (!numMatch) return null;
@@ -636,8 +649,8 @@
       if (upper.indexOf(prefix) !== 0) continue;
       var parts = upper.substring(prefix.length).split("/");
       if (parts.length !== 2) continue;
-      var side1 = parts[0].replace(/^0+/, "") || "0";
-      var side2 = parts[1].replace(/^0+/, "") || "0";
+      var side1 = normalizeRunwayDesignator(parts[0]) || "0";
+      var side2 = normalizeRunwayDesignator(parts[1]) || "0";
       if (side1 !== desig && side2 !== desig) continue;
 
       var lat1 = entry[0], lon1 = entry[1];
@@ -692,8 +705,17 @@
       if (a.altFt != null && a.altFt > maxAltFt) continue;
       var vRateFpm = a.vRate != null ? a.vRate * 60 : null;
       if (!a.ground && Number.isFinite(a.altFt) && vRateFpm != null && vRateFpm <= 0) {
-        var approach = approachPathKm(a.lat, a.lng, a.track, arrivalEnds);
-        if (approach && approach.onFinal) arriving[approach.runway.designator] = true;
+        // Staggered parallels share the final corridor; the closest centerline identifies the runway.
+        // Keep approachPathKm's shortest-path choice for ETA callers.
+        var bestEnd = null, bestCrossTrack = Infinity;
+        for (var e = 0; e < arrivalEnds.length; e++) {
+          var end = arrivalEnds[e];
+          var approach = approachPathKm(a.lat, a.lng, a.track, [end]);
+          if (!approach || !approach.onFinal) continue;
+          var xt = Math.abs(crossTrackKm(a.lat, a.lng, end.thresholdLat, end.thresholdLon, end.farEndLat, end.farEndLon));
+          if (xt < bestCrossTrack) { bestEnd = end; bestCrossTrack = xt; }
+        }
+        if (bestEnd) arriving[bestEnd.designator] = true;
       }
       if (vRateFpm == null) continue;
       var isDep = vRateFpm >= climbFpm;
@@ -709,8 +731,8 @@
         if (typeof label !== "string" || label.toUpperCase().indexOf(prefix) !== 0) continue;
         var parts = label.toUpperCase().substring(prefix.length).split("/");
         if (parts.length !== 2) continue;
-        var d0 = parts[0].trim();
-        var d1 = parts[1].trim();
+        var d0 = normalizeRunwayDesignator(parts[0]);
+        var d1 = normalizeRunwayDesignator(parts[1]);
         // Pick the designator matching the aircraft's direction of travel.
         var h0 = parseInt(d0, 10) * 10;
         var h1 = parseInt(d1, 10) * 10;
@@ -730,14 +752,27 @@
   function updateActiveRunwayMemory(memory, derived, nowMs, windowMs) {
     windowMs = windowMs == null ? 15 * 60 * 1000 : windowMs;
     var seen = {}, active = {};
+    var reciprocals = {};
+    ["departing_runways", "arriving_runways"].forEach(function(key) {
+      (derived && derived[key] || []).forEach(function(runway) {
+        var reciprocal = reciprocalRunwayDesignator(runway);
+        if (reciprocal) reciprocals[reciprocal] = true;
+      });
+    });
     ["departing_runways", "arriving_runways"].forEach(function(key) {
       var previous = memory && memory[key] || {};
       var current = seen[key] = {};
       Object.keys(previous).forEach(function(runway) {
-        if (nowMs - previous[runway] <= windowMs) current[runway] = previous[runway];
+        var normalized = normalizeRunwayDesignator(runway);
+        if (!reciprocals[normalized] && nowMs - previous[runway] <= windowMs) {
+          current[normalized] = Math.max(current[normalized] == null ? -Infinity : current[normalized], previous[runway]);
+        }
       });
       var observed = derived && derived[key] || [];
-      observed.forEach(function(runway) { current[runway] = nowMs; });
+      observed.forEach(function(runway) {
+        delete current[reciprocalRunwayDesignator(runway)];
+        current[normalizeRunwayDesignator(runway)] = nowMs;
+      });
       active[key] = Object.keys(current);
     });
     return { seen: seen, active: active.departing_runways.length || active.arriving_runways.length ? active : null };
@@ -760,7 +795,7 @@
       var tokenRe = /\b([0-3]?\d[CLR]?)\b/g;
       var t;
       while ((t = tokenRe.exec(segment))) {
-        target[t[1]] = true;
+        target[normalizeRunwayDesignator(t[1])] = true;
       }
     }
 
@@ -779,7 +814,7 @@
         var tokenRe = /\b([0-3]?\d[CLR]?)\b/g;
         var t;
         while ((t = tokenRe.exec(segment))) {
-          target[t[1]] = true;
+          target[normalizeRunwayDesignator(t[1])] = true;
         }
       }
     }

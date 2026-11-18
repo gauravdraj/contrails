@@ -18,5 +18,5 @@ export function isLikelyPrivateCallsign(callsign, options = {}) {
 export function isAirlineCallsign(callsign) {
   if (!callsign || PRIV_REG.test(callsign) || PRIV_ANON_HEX.test(callsign)) return false;
   if (AIRLINES_DATA.fractionalCallsignPrefixes.includes(callsign.substring(0, 3).toUpperCase())) return false;
-  return !!airlineName(callsign) || /^[A-Z]{3}\d{1,4}[A-Z]{0,2}$/i.test(callsign);
+  return !!airlineName(callsign);
 }

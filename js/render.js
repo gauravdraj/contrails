@@ -313,8 +313,13 @@ function runOriginDetection(hex, data) {
   if (!bestApt || bestDist > 15) return;
   var origin = { iata: bestApt[0], name: bestApt[3] };
   if (rc && rc.origin && rc.origin.iata === origin.iata &&
-      (rc.originSource === "track" || rc.originSource === "cross-validated")) return;
+      (rc.originSource === "track" || rc.originSource === "cross-validated") &&
+      !(rc.destination && rc.destination.iata === origin.iata)) return;
   if (rc) {
+    if (rc.destination && rc.destination.iata === origin.iata) {
+      rc.destination = null;
+      rc.destSource = null;
+    }
     if (rc.originSource === "adsbdb" && rc.origin && rc.origin.iata === origin.iata &&
         rc.destSource === "adsbdb" && rc.destination) {
       rc.destSource = "cross-validated";
