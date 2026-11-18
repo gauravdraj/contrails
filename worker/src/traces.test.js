@@ -1,29 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-const { normalizeTrace } = await import("./traces.js").then(m => {
-  return { normalizeTrace: m.normalizeTrace || m.default?.normalizeTrace };
-});
-
-// normalizeTrace isn't exported, so we test via a small shim.
-// For now, test the logic inline.
-
-function normalizeTraceLocal(raw) {
-  if (!raw?.trace?.length || !raw.timestamp) return null;
-  const baseTime = raw.timestamp;
-  const path = [];
-  for (const pt of raw.trace) {
-    const timeSec = baseTime + pt[0];
-    const lat = pt[1];
-    const lon = pt[2];
-    const altFt = pt[3];
-    const heading = pt[5];
-    const altM = altFt != null ? altFt * 0.3048 : null;
-    const onGround = altFt != null && altFt <= 0;
-    path.push([timeSec, lat, lon, altM, heading ?? 0, onGround]);
-  }
-  return { icao24: raw.icao, path };
-}
+import { normalizeTrace } from "./traces.js";
 
 test("normalizeTrace converts readsb trace to OpenSky format", () => {
   const raw = {
@@ -35,7 +13,7 @@ test("normalizeTrace converts readsb trace to OpenSky format", () => {
       [120.0, 38.53, -122.83, 5000, 120.0, 350.0, 4, 0, null, "adsb_icao", 5100, 0, null, null],
     ],
   };
-  const result = normalizeTraceLocal(raw);
+  const result = normalizeTrace(raw);
   assert.equal(result.icao24, "a19c4b");
   assert.equal(result.path.length, 3);
 
@@ -61,17 +39,17 @@ test("normalizeTrace handles ground aircraft (alt <= 0)", () => {
       [10.0, 40.0, -74.0, -50, 5.0, 90.0, 5, 0, null, "adsb_icao", 0, 0, null, null],
     ],
   };
-  const result = normalizeTraceLocal(raw);
+  const result = normalizeTrace(raw);
   assert.equal(result.path[0][5], true, "alt=0 should be on ground");
   assert.equal(result.path[1][5], true, "negative alt should be on ground");
   assert.equal(result.path[0][3], 0);
 });
 
 test("normalizeTrace returns null for missing data", () => {
-  assert.equal(normalizeTraceLocal(null), null);
-  assert.equal(normalizeTraceLocal({}), null);
-  assert.equal(normalizeTraceLocal({ timestamp: 1000, trace: [] }), null);
-  assert.equal(normalizeTraceLocal({ icao: "abc123", trace: [[0, 1, 2, 3]] }), null);
+  assert.equal(normalizeTrace(null), null);
+  assert.equal(normalizeTrace({}), null);
+  assert.equal(normalizeTrace({ timestamp: 1000, trace: [] }), null);
+  assert.equal(normalizeTrace({ icao: "abc123", trace: [[0, 1, 2, 3]] }), null);
 });
 
 test("normalizeTrace handles null altitude", () => {
@@ -80,7 +58,7 @@ test("normalizeTrace handles null altitude", () => {
     timestamp: 1000000,
     trace: [[0.0, 38.5, -122.8, null, 100.0, 270.0, 0, null, null, null, null, null, null, null]],
   };
-  const result = normalizeTraceLocal(raw);
+  const result = normalizeTrace(raw);
   assert.equal(result.path[0][3], null);
   assert.equal(result.path[0][5], false, "null alt should not be flagged as ground");
 });
@@ -91,6 +69,38 @@ test("normalizeTrace handles null heading", () => {
     timestamp: 1000000,
     trace: [[0.0, 38.5, -122.8, 5000, 100.0, null, 4, 0, null, null, null, null, null, null]],
   };
-  const result = normalizeTraceLocal(raw);
+  const result = normalizeTrace(raw);
   assert.equal(result.path[0][4], 0, "null heading should default to 0");
+});
+
+test("normalizeTrace treats readsb \"ground\" altitude as on-ground at 0 m", () => {
+  const raw = {
+    icao: "abc123",
+    timestamp: 1000000,
+    trace: [
+      [0.0, 37.6, -122.4, "ground", 12.0, 280.0, 0, null, null, "adsb_icao", null, null, null, null],
+      [30.0, 37.61, -122.41, 400, 140.0, 280.0, 0, 1500, null, "adsb_icao", 425, 1500, null, null],
+    ],
+  };
+  const result = normalizeTrace(raw);
+  assert.equal(result.path[0][5], true, "\"ground\" should set onGround");
+  assert.equal(result.path[0][3], 0, "\"ground\" altitude should be 0 m, not NaN");
+  assert.equal(result.path[1][5], false);
+});
+
+test("normalizeTrace maps non-numeric altitude to unknown (null), not NaN", () => {
+  const raw = {
+    icao: "abc123",
+    timestamp: 1000000,
+    trace: [
+      [0.0, 37.6, -122.4, "bogus", 12.0, 280.0],
+      [10.0, 37.6, -122.4, "12000", 12.0, 280.0],
+      [20.0, 37.6, -122.4, NaN, 12.0, 280.0],
+    ],
+  };
+  const result = normalizeTrace(raw);
+  for (const pt of result.path) {
+    assert.equal(pt[3], null);
+    assert.equal(pt[5], false);
+  }
 });

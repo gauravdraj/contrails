@@ -123,6 +123,97 @@ test("buildAirportPlane detects private aircraft", () => {
   assert.equal(plane.priv, true);
 });
 
+test("buildAirportPlane: Japanese/Korean airline callsigns are not private; registrations are", () => {
+  const row = (flight) => ({ hex: "a00001", flight, lat: 37.65, lon: -122.40, alt_baro: 3000 });
+  const jal = buildAirportPlane(37.62, -122.38, row("JAL1    "));
+  assert.equal(jal.priv, false);
+  assert.equal(jal.airline, "Japan Airlines");
+  assert.equal(buildAirportPlane(37.62, -122.38, row("JAL123")).priv, false);
+  assert.equal(buildAirportPlane(37.62, -122.38, row("JA123A")).priv, true);
+  assert.equal(buildAirportPlane(37.62, -122.38, row("HL7612")).priv, true);
+  assert.equal(buildAirportPlane(37.62, -122.38, row("C-IABC")).priv, true);
+});
+
+test("buildAirportPlane tolerates malformed rows and drops stale positions", () => {
+  assert.equal(buildAirportPlane(37.62, -122.38, null), null);
+  const numeric = buildAirportPlane(37.62, -122.38, { hex: "a00002", flight: 12345, lat: 37.65, lon: -122.40, alt_baro: 3000 });
+  assert.ok(numeric);
+  assert.equal(numeric.callsign, null);
+  assert.equal(buildAirportPlane(37.62, -122.38, { hex: "a00003", flight: "UAL1", lat: 37.65, lon: -122.40, alt_baro: 3000, seen_pos: 75 }), null);
+  assert.ok(buildAirportPlane(37.62, -122.38, { hex: "a00004", flight: "UAL2", lat: 37.65, lon: -122.40, alt_baro: 3000, seen_pos: 3 }));
+});
+
+test("handleAirport with 100 aircraft makes <= 20 FR24 searches, prioritising board candidates", async (t) => {
+  const originalCaches = globalThis.caches;
+  const originalFetch = globalThis.fetch;
+  globalThis.caches = { default: { match: async () => null, put: async () => {}, delete: async () => true } };
+  const searched = [];
+  let inFlight = 0;
+  let maxInFlight = 0;
+  const ac = [];
+  // 90 climbing-out / cruising planes that can't be SFO arrivals, then 10 descending ones.
+  for (let i = 0; i < 90; i++) {
+    ac.push({ hex: "c" + String(i).padStart(5, "0"), flight: "CLB" + String(i).padStart(3, "0"), lat: 37.9 + i * 0.001, lon: -122.0, alt_baro: 20000, baro_rate: 1500 });
+  }
+  for (let i = 0; i < 10; i++) {
+    ac.push({ hex: "d" + String(i).padStart(5, "0"), flight: "DSC" + String(i).padStart(3, "0"), lat: 37.7, lon: -122.3, alt_baro: 4000 + i * 100, baro_rate: -800 });
+  }
+  globalThis.fetch = async (url) => {
+    const urlStr = String(url);
+    if (urlStr.includes("api.adsb.lol")) return new Response(JSON.stringify({ ac }), { status: 200 });
+    inFlight++;
+    maxInFlight = Math.max(maxInFlight, inFlight);
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    inFlight--;
+    if (urlStr.includes("flightradar24.com")) {
+      searched.push(new URL(urlStr).searchParams.get("query"));
+      return new Response(JSON.stringify({ results: [] }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ response: {} }), { status: 200 });
+  };
+  t.after(() => {
+    globalThis.caches = originalCaches;
+    globalThis.fetch = originalFetch;
+  });
+
+  const resp = await handleAirport(new URL("https://worker.test/airport/SFO?format=json"), {}, { waitUntil: () => {} });
+  assert.equal(resp.status, 200);
+  assert.ok(searched.length <= 20, `expected <= 20 FR24 searches, got ${searched.length}`);
+  assert.ok(maxInFlight <= 4, `expected <= 4 lookups in flight, got ${maxInFlight}`);
+  for (let i = 0; i < 10; i++) {
+    assert.ok(searched.includes("DSC" + String(i).padStart(3, "0")), "descending arrival candidates are enriched");
+  }
+  assert.ok(!searched.some((q) => q.startsWith("CLB")), "climbing planes are not arrival candidates");
+});
+
+test("handleAirport skips a null aircraft row instead of failing the snapshot", async (t) => {
+  const originalCaches = globalThis.caches;
+  const originalFetch = globalThis.fetch;
+  globalThis.caches = { default: { match: async () => null, put: async () => {} } };
+  globalThis.fetch = async (url) => {
+    const urlStr = String(url);
+    if (urlStr.includes("api.adsb.lol")) {
+      return new Response(JSON.stringify({
+        ac: [
+          null,
+          { hex: "a12345", flight: 777, lat: 37.65, lon: -122.40, alt_baro: 3500, gs: 180, baro_rate: -800 },
+          { hex: "b12345", flight: "UAL123  ", t: "B738", lat: 37.64, lon: -122.39, alt_baro: 3000, gs: 170, baro_rate: -700 },
+        ],
+      }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ response: {} }), { status: 200 });
+  };
+  t.after(() => {
+    globalThis.caches = originalCaches;
+    globalThis.fetch = originalFetch;
+  });
+
+  const resp = await handleAirport(new URL("https://worker.test/airport/SFO?format=json"), {}, { waitUntil: () => {} });
+  assert.equal(resp.status, 200);
+  const body = await resp.json();
+  assert.ok(body.arrivals.some((a) => a.callsign === "UAL123"));
+});
+
 test("buildAirportPlane handles missing optional fields", () => {
   const plane = buildAirportPlane(37.62, -122.38, {
     hex: "d12345",

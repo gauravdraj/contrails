@@ -2,11 +2,15 @@ import { json } from "./http.js";
 
 const ADSBDB_API = "https://api.adsbdb.com/v0";
 const ADSBDB_HEADERS = { "User-Agent": "contrails/1.0 (+https://gauravdraj.github.io/contrails/)" };
+const ADSBDB_TIMEOUT_MS = 8000;
+// Callsigns go into the ADSBDB URL path and the cache key, so only plain
+// ICAO/IATA-style callsigns are accepted.
+const CALLSIGN_PATTERN = /^[A-Z0-9]{2,8}$/;
 
 export function normalizeCallsign(callsign) {
   if (!callsign) return null;
-  const normalized = callsign.trim().toUpperCase();
-  return normalized || null;
+  const normalized = String(callsign).trim().toUpperCase();
+  return CALLSIGN_PATTERN.test(normalized) ? normalized : null;
 }
 
 export function buildRouteEntry(callsign, route) {
@@ -49,6 +53,7 @@ async function fetchFlightroute(callsign) {
 
   const resp = await fetch(`${ADSBDB_API}/callsign/${normalized}`, {
     headers: ADSBDB_HEADERS,
+    signal: AbortSignal.timeout(ADSBDB_TIMEOUT_MS),
   });
   if (!resp.ok) return null;
 
@@ -110,6 +115,7 @@ async function fetchAircraftRecord(hex) {
 
   const resp = await fetch(`${ADSBDB_API}/aircraft/${normalized}`, {
     headers: ADSBDB_HEADERS,
+    signal: AbortSignal.timeout(ADSBDB_TIMEOUT_MS),
   });
   if (!resp.ok) return null;
 

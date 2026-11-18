@@ -155,3 +155,43 @@ test("nearby display exposes photo-friendly identifiers", () => {
   assert.equal(summary.plane.routeLine, "London Heathrow -> New York JFK");
   assert.match(summary.text, /British Airways 456 \(B772\) \[G-YMMN\]/);
 });
+
+test("Japanese/Korean airline callsigns are not private in /nearby; registrations still are", () => {
+  const row = (flight) => ({ hex: "aabbcc", flight, lat: 37.63, lon: -122.39, alt_baro: 30000, gs: 450 });
+  const jal = __nearbyTest.buildNearbyPlane(37.62, -122.38, row("JAL1    "));
+  assert.equal(jal.priv, false);
+  assert.equal(jal.airline, "Japan Airlines");
+  assert.equal(__nearbyTest.buildNearbyPlane(37.62, -122.38, row("JAL123  ")).priv, false);
+  assert.equal(__nearbyTest.buildNearbyPlane(37.62, -122.38, row("JA123A  ")).priv, true);
+  assert.equal(__nearbyTest.buildNearbyPlane(37.62, -122.38, row("HL7612  ")).priv, true);
+  assert.equal(__nearbyTest.buildNearbyPlane(37.62, -122.38, row("C-GABC  ")).priv, true);
+});
+
+test("nearby skips malformed and stale-position rows instead of failing the snapshot", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const originalCaches = globalThis.caches;
+  globalThis.caches = undefined;
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    ac: [
+      null,
+      { hex: "aaaaa1", flight: 12345, lat: 37.625, lon: -122.385, alt_baro: 9000 },
+      { hex: "aaaaa2", flight: "SWA1    ", lat: 37.621, lon: -122.381, alt_baro: 9000, seen_pos: 120 },
+      { hex: "aabbcc", flight: "UAL238 ", t: "A320", lat: 37.63, lon: -122.39, alt_baro: 8700, gs: 240, baro_rate: -500, track: 140, seen_pos: 1.2 },
+    ],
+  }), { status: 200, headers: { "Content-Type": "application/json" } });
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+    globalThis.caches = originalCaches;
+  });
+
+  const response = await handler.fetch(
+    new Request("https://worker.test/nearby?lat=37.62&lng=-122.38&format=json"),
+    {},
+    { waitUntil: () => {} },
+  );
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  const ids = body.planes.map((p) => p.icao24).sort();
+  assert.deepEqual(ids, ["aaaaa1", "aabbcc"], "null row and stale position skipped, numeric flight tolerated");
+  assert.equal(body.planes.find((p) => p.icao24 === "aaaaa1").callsign, null);
+});

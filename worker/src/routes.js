@@ -57,6 +57,38 @@ export function convergenceScore(pathTail, airportLat, airportLon) {
   return score;
 }
 
+const LEG_GAP_SEC = 1800;
+
+// Altitude is unknown (null) when the trace had no usable value; only a known
+// low altitude or an explicit on-ground flag counts as "low".
+function isLowPoint(pt, maxAltM) {
+  if (pt[5] === true) return true;
+  return typeof pt[3] === "number" && Number.isFinite(pt[3]) && pt[3] <= maxAltM;
+}
+
+// Start of the current leg in a whole-day trace, mirroring the client's
+// findFlightStartIndex: skip trailing ground points, then take the later of the
+// last ground->air transition and the last gap > 30 min. Unlike the client, the
+// ground point itself (the takeoff roll) is kept so the origin scan sees it.
+export function findLegStartIndex(path) {
+  if (!path || !path.length) return 0;
+  let scanEnd = path.length - 1;
+  while (scanEnd >= 0 && path[scanEnd][5] === true) scanEnd--;
+  if (scanEnd < 0) return 0;
+
+  let groundBound = 0;
+  for (let i = scanEnd; i >= 0; i--) {
+    if (path[i][5] === true) { groundBound = i; break; }
+  }
+
+  let gapBound = 0;
+  for (let j = scanEnd; j >= 1; j--) {
+    if (path[j][0] - path[j - 1][0] > LEG_GAP_SEC) { gapBound = j; break; }
+  }
+
+  return Math.max(groundBound, gapBound);
+}
+
 export function extractOriginDest(track) {
   const path = track?.path;
   if (!path || path.length < 2) {
@@ -66,11 +98,13 @@ export function extractOriginDest(track) {
 
   const lastTrackPoint = path[path.length - 1];
 
+  const legStart = findLegStartIndex(path);
+
   let origin = null;
-  const originScanLimit = Math.max(20, Math.ceil(path.length * 0.25));
-  for (let i = 0; i < Math.min(originScanLimit, path.length); i++) {
+  const originScanLimit = Math.max(20, Math.ceil((path.length - legStart) * 0.25));
+  for (let i = legStart; i < Math.min(legStart + originScanLimit, path.length); i++) {
     const pt = path[i];
-    if (pt[3] <= ORIGIN_MAX_ALT_M) {
+    if (isLowPoint(pt, ORIGIN_MAX_ALT_M)) {
       const match = nearestAirport(pt[1], pt[2], ORIGIN_MAX_DIST_KM);
       if (match) {
         origin = { iata: match.iata, name: match.name };
@@ -81,11 +115,12 @@ export function extractOriginDest(track) {
 
   let destination = null;
   let ambiguous = false;
-  const tail = path.length >= CONVERGENCE_TAIL_SIZE
-    ? path.slice(-CONVERGENCE_TAIL_SIZE)
-    : path;
+  const tail = path.slice(Math.max(legStart, path.length - CONVERGENCE_TAIL_SIZE));
 
-  const minAlt = Math.min(...tail.map((pt) => pt[3]));
+  const knownAlts = tail
+    .map((pt) => pt[3])
+    .filter((alt) => typeof alt === "number" && Number.isFinite(alt));
+  const minAlt = knownAlts.length ? Math.min(...knownAlts) : Infinity;
   if (tail.length >= CONVERGENCE_MIN_POINTS && minAlt < DESTINATION_LOW_ALT_M) {
     const last = tail[tail.length - 1];
     const candidates = nearbyAirports(last[1], last[2], CONVERGENCE_SEARCH_RADIUS_KM, 5);
@@ -121,7 +156,7 @@ export function detectPhase(altFt, vRate, ground) {
   return "cruising";
 }
 
-const _PRIV_REG = /^(N\d|C-[FGFI]|G-|D-|F-|I-|EC-|HB-|OE-|PH-|SE-|OH-|OY-|LN-|EI-|CS-|SX-|TC-|VH-|ZK-|PP-|PT-|PR-|JA|B-|HL|VT-|9V-|A[267]-|SU-|5[ABHNXY]-|ZS-|VP-|V[5HPQR]-|RP-|HS-|9M-|PK-|XA-|XB-|LV-|CC-|TI-|HP-|HK-|YV-)/i;
+const _PRIV_REG = /^(N\d|C-[FGI]|G-|D-|F-|I-|EC-|HB-|OE-|PH-|SE-|OH-|OY-|LN-|EI-|CS-|SX-|TC-|VH-|ZK-|PP-|PT-|PR-|JA\d|B-|HL\d|VT-|9V-|A[267]-|SU-|5[ABHNXY]-|ZS-|VP-|V[5HPQR]-|RP-|HS-|9M-|PK-|XA-|XB-|LV-|CC-|TI-|HP-|HK-|YV-)/i;
 const _ANON_HEX = /^~[0-9a-f]{4,}$/i;
 
 function isLikelyPrivateCallsign(callsign) {

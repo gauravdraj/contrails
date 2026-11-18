@@ -1,5 +1,5 @@
 import { MAJOR_AIRPORTS } from "./airports.js";
-import { enrichRoutes } from "./enrich.js";
+import { enrichRoutes, MAX_ENRICH_PLANES } from "./enrich.js";
 import { haversineKm } from "./geo.js";
 import { json, plainText } from "./http.js";
 import { fetchAircraftResilient } from "./providers.js";
@@ -44,7 +44,7 @@ const NEARBY_AIRLINES = {
   XAX: "AirAsia X",
 };
 
-const PRIV_REG = /^(N\d|C-[FGFI]|G-|D-|F-|I-|EC-|HB-|OE-|PH-|SE-|OH-|OY-|LN-|EI-|CS-|SX-|TC-|VH-|ZK-|PP-|PT-|PR-|JA|B-|HL|VT-|9V-|A[267]-|SU-|5[ABHNXY]-|ZS-|VP-|V[5HPQR]-|RP-|HS-|9M-|PK-|XA-|XB-|LV-|CC-|TI-|HP-|HK-|YV-)/i;
+const PRIV_REG = /^(N\d|C-[FGI]|G-|D-|F-|I-|EC-|HB-|OE-|PH-|SE-|OH-|OY-|LN-|EI-|CS-|SX-|TC-|VH-|ZK-|PP-|PT-|PR-|JA\d|B-|HL\d|VT-|9V-|A[267]-|SU-|5[ABHNXY]-|ZS-|VP-|V[5HPQR]-|RP-|HS-|9M-|PK-|XA-|XB-|LV-|CC-|TI-|HP-|HK-|YV-)/i;
 const PRIV_ANON_HEX = /^~[0-9a-f]{4,}$/i;
 const PRIV_HEXLIKE = /^(?:~)?[0-9a-f]{6}$/i;
 
@@ -145,8 +145,9 @@ function nearbyAirlineName(callsign) {
 
 function isLikelyPrivate(callsign) {
   if (!callsign) return false;
-  if (PRIV_REG.test(callsign) || PRIV_ANON_HEX.test(callsign)) return true;
-  return !nearbyAirlineName(callsign) && PRIV_HEXLIKE.test(callsign);
+  if (PRIV_ANON_HEX.test(callsign)) return true;
+  if (nearbyAirlineName(callsign)) return false;
+  return PRIV_REG.test(callsign) || PRIV_HEXLIKE.test(callsign);
 }
 
 export function resolveAirport(iata) {
@@ -162,10 +163,15 @@ export async function fetchAirportAircraft(lat, lng) {
   return fetchAircraftResilient(lat, lng, AIRPORT_RADIUS_NM);
 }
 
-export function buildAirportPlane(airportLat, airportLng, snapshot) {
-  if (snapshot.lat == null || snapshot.lon == null) return null;
+// A position older than this is no longer where the plane is.
+const MAX_POSITION_AGE_SEC = 60;
 
-  const callsign = (snapshot.flight || "").trim() || null;
+export function buildAirportPlane(airportLat, airportLng, snapshot) {
+  if (!snapshot || typeof snapshot !== "object") return null;
+  if (typeof snapshot.lat !== "number" || typeof snapshot.lon !== "number") return null;
+  if (typeof snapshot.seen_pos === "number" && snapshot.seen_pos > MAX_POSITION_AGE_SEC) return null;
+
+  const callsign = typeof snapshot.flight === "string" ? (snapshot.flight.trim() || null) : null;
   const ground = snapshot.alt_baro === "ground";
   const altFt = ground ? 0 : (typeof snapshot.alt_baro === "number" ? Math.round(snapshot.alt_baro) : null);
 
@@ -301,6 +307,34 @@ function formatDepartureJson(plane) {
   };
 }
 
+// Only planes that could appear on the requested board are worth a route
+// lookup: ground planes near the field (departures) and airborne planes that are
+// not climbing out (arrivals, lowest first, matching the arrivals sort). With
+// dir=both each list is guaranteed half the budget and any unused share goes
+// to the other, so neither list starves.
+export function selectEnrichCandidates(planes, dir) {
+  const wantArrivals = dir === "arrivals" || dir === "both";
+  const wantDepartures = dir === "departures" || dir === "both";
+  const routable = planes.filter((p) => p.callsign && p.priv !== true);
+
+  const departures = wantDepartures
+    ? routable
+      .filter((p) => p.ground && p.distKm <= DEPARTURE_ROUTE_RADIUS_KM)
+      .sort((a, b) => a.distKm - b.distKm)
+    : [];
+  const arrivals = wantArrivals
+    ? routable
+      .filter((p) => !p.ground && !(p.vRate != null && p.vRate >= VERT_RATE_THRESHOLD))
+      .sort((a, b) => ((a.altFt ?? Infinity) - (b.altFt ?? Infinity)) || (a.distKm - b.distKm))
+    : [];
+
+  const depBudget = wantArrivals
+    ? Math.max(Math.ceil(MAX_ENRICH_PLANES / 2), MAX_ENRICH_PLANES - arrivals.length)
+    : MAX_ENRICH_PLANES;
+  const picked = departures.slice(0, depBudget);
+  return picked.concat(arrivals.slice(0, MAX_ENRICH_PLANES - picked.length));
+}
+
 export async function handleAirport(url, env, ctx) {
   const segments = url.pathname.split("/");
   const iataRaw = segments[segments.length - 1] || segments[segments.length - 2];
@@ -323,18 +357,22 @@ export async function handleAirport(url, env, ctx) {
 
   const planes = [];
   for (const snapshot of acData.ac || []) {
-    const plane = buildAirportPlane(airport.lat, airport.lng, snapshot);
-    if (plane) planes.push(plane);
+    // One malformed row must not reject the whole snapshot.
+    try {
+      const plane = buildAirportPlane(airport.lat, airport.lng, snapshot);
+      if (plane) planes.push(plane);
+    } catch (_) {}
   }
+
+  const dir = (url.searchParams.get("dir") || "arrivals").toLowerCase();
 
   let routeMap = Object.create(null);
   try {
-    routeMap = await enrichRoutes(planes, env, ctx);
+    routeMap = await enrichRoutes(selectEnrichCandidates(planes, dir), env, ctx);
   } catch (_) {
     routeMap = Object.create(null);
   }
 
-  const dir = (url.searchParams.get("dir") || "arrivals").toLowerCase();
   const format = (url.searchParams.get("format") || "").toLowerCase();
   const mapLink = `${MAP_URL}/?lat=${airport.lat}&lng=${airport.lng}&zoom=11`;
 

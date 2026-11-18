@@ -12,7 +12,9 @@ function traceUrl(base, hex) {
   return `${base}/${hex.slice(-2)}/trace_full_${hex}.json`;
 }
 
-function normalizeTrace(raw) {
+// readsb encodes on-ground altitude as the string "ground"; any other
+// non-numeric altitude is unknown (null), never "low".
+export function normalizeTrace(raw) {
   if (!raw?.trace?.length || !raw.timestamp) return null;
   const baseTime = raw.timestamp;
   const path = [];
@@ -22,8 +24,9 @@ function normalizeTrace(raw) {
     const lon = pt[2];
     const altFt = pt[3];
     const heading = pt[5];
-    const altM = altFt != null ? altFt * 0.3048 : null;
-    const onGround = altFt != null && altFt <= 0;
+    const onGround = altFt === "ground" || (typeof altFt === "number" && Number.isFinite(altFt) && altFt <= 0);
+    const altM = altFt === "ground" ? 0
+      : (typeof altFt === "number" && Number.isFinite(altFt) ? altFt * 0.3048 : null);
     path.push([timeSec, lat, lon, altM, heading ?? 0, onGround]);
   }
   return { icao24: raw.icao, path };

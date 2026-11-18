@@ -44,9 +44,16 @@ const NEARBY_AIRLINES = {
 
 const SQUAWK_ALERTS = { "7700": "EMERGENCY", "7600": "RADIO FAILURE", "7500": "HIJACK" };
 
-const PRIV_REG = /^(N\d|C-[FGFI]|G-|D-|F-|I-|EC-|HB-|OE-|PH-|SE-|OH-|OY-|LN-|EI-|CS-|SX-|TC-|VH-|ZK-|PP-|PT-|PR-|JA|B-|HL|VT-|9V-|A[267]-|SU-|5[ABHNXY]-|ZS-|VP-|V[5HPQR]-|RP-|HS-|9M-|PK-|XA-|XB-|LV-|CC-|TI-|HP-|HK-|YV-)/i;
+const PRIV_REG = /^(N\d|C-[FGI]|G-|D-|F-|I-|EC-|HB-|OE-|PH-|SE-|OH-|OY-|LN-|EI-|CS-|SX-|TC-|VH-|ZK-|PP-|PT-|PR-|JA\d|B-|HL\d|VT-|9V-|A[267]-|SU-|5[ABHNXY]-|ZS-|VP-|V[5HPQR]-|RP-|HS-|9M-|PK-|XA-|XB-|LV-|CC-|TI-|HP-|HK-|YV-)/i;
 const PRIV_ANON_HEX = /^~[0-9a-f]{4,}$/i;
 const PRIV_HEXLIKE = /^(?:~)?[0-9a-f]{6}$/i;
+
+// A position older than this is no longer where the plane is.
+const MAX_POSITION_AGE_SEC = 60;
+
+function isStalePosition(snapshot) {
+  return typeof snapshot.seen_pos === "number" && snapshot.seen_pos > MAX_POSITION_AGE_SEC;
+}
 
 function nearbyAirlineName(callsign) {
   if (!callsign || callsign.length < 3) return null;
@@ -55,8 +62,9 @@ function nearbyAirlineName(callsign) {
 
 function isLikelyPrivate(callsign) {
   if (!callsign) return false;
-  if (PRIV_REG.test(callsign) || PRIV_ANON_HEX.test(callsign)) return true;
-  return !nearbyAirlineName(callsign) && PRIV_HEXLIKE.test(callsign);
+  if (PRIV_ANON_HEX.test(callsign)) return true;
+  if (nearbyAirlineName(callsign)) return false;
+  return PRIV_REG.test(callsign) || PRIV_HEXLIKE.test(callsign);
 }
 
 function verticalState(rate) {
@@ -105,11 +113,13 @@ async function fetchNearbyAircraft(lat, lng) {
 }
 
 function buildNearbyPlane(lat, lng, snapshot) {
+  if (!snapshot || typeof snapshot !== "object") return null;
   if (snapshot.alt_baro === "ground" || snapshot.alt_baro == null) return null;
-  if (snapshot.lat == null || snapshot.lon == null) return null;
+  if (typeof snapshot.lat !== "number" || typeof snapshot.lon !== "number") return null;
+  if (isStalePosition(snapshot)) return null;
   if (typeof snapshot.alt_baro !== "number") return null;
 
-  const callsign = (snapshot.flight || "").trim() || null;
+  const callsign = typeof snapshot.flight === "string" ? (snapshot.flight.trim() || null) : null;
   const groundKm = haversineKm(lat, lng, snapshot.lat, snapshot.lon);
   const altFt = Math.round(snapshot.alt_baro);
   const altKm = altFt * 0.0003048;
@@ -274,8 +284,11 @@ export async function handleNearby(url, env, ctx) {
 
   const planes = [];
   for (const snapshot of acData.ac || []) {
-    const plane = buildNearbyPlane(lat, lng, snapshot);
-    if (plane) planes.push(plane);
+    // One malformed row must not reject the whole snapshot.
+    try {
+      const plane = buildNearbyPlane(lat, lng, snapshot);
+      if (plane) planes.push(plane);
+    } catch (_) {}
   }
   planes.sort((left, right) => left.slantKm - right.slantKm);
 

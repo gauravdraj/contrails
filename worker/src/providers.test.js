@@ -623,3 +623,25 @@ test("fetchLookupResilient returns primary data without touching fallbacks", asy
   assert.equal(result.source, "primary");
   assert.equal(calls, 1);
 });
+
+test("fetchAircraftResilient falls through to the relay when the backup returns 200 with an error body", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const seen = [];
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    seen.push(u);
+    if (u.includes("api.adsb.lol")) return new Response("", { status: 500 });
+    if (u.includes("adsb.fi")) return new Response(JSON.stringify({ error: "rate limited" }), { status: 200 });
+    if (u.startsWith("https://relay.test/")) {
+      return new Response(JSON.stringify({ ac: [{ hex: "rly02" }], now: Date.now() }), { status: 200 });
+    }
+    return new Response("", { status: 404 });
+  };
+  configureRelay({ ADSB_RELAY_URL: "https://relay.test", ADSB_RELAY_KEY: "k" });
+  t.after(() => { globalThis.fetch = originalFetch; configureRelay({}); });
+
+  const result = await fetchAircraftResilient(37.62, -122.38, 65);
+  assert.equal(result.ac[0].hex, "rly02");
+  assert.equal(seen.length, 3, "primary, backup, then relay");
+  assert.ok(seen[2].startsWith("https://relay.test/adsb/"));
+});

@@ -392,3 +392,37 @@ test("callsign is trimmed and uppercased for routeMap key", async (t) => {
   assert.ok(routeMap["UAL999"]);
   assert.equal(routeMap["UAL999"].origin.iata, "DEN");
 });
+
+test("enrichRoutes caps FR24 lookups at 20 planes and keeps at most 4 in flight", async (t) => {
+  const originalCaches = globalThis.caches;
+  const originalFetch = globalThis.fetch;
+  fr24ResetBackoff();
+
+  let fr24Calls = 0;
+  let inFlight = 0;
+  let maxInFlight = 0;
+  globalThis.caches = { default: { match: async () => null, put: async () => {}, delete: async () => true } };
+  globalThis.fetch = async (url) => {
+    const urlStr = String(url);
+    inFlight++;
+    maxInFlight = Math.max(maxInFlight, inFlight);
+    if (urlStr.includes("flightradar24.com")) fr24Calls++;
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    inFlight--;
+    if (urlStr.includes("flightradar24.com")) return new Response(JSON.stringify({ results: [] }), { status: 200 });
+    return new Response(JSON.stringify({ response: {} }), { status: 200 });
+  };
+  t.after(() => {
+    globalThis.caches = originalCaches;
+    globalThis.fetch = originalFetch;
+    fr24ResetBackoff();
+  });
+
+  const planes = Array.from({ length: 100 }, (_, i) => ({
+    callsign: "TST" + String(i).padStart(3, "0"), altFt: 5000, vRate: -800, ground: false,
+  }));
+  await enrichRoutes(planes, {}, mockCtx());
+  assert.ok(fr24Calls > 0);
+  assert.ok(fr24Calls <= 20, `expected <= 20 FR24 calls, got ${fr24Calls}`);
+  assert.ok(maxInFlight <= 4, `expected <= 4 lookups in flight, got ${maxInFlight}`);
+});
