@@ -299,6 +299,11 @@ function formatLandingEta(etaMin) {
     var roundedHalf = Math.round(etaMin * 2) / 2;
     return "~" + (roundedHalf % 1 ? roundedHalf.toFixed(1) : String(Math.round(roundedHalf))) + "min";
   }
+  // An hour or more reads as hours: "~120min" was long enough to wrap rows onto a third line.
+  if (etaMin >= 60) {
+    var hours = Math.round(etaMin / 30) / 2;
+    return "~" + (hours % 1 ? hours.toFixed(1) : String(hours)) + "h";
+  }
   return "~" + Math.round(etaMin) + "min";
 }
 
