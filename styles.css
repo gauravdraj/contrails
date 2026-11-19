@@ -1178,6 +1178,8 @@ body.noscroll { touch-action: none; }
 .sched-ladder-holding { position: absolute; bottom: 18px; left: 0; right: 0; height: 30px; overflow-y: auto; }
 .sched-ladder-unknown { top: 0; bottom: 0; height: auto; }
 .sched-ladder-holding .sched-row { width: 100%; color: inherit; background: transparent; border: 0; padding: 2px 0; min-height: 28px; }
+/* The 390 px sheet's 7px row padding (#airport-panel-content .sched-row) made strip rows 31px in a 30px strip. */
+#airport-panel-content .sched-ladder-holding .sched-row { padding: 0; }
 .sched-ladder-note { position: absolute; bottom: 2px; color: var(--text-muted); font-size: 10px; }
 @media (prefers-reduced-motion: reduce) {
   .sched-ladder-bead, .sched-ladder-dot, .sched-ladder-leader, .sched-ladder-pair { transition: none; }

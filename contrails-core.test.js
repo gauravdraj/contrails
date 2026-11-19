@@ -3096,3 +3096,16 @@ test('v248 review countdown: later revisions go coarse instead of jumping the se
   const down = core.updateArrivalCountdown({ atMs: v248Now, targetMs: v248Now + 300000, remainingSec: 300 }, v248Now + 61000, v248Now + 1000);
   assert.equal(down.coarse, undefined); assert.equal(down.remainingSec, 60);
 });
+
+for (const dir of ['arrivals', 'landed', 'departures']) {
+  test('v249 tabs: arrival controls only on Landings, ' + dir, () => {
+    const c = v248BoardContext();
+    for (const view of ['list', 'ladder']) {
+      c._airportBoardView = view;
+      const html = c.buildScheduleCardContent('SFO', 'San Francisco', { arrivals: [], landed: [], departures: [] }, dir);
+      for (const className of ['sched-view-toggle', 'sched-footer']) {
+        assert.equal(html.includes('class="' + className + '"'), dir === 'arrivals', dir + '/' + view + ': ' + className);
+      }
+    }
+  });
+}

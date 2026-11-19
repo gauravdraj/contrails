@@ -1108,9 +1108,9 @@ function buildScheduleCardContent(iata, name, liveData, dir, scopeId, staleNote)
     '<div class="sched-header"' + titleAttr + '>' +
       '<span class="sched-iata">' + escapeHtml(iata) + '</span> ' +
       '<span class="sched-name">' + escapeHtml(name) + '</span>' +
-      '<span class="sched-view-toggle" role="group" aria-label="Arrival display">' +
-      '<button type="button" data-board-view="list" aria-pressed="' + (_airportBoardView === 'list' || dir !== 'arrivals') + '">List</button>' +
-      '<button type="button" data-board-view="ladder" aria-pressed="' + (_airportBoardView === 'ladder' && dir === 'arrivals') + '">Ladder</button></span>' +
+      (dir === 'arrivals' ? '<span class="sched-view-toggle" role="group" aria-label="Arrival display">' +
+      '<button type="button" data-board-view="list" aria-pressed="' + (_airportBoardView === 'list') + '">List</button>' +
+      '<button type="button" data-board-view="ladder" aria-pressed="' + (_airportBoardView === 'ladder') + '">Ladder</button></span>' : '') +
       (staleNote ? ' <span class="sched-stale" style="opacity:0.7;font-size:0.85em;white-space:nowrap">' + escapeHtml(staleNote) + '</span>' : '') +
     '</div>' +
     '<div class="sched-toggle" role="group" aria-label="Airport traffic view">';
@@ -1178,7 +1178,7 @@ function buildScheduleCardContent(iata, name, liveData, dir, scopeId, staleNote)
         '</div>';
     }
   }
-  html += '</div></div>' + buildAirportEtaFooter(iata) + '</div>';
+  html += '</div></div>' + (dir === 'arrivals' ? buildAirportEtaFooter(iata) : '') + '</div>';
   return html;
 }
 
