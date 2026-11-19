@@ -331,7 +331,7 @@ function scheduleArrivalTime(row, summary) {
   var state = _airportCountdowns[key];
   var seconds = state ? state.remainingSec : row.etaMin * 60;
   return '<span data-countdown="' + escapeHtml(key || "") + '"' + (summary ? ' data-countdown-summary="true"' : '') + '>' +
-    (seconds < 600 ? core.formatArrivalCountdown(seconds) : (summary ? "ETA " : "") + formatLandingEta(seconds / 60)) + '</span>';
+    (seconds < 600 && !(state && state.coarse) ? core.formatArrivalCountdown(seconds) : (summary ? "ETA " : "") + formatLandingEta(seconds / 60)) + '</span>';
 }
 
 var SCHEDULE_TABS = [
@@ -478,6 +478,10 @@ function airportGoAroundObservations(iata, lat, lng, list, ends, nowMs, fieldEle
     var nearField = distanceKm <= 15;
     // Only low nearby traffic can arm; retain active approaches and recent ground evidence.
     if (!old && (!nearField || (!a.ground && (!Number.isFinite(a.altFt) || a.altFt - fieldElev > 3000)))) continue;
+    // Light aircraft are left out: their touch-and-goes often carry no ground bit and look exactly like a go-around.
+    // Only when positively known (sizeClass defaults unknown types to "light").
+    if (!old && ((a.aircraftType && sizeClass(a.aircraftType, a.category || null) === "light") ||
+        /^A[12]$/.test(a.category || ""))) continue;
     old = old || { points: [] };
     var history = posHistory[a.icao24] || [];
     if (a.ground && distanceKm <= 6 && Number.isFinite(a.reportTs) && a.reportTs <= nowMs) old.groundAtMs = a.reportTs;
@@ -1428,7 +1432,7 @@ function tickAirportCountdowns() {
   var el = _activeAirportPopup.getElement && _activeAirportPopup.getElement();
   if (el) el.querySelectorAll('[data-countdown]').forEach(function(node) {
     var state = _airportCountdowns[node.getAttribute('data-countdown')];
-    if (state) node.textContent = state.remainingSec < 600 ? core.formatArrivalCountdown(state.remainingSec) : (node.hasAttribute('data-countdown-summary') ? "ETA " : "") + formatLandingEta(state.remainingSec / 60);
+    if (state) node.textContent = state.remainingSec < 600 && !state.coarse ? core.formatArrivalCountdown(state.remainingSec) : (node.hasAttribute('data-countdown-summary') ? "ETA " : "") + formatLandingEta(state.remainingSec / 60);
   });
   _airportCountdownTimer = setTimeout(tickAirportCountdowns, 1000);
   // Small corrections can cross between feed polls. Reorder only when the displayed order changes.

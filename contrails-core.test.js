@@ -2903,9 +2903,34 @@ function reviewGo(points) {
   let state;
   points.forEach((p, i) => { state = v248Go(points.slice(0, i + 1), state, { fieldElevFt: 13 }); assert.equal(state.goAroundAtMs, null); });
 }
-test('v248 review ga: runway-roll jitter and an unflagged touch-and-go are not go-arounds', () => {
+test('v248 review ga: runway-roll jitter is not a go-around', () => {
   reviewGo(reviewTrack([[100,25],[250,0],[400,25],[550,0],[700,25],[890,75],[1080,150],[1270,200],[1460,250],[1650,325],[1840,375]]));
-  reviewGo(reviewTrack([[-3000,900],[-2550,750],[-2100,600],[-1650,450],[-1200,300],[-750,150],[-300,0],[0,0],[250,75],[470,125],[690,175],[910,250],[1130,300],[1350,350]]));
+});
+// Round 2: an altitude-based touchdown guess depends on the day's pressure, so it was removed. Unflagged
+// touch-and-goes (light aircraft) are instead kept out of detection on the board, at any altimeter setting.
+test('v248 review ga: a light aircraft unflagged touch-and-go never becomes a GO-AROUND row, at any pressure', () => {
+  for (const qnhOffsetFt of [-300, -120, 0, 120, 300]) {
+    for (const [type, category] of [['C172', 'A1'], ['C172', null], [null, 'A1']]) {
+      const c = v248BoardContext(); let now = v248Now;
+      c.Date = class extends Date { static now() { return now; } };
+      reviewTrack([[-3000,900],[-2550,750],[-2100,600],[-1650,450],[-1200,300],[-750,150],[-300,0],[0,0],[250,75],[470,125],[690,175],[910,250],[1130,300],[1350,350]])
+        .forEach(p => {
+          now = p[2];
+          const plane = { icao24: 'c172aa', callsign: 'N123AB', aircraftType: type, category, lat: p[0], lng: p[1],
+            altFt: p[3] + qnhOffsetFt, ground: false, track: v248Heading, speedKts: 70, vRate: 8, reportTs: now };
+          const board = c.buildLiveScheduleData('SFO', 37.62, -122.375, [plane], { departing_runways: ['28L'], arriving_runways: ['28L'] });
+          assert.ok(!board.arrivals.some(r => r.goAround), type + '/' + category + ' at ' + qnhOffsetFt + ' ft');
+        });
+    }
+  }
+});
+test('v248 review ga: a real go-around is detected regardless of the day\'s pressure offset', () => {
+  for (const offset of [-300, 0, 300]) {
+    const points = []; let ts = v248Now, x = -6000, alt = 1400, k = 0; const cad = [1200, 5300];
+    while (alt > 200) { points.push(reviewPoint(x, Math.round(alt / 25) * 25 + offset, false, ts)); const dt = cad[k++ % 2]; ts += dt; x += 75 * dt / 1000; alt -= 750 * dt / 60000; }
+    for (let i = 0; i < 12; i++) { points.push(reviewPoint(x, Math.round(alt / 25) * 25 + offset, false, ts)); const dt = cad[k++ % 2]; ts += dt; x += 80 * dt / 1000; alt += 1200 * dt / 60000; }
+    assert.ok(v248Go(points, null, { fieldElevFt: 13 }).goAroundAtMs, 'offset ' + offset);
+  }
 });
 test('v248 review dep: ground roll and a 25 ft dip after liftoff do not arm', () => {
   reviewGo(reviewTrack([[300,null,true],[900,null,true],[1600,null,true],[2300,50],[2700,25],[3150,225],[3600,450],[4100,700]]));
@@ -3049,4 +3074,25 @@ test('v248 review order: countdown ticks reorder crossing displays and retain se
   const tied = { arrivals: [{ hex: 'b', runway: '28L', etaMin: 2, pathKm: 4 }, { hex: 'a', runway: '28L', etaMin: 2, pathKm: 3 }] };
   c._airportCountdowns = {}; c.syncAirportCountdowns(tied);
   assert.deepEqual(Array.from(tied.arrivals, r => r.sequence), [1,2]);
+});
+
+// Round 2: a later ETA revision must never make the seconds countdown jump backwards (e.g. 1:59 -> 2:58).
+test('v248 review countdown: later revisions go coarse instead of jumping the seconds backwards', () => {
+  let state = core.updateArrivalCountdown(null, v248Now + 120000, v248Now);
+  state = core.updateArrivalCountdown(state, v248Now + 120000, v248Now + 1000);
+  let coarseSeen = false; const sawCoarse = () => coarseSeen;
+  const shown = s => { if (s.coarse) coarseSeen = true; return s.coarse ? null : Math.ceil(s.remainingSec); };
+  let last = shown(state);
+  // +60 s revision, then a steadily growing ETA (vectoring) for 2 minutes.
+  for (let i = 2, target = v248Now + 180000; i < 120; i++, target += 300) {
+    state = core.updateArrivalCountdown(state, target, v248Now + i * 1000);
+    // Consecutive precise readings never go up; a coarse "~N min" frame in between resets the comparison.
+    const s = shown(state);
+    if (s != null && last != null) assert.ok(s <= last, 'seconds went from ' + last + ' to ' + s);
+    last = s;
+  }
+  assert.ok(sawCoarse(), 'the +60 s revision switched the row to the coarse form');
+  // An earlier revision still snaps down immediately and stays precise.
+  const down = core.updateArrivalCountdown({ atMs: v248Now, targetMs: v248Now + 300000, remainingSec: 300 }, v248Now + 61000, v248Now + 1000);
+  assert.equal(down.coarse, undefined); assert.equal(down.remainingSec, 60);
 });
