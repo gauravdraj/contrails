@@ -1,0 +1,9 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#07121b"><title>Airport watch · contrails</title><link rel="icon" href="data:,"><link rel="manifest" href="manifest.webmanifest"><link rel="stylesheet" href="watch.css"></head>
+<body><main id="instrument" aria-label="Live airport chart">
+<div id="scene"><canvas id="chart" aria-label="North-up airport geography"></canvas><canvas id="traffic" aria-label="Aircraft positions and arrival sequence"></canvas></div>
+<header><div class="identity"><span class="eyebrow">CONTRAILS / AIRPORT WATCH</span><div class="title"><h1 id="airport-code">SFO</h1><span id="airport-name">San Francisco</span></div></div><div class="operations"><div id="operations">Awaiting the sky</div><div id="sky-note">A quiet instrument for a moving world</div></div><div class="clock"><time id="local-time">—</time><span><i id="health" data-state="connecting"></i><span id="health-label">CONNECTING</span></span></div></header>
+<aside id="log" aria-label="Recent airport moments"><span class="eyebrow">RECENT PASSAGES</span><ol id="moment-log"></ol></aside>
+<div id="empty" hidden><span class="eyebrow">THE INTERVAL BETWEEN</span><p>Quiet sky</p><span id="next-arrival">The runways are waiting.</span></div>
+<footer><span>NORTH UP <b>·</b> COMPRESSED DISTANCE <b>·</b> PARALLEL FINALS SPREAD 5 PX</span><nav aria-label="Display controls"><button id="theme" type="button">Nocturne</button><button id="fullscreen" type="button" title="Fullscreen and keep awake (F)">Full screen ↗</button></nav></footer>
+<div id="message" hidden role="status"></div></main><script src="boot.js"></script></body></html>
