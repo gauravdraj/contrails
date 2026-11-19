@@ -360,6 +360,7 @@ function processAircraft(ac, feedNow) {
 var routeRetryAt = {};
 var ROUTE_MISS_RETRY_MS = 10 * 60 * 1000;
 var routesetPending = null;
+var routeEvidenceMemo = new Map();
 
 function buildRouteFetchPayload(sourcePlanes, options) {
   options = options || {};
@@ -404,6 +405,15 @@ function noteRouteMisses(needed, routes) {
 function routeForAircraft(a, entry) {
   if (!a || !entry) return entry;
   var history = typeof posHistory !== "undefined" && posHistory[a.icao24];
+  var now = Date.now();
+  var airports = typeof airportData !== "undefined" ? airportData : null;
+  var key = [a.icao24, Math.floor(a.lat * 100), Math.floor(a.lng * 100), a.altFt, a.vRate, a.track, a.ground,
+    entry.origin && entry.origin.iata, entry.destination && entry.destination.iata,
+    entry.destination && entry.destination.region, entry.originSource, entry.destSource,
+    history && history.length, history && history.length && history[history.length - 1][2]].join("|");
+  var memo = a.callsign && routeEvidenceMemo.get(a.callsign);
+  if (memo && memo.entry === entry && memo.key === key && memo.airports === airports &&
+      memo.history === history && now - memo.at < 5000) return memo.checked;
   var previous = null;
   for (var i = history ? history.length - 1 : -1; i >= 0; i--) {
     if (history[i][5] || Date.now() - history[i][2] > 120000) break;
@@ -413,10 +423,14 @@ function routeForAircraft(a, entry) {
   }
   var checked = core.rejectContradictoryRoute(entry, { lat: a.lat, lng: a.lng, altFt: a.altFt,
     ground: a.ground, track: a.track, vRate: a.vRate == null ? null : a.vRate * 60, previous: previous },
-    typeof airportData !== "undefined" ? airportData : null);
+    airports);
   if (checked && checked !== entry) {
     checked.display = formatClientRouteLabel(checked.origin, checked.destination, checked.phase || "cruising");
     checked.iata = [checked.origin && checked.origin.iata, checked.destination && checked.destination.iata].filter(Boolean).join(" to ");
+  }
+  if (a.callsign) {
+    if (routeEvidenceMemo.size >= 1000) routeEvidenceMemo.delete(routeEvidenceMemo.keys().next().value);
+    routeEvidenceMemo.set(a.callsign, { entry: entry, key: key, airports: airports, history: history, at: now, checked: checked });
   }
   return checked;
 }
@@ -442,10 +456,11 @@ function mergeRoutesetEntries(routes, sourcePlanes) {
     if (!routeEntryReplaceable(routeCache[r.callsign], fetchedAt)) continue;
     var routePlane = aircraft.find(function(a) { return a.callsign === r.callsign; }) ||
       sourcePlanes.find(function(a) { return a.callsign === r.callsign; });
-    if (r.destSource === "adsbdb" || r.originSource === "adsbdb") adsbdbCallsigns.push(r.callsign);
     var checked = routeForAircraft(routePlane, r);
+    if (checked !== r) routeRetryAt[r.callsign] = fetchedAt + 60000;
     if (!checked) { if (routePlane) validateCachedRoute(routePlane); continue; }
     r = checked;
+    if (r.destSource === "adsbdb" || r.originSource === "adsbdb") adsbdbCallsigns.push(r.callsign);
     var dest = r.destination;
     var destIata = dest ? (dest.region ? dest.display : dest.iata) : null;
     var iataParts = [r.origin ? r.origin.iata : null, destIata].filter(Boolean);
@@ -463,7 +478,7 @@ function mergeRoutesetEntries(routes, sourcePlanes) {
   }
   for (var ac = 0; ac < adsbdbCallsigns.length; ac++) {
     var cs = adsbdbCallsigns[ac];
-    if (fr24SearchPending[cs] || isLikelyPrivateCallsign(cs)) continue;
+    if (fr24SearchPending[cs] || routeRetryAt[cs] > fetchedAt || isLikelyPrivateCallsign(cs)) continue;
     var plane = null;
     for (var p = 0; p < sourcePlanes.length; p++) {
       if (sourcePlanes[p].callsign === cs) {
@@ -511,8 +526,8 @@ async function postRouteset(needed, candidates) {
     if (!resp.ok) return false;
     var routes = await resp.json();
     if (!Array.isArray(routes)) return false;
-    mergeRoutesetEntries(routes, candidates);
     noteRouteMisses(needed, routes);
+    mergeRoutesetEntries(routes, candidates);
     return true;
   } catch (e) {
     console.warn("Route fetch failed:", e);

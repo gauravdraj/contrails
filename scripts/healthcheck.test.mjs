@@ -15,6 +15,28 @@ async function validators() {
   return captured;
 }
 const checks = await validators();
+test('v247 round validators: schedule strings may be empty and airport codes are strings or null', () => {
+  for (const code of ['', null, 'PRIVATE FIELD', 'x']) {
+    assert.notEqual(checks.schedule({ data: { iata: code, arrivals: [{ flight: '', callsign: '', from_iata: code }],
+      departures: [{ flight: '', callsign: '', to_iata: code }] } }), false);
+  }
+  assert.equal(checks.schedule({ data: { iata: 'SFO', arrivals: [{ flight: 42, callsign: '', from_iata: null }], departures: [] } }), false);
+});
+test('v247 round validators: FR24 ids accept strings or numbers', () => {
+  for (const id of [123, 0, '', 'abc']) {
+    assert.notEqual(checks.fr24search({ data: { results: [{ id, type: 'live', detail: { callsign: '', schd_from: 'PRIVATE FIELD', schd_to: null } }] } }), false);
+  }
+  assert.equal(checks.fr24search({ data: { results: [{ id: {}, type: 'live', detail: {} }] } }), false);
+});
+test('v247 round validators: ADSBDB empty iata and empty callsign are valid types', () => {
+  for (const iata of ['', null, 'PRIVATE FIELD']) {
+    assert.notEqual(checks.routeset({ data: [{ callsign: '', origin: { iata }, destination: null, originSource: 'adsbdb' }] }), false);
+  }
+  assert.equal(checks.routeset({ data: [{ callsign: 123, destination: { iata: '' } }] }), false);
+});
+test('v247 round CI: healthcheck unit tests run in CI', () => {
+  assert.match(readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8'), /run: node --test scripts\/healthcheck\.test\.mjs/);
+});
 const apt = { iata: 'SFO', name: 'San Francisco' };
 const cases = {
   track: {

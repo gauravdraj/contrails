@@ -3,6 +3,137 @@ import * as providers from "./providers.js";
 test.beforeEach(() => { providers._providerHealth?.clear(); configureRelay({}); });
 import assert from "node:assert/strict";
 
+test('v247 round health: one 429 is a blip, two consecutive failures cool down', async t => {
+  let now = 1800000000000, fail = true, primaryCalls = 0;
+  t.mock.method(Date, 'now', () => now);
+  t.mock.method(globalThis, 'fetch', async url => {
+    if (String(url).includes('adsb.lol')) {
+      primaryCalls++;
+      if (fail) return new Response('', { status: 429 });
+    }
+    return new Response(JSON.stringify({ ac: [], now }));
+  });
+  await fetchAircraftResilient(37, -122, 50);
+  assert.ok(!(providers._providerHealth.get('primary')?.retryAt > now));
+  fail = false;
+  assert.equal((await fetchLookupResilient('hex', 'abc123')).source, 'primary');
+  fail = true;
+  await fetchAircraftResilient(37, -122, 50);
+  assert.ok(!(providers._providerHealth.get('primary')?.retryAt > now), 'success resets the failure streak');
+  await fetchAircraftResilient(38, -122, 50);
+  assert.ok(providers._providerHealth.get('primary')?.retryAt > now);
+  await fetchLookupResilient('hex', 'abc123');
+  assert.equal(primaryCalls, 4);
+});
+test('v247 round health: a never-settling recovery probe expires after twice the fetch timeout', async t => {
+  let now = 1800000000000, primaryCalls = 0;
+  t.mock.method(Date, 'now', () => now);
+  t.mock.method(globalThis, 'fetch', async url => {
+    if (String(url).includes('adsb.lol')) {
+      primaryCalls++;
+      if (primaryCalls <= 2) throw new Error('down');
+      if (primaryCalls === 3) return new Promise(() => {});
+    }
+    return new Response(JSON.stringify({ ac: [], now }));
+  });
+  await fetchAircraftResilient(37, -122, 50);
+  now += RECOVERY_PROBE_MS + 1; // Also establishes the cooldown on b26e956.
+  await fetchAircraftResilient(37, -122, 50);
+  now += RECOVERY_PROBE_MS + 1;
+  void fetchAircraftResilient(37, -122, 50);
+  await Promise.resolve();
+  assert.equal(primaryCalls, 3);
+  now += 11999;
+  assert.equal((await fetchLookupResilient('hex', 'abc123')).source, 'backup');
+  now += 1;
+  assert.equal((await fetchLookupResilient('hex', 'abc123')).source, 'primary');
+  assert.equal(primaryCalls, 4);
+});
+test('v247 round health: sticky grids try a healthy primary when their backups are cooling', async t => {
+  const now = 1800000000000;
+  t.mock.method(Date, 'now', () => now);
+  providers._providerHealth.set('backup', { failures: 2, retryAt: now + 30000, probing: false });
+  _gridState.set('37.00/-122.00/50', { failCount: 2, staleCount: 0, lastNow: 0, usingBackup: true, lastProbeTs: now });
+  const calls = [];
+  t.mock.method(globalThis, 'fetch', async url => {
+    calls.push(String(url));
+    return new Response(JSON.stringify({ ac: [], now }));
+  });
+  const result = await fetchTraffic('/lat/37/lon/-122/dist/50', { lat: 37, lon: -122, dist: 50 }, {});
+  assert.equal(result?.source, 'primary');
+  assert.equal(calls.length, 1);
+});
+test('v247 round health: sticky grids retry expired probes and ignore their late failures', async t => {
+  let now = 1800000000000, primaryCalls = 0, rejectProbe;
+  t.mock.method(Date, 'now', () => now);
+  providers._providerHealth.set('primary', { failures: 2, retryAt: now, probing: false });
+  _gridState.set('37.00/-122.00/50', { failCount: 2, staleCount: 0, lastNow: 0, usingBackup: true, lastProbeTs: 0 });
+  t.mock.method(globalThis, 'fetch', async url => {
+    if (String(url).includes('adsb.lol') && ++primaryCalls === 1) return new Promise((resolve, reject) => { rejectProbe = reject; });
+    return new Response(JSON.stringify({ ac: [], now }));
+  });
+  const probe = fetchTraffic('/lat/37/lon/-122/dist/50', { lat: 37, lon: -122, dist: 50 }, {});
+  await Promise.resolve();
+  now += 12000;
+  const recovered = await fetchTraffic('/lat/37/lon/-122/dist/50', { lat: 37, lon: -122, dist: 50 }, {});
+  assert.equal(recovered?.source, 'primary');
+  rejectProbe(new Error('cancelled request settled late'));
+  await probe;
+  assert.equal(providers._providerHealth.has('primary'), false, 'late failure must not replace successful recovery');
+});
+for (const kind of ['nearby', 'lookup', 'grid']) {
+  test('v247 round health: ' + kind + ' keeps trying after 429, 403 and one relay 503', async t => {
+    configureRelay({ ADSB_RELAY_URL: 'https://relay.test', ADSB_RELAY_KEY: 'test' });
+    let now = 1800000000000, relayCalls = 0;
+    const calls = [];
+    t.mock.method(Date, 'now', () => now);
+    t.mock.method(globalThis, 'fetch', async url => {
+      calls.push(String(url));
+      if (String(url).includes('adsb.lol')) return new Response('', { status: 429 });
+      if (String(url).includes('adsb.fi')) return new Response('', { status: 403 });
+      if (++relayCalls === 1) return new Response('', { status: 503 });
+      return new Response(JSON.stringify({ ac: [], now }));
+    });
+    const attempt = () => kind === 'lookup' ? fetchLookupResilient('hex', 'abc123')
+      : kind === 'nearby' ? fetchAircraftResilient(37, -122, 50)
+      : fetchTraffic('/lat/37/lon/-122/dist/50', { lat: 37, lon: -122, dist: 50 }, {});
+    await attempt().catch(() => null);
+    calls.length = 0;
+    now += 1000;
+    const result = await attempt();
+    assert.ok(result, 'retry returns data');
+    assert.ok(calls.length > 0, 'retry must reach a provider');
+    assert.equal(relayCalls, 2);
+  });
+}
+for (const kind of ['nearby', 'lookup', 'grid', 'sticky grid']) {
+  test('v247 round health: ' + kind + ' tries oldest retryAt when every provider is cooling', async t => {
+    const now = 1800000000000;
+    t.mock.method(Date, 'now', () => now);
+    configureRelay({ ADSB_RELAY_URL: 'https://relay.test', ADSB_RELAY_KEY: 'test' });
+    for (const oldest of ['primary', 'backup', 'relay']) {
+      for (const name of ['primary', 'backup', 'relay']) {
+        providers._providerHealth.set(name, { failures: 2, retryAt: now + (name === oldest ? 1000 : 30000), probing: false });
+      }
+      _gridState.clear();
+      if (kind === 'sticky grid') _gridState.set('37.00/-122.00/50', {
+        failCount: 2, staleCount: 0, lastNow: 0, usingBackup: true, lastProbeTs: now,
+      });
+      const calls = [];
+      t.mock.method(globalThis, 'fetch', async url => {
+        calls.push(String(url));
+        return new Response(JSON.stringify({ ac: [], now }));
+      });
+      const result = kind === 'lookup' ? await fetchLookupResilient('hex', 'abc123')
+        : kind === 'nearby' ? await fetchAircraftResilient(37, -122, 50)
+        : await fetchTraffic('/lat/37/lon/-122/dist/50', { lat: 37, lon: -122, dist: 50 }, {});
+      assert.ok(result, oldest);
+      assert.equal(calls.length, 1, oldest);
+      assert.ok(calls[0].includes({ primary: 'adsb.lol', backup: 'adsb.fi', relay: 'relay.test' }[oldest]), calls[0]);
+    }
+  });
+}
+
 import {
   buildBackupPath,
   isValidPayload,
@@ -658,6 +789,8 @@ test('v247 provider health: nearby, new grids and lookups skip failing primary u
     return new Response(JSON.stringify({ ac: [], now }));
   });
   assert.equal((await fetchAircraftResilient(37, -122, 50)).source, 'backup');
+  await fetchAircraftResilient(37, -122, 50);
+  await fetchAircraftResilient(37, -122, 50);
   calls.length = 0;
   await fetchAircraftResilient(38, -122, 50);
   await fetchTraffic('/lat/39/lon/-122/dist/50', { lat: 39, lon: -122, dist: 50 }, {});
@@ -690,12 +823,13 @@ test('v247 provider health: only one recovery probe runs while other requests us
   t.mock.method(globalThis, 'fetch', async url => {
     if (String(url).includes('adsb.lol')) {
       primaryCalls++;
-      if (primaryCalls === 1) throw new Error('down');
-      if (primaryCalls > 2) return new Response(JSON.stringify({ ac: [], now }));
+      if (primaryCalls <= 2) throw new Error('down');
+      if (primaryCalls > 3) return new Response(JSON.stringify({ ac: [], now }));
       return new Promise(resolve => { resolveProbe = () => resolve(new Response(JSON.stringify({ ac: [], now }))); });
     }
     return new Response(JSON.stringify({ ac: [], now }));
   });
+  await fetchAircraftResilient(37, -122, 50);
   await fetchAircraftResilient(37, -122, 50);
   now += RECOVERY_PROBE_MS + 1;
   const probe = fetchAircraftResilient(37, -122, 50);
@@ -703,7 +837,7 @@ test('v247 provider health: only one recovery probe runs while other requests us
   await Promise.resolve();
   const fallback = await fetchLookupResilient('hex', 'abc123');
   assert.equal(fallback.source, 'backup');
-  assert.equal(primaryCalls, 2);
+  assert.equal(primaryCalls, 3);
   resolveProbe();
   assert.equal((await probe).source, 'primary');
 });
@@ -716,6 +850,7 @@ test('v247 provider health: a working relay bypasses both failed direct feeds du
     if (!String(url).startsWith('https://relay.test')) throw new Error('direct feed down');
     return new Response(JSON.stringify({ ac: [], now: Date.now() }));
   });
+  await fetchAircraftResilient(37, -122, 50);
   await fetchAircraftResilient(37, -122, 50);
   calls.length = 0;
   await fetchAircraftResilient(38, -122, 50);

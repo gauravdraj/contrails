@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import round247 from '../../scripts/route-regressions.json' with { type: 'json' };
 
 import {
   nearestAirport,
@@ -10,6 +11,46 @@ import {
   mergeRoutes,
   formatRouteLabel,
 } from "./routes.js";
+
+for (const fixture of [...round247.departures, ...round247.detours]) {
+  test('v247 round Worker: retain ' + (fixture.name || fixture.from + '-' + fixture.to), () => {
+    const route = mergeRoutes(null, { origin: { iata: fixture.from }, destination: { iata: fixture.to } }, fixture);
+    assert.equal(route?.origin?.iata, fixture.from);
+    assert.equal(route?.destination?.iata, fixture.to);
+  });
+}
+for (const fixture of round247.approaches) {
+  test('v247 round Worker: UA3911 ' + fixture.name, () => {
+    assert.equal(mergeRoutes(null, { origin: { iata: 'SYD' }, destination: { iata: 'LAX' } }, fixture), null);
+    for (const [from, to] of [['HNL', 'SFO'], ['SFO', 'LAX']]) {
+      const route = mergeRoutes(null, { origin: { iata: from }, destination: { iata: to } }, fixture);
+      assert.equal(route?.origin?.iata, from);
+      assert.equal(route?.destination?.iata, to);
+    }
+  });
+}
+for (const ground of [false, true]) {
+  test('v247 round Worker: airborne 300 m SFO origin survives ' + (ground ? 'landing' : 'final'), () => {
+    const path = [[1000, 37.62, -122.375, 300, 150, false], [1600, 36, -120, 10000, 150, false],
+      [2200, 33.943, -118.408, ground ? 0 : 150, 250, ground]];
+    assert.equal(extractOriginDest({ path }).origin?.iata, 'SFO');
+    assert.equal(mergeRoutes({ path }, null, { lat: 33.943, lng: -118.408, altFt: ground ? 0 : 500, ground })?.origin?.iata, 'SFO');
+  });
+}
+test('v247 round Worker: old clients use trace direction only within 60 seconds and 2 km', t => {
+  const now = 1800000000000;
+  t.mock.method(Date, 'now', () => now);
+  const info = { callsign: 'UAL3911', lat: 37.60, lng: -122.30, altFt: 1500, vRate: -700 };
+  const db = { origin: { iata: 'SYD' }, destination: { iata: 'LAX' } };
+  for (const [age, offset, reject] of [[59, 0, true], [60, 0, false], [120, 0, false], [10, -0.03, false], [10, -0.01, true], [-10, 0, false]]) {
+    // Unknown trace altitudes prevent origin/convergence inference from masking direction checks.
+    const path = [[now / 1000 - age - 10, 37.58 + offset, -122.20, null, 280, false],
+      [now / 1000 - age, 37.60 + offset, -122.30, null, 280, false]];
+    const route = mergeRoutes({ path }, db, info);
+    if (reject) assert.equal(route, null, 'age=' + age + ', offset=' + offset);
+    else assert.equal(route?.destination?.iata, 'LAX', 'age=' + age + ', offset=' + offset);
+  }
+});
 
 // --- nearestAirport ---
 
@@ -1049,7 +1090,8 @@ test('v247 Worker: UA3911 short final trace rejects stale ADSBDB without requiri
   const good = mergeRoutes(null, { origin: { iata: 'HNL' }, destination: { iata: 'SFO' } }, info);
   assert.equal(good.origin.iata, 'HNL');
   assert.equal(good.destination.iata, 'SFO');
-  const trace = { path: [[1000, 37.58, -122.20, 700, 280, false], [1060, 37.60, -122.30, 450, 280, false]] };
+  const now = Date.now() / 1000;
+  const trace = { path: [[now - 20, 37.58, -122.20, null, 280, false], [now - 10, 37.60, -122.30, null, 280, false]] };
   assert.equal(mergeRoutes(trace, db, { callsign: 'UAL3911', altFt: 1500, vRate: -700 }), null);
   const departing = mergeRoutes(null, { origin: { iata: 'SFO' }, destination: { iata: 'LAX' } }, { ...info, vRate: 1200 });
   assert.equal(departing.destination.iata, 'LAX');

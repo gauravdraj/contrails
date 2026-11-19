@@ -310,9 +310,6 @@ function runOriginDetection(hex, data) {
     if (core.tracePointOnGround(path[i]) || (Number.isFinite(altM) && altM <= 2500)) { originPt = path[i]; break; }
   }
   if (!originPt) return;
-  var lastPt = path[path.length - 1];
-  if (Number.isFinite(path[0][3]) && Number.isFinite(lastPt[3]) && path[0][3] > lastPt[3] &&
-      !path.some(function(pt) { return core.tracePointOnGround(pt); })) return;
   var bestDist = Infinity, bestApt = null;
   for (var j = 0; j < airportData.length; j++) {
     var ap = airportData[j];
@@ -513,7 +510,7 @@ function proactiveFr24SearchSweep() {
   for (var i = 0; i < aircraft.length; i++) {
     var a = aircraft[i];
     if (!a.callsign || a.private) continue;
-    if (fr24SearchPending[a.callsign]) continue;
+    if (fr24SearchPending[a.callsign] || routeRetryAt[a.callsign] > now) continue;
     if (fr24SearchFailed[a.callsign] && now - fr24SearchFailed[a.callsign] < 120000) continue;
     if (isLikelyPrivateCallsign(a.callsign)) continue;
     var rc = validateCachedRoute(a);
