@@ -20,7 +20,7 @@
 import assert from "node:assert/strict";
 import http from "node:http";
 import { spawn } from "node:child_process";
-import { access, mkdtemp, readFile, rm } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, extname, join, resolve, sep } from "node:path";
@@ -55,6 +55,13 @@ async function check(name, action) {
     report("FAIL " + name + ": " + error.message);
     throw error;
   }
+}
+
+async function boardScreenshot(name) {
+  if (!process.env.BROWSER_SCREENSHOT_DIR) return;
+  await mkdir(process.env.BROWSER_SCREENSHOT_DIR, { recursive: true });
+  const shot = await cdp.send('Page.captureScreenshot', { format: 'png' });
+  await writeFile(join(process.env.BROWSER_SCREENSHOT_DIR, name + '.png'), Buffer.from(shot.data, 'base64'));
 }
 
 async function until(name, predicate, timeoutMs = 15000, timeoutCode) {
@@ -513,11 +520,28 @@ async function main() {
         return workerRequests.has("GET /datis/LHR") && workerRequests.has("GET /schedule/LHR") && workerRequests.has("POST /routeset");
       });
       await until("board refresh completed", () => cdp.evaluate("(() => { const e = _airportPopupCache.LHR; return !!(e && e.ts && !e.loading && !e.stale && !e.error); })()"));
-      // Close through the DOM before testing the main feed so board polling cannot affect its failure count.
-      await cdp.evaluate(`(document.querySelector('.airport-schedule-popup .maplibregl-popup-close-button') ||
-        document.getElementById('airport-panel-close')).click()`);
+      assert.ok(await cdp.evaluate("!!document.querySelector('.sched-row .sched-runway') && !!document.querySelector('.sched-next .sched-runway')"), 'runway chips on rows and highlighted arrival');
+      assert.ok(await cdp.evaluate("!!document.querySelector('[data-countdown]') && !!document.querySelector('.sched-sequence')"));
+      await cdp.evaluate("document.querySelector('[data-board-view=ladder]').click()");
+      assert.ok(await cdp.evaluate("document.querySelectorAll('.sched-ladder-bead').length >= 4"), 'fixture arrivals render ladder beads');
+      assert.ok(await cdp.evaluate(`(() => {
+        const labels = [...document.querySelectorAll('.sched-ladder-bead')].map(b => b.querySelector('span').getBoundingClientRect());
+        return labels.every((a, i) => labels.every((b, j) => i === j || a.bottom <= b.top || b.bottom <= a.top || a.right <= b.left || b.right <= a.left));
+      })()`), 'callsign labels do not overlap on a crowded runway');
+      assert.equal(await cdp.evaluate("localStorage.getItem('contrails-airport-view')"), 'ladder');
+      assert.ok(await cdp.evaluate(`(() => {
+        const bead = document.querySelector('.sched-ladder-bead');
+        const row = _airportPopupCache.LHR.data.arrivals.find(r => r.hex === bead.dataset.hex);
+        row.etaMin += 0.2; renderSchedulePopup('arrivals');
+        return bead === document.querySelector('.sched-ladder-bead');
+      })()`), 'bead DOM persists across a refresh for smooth motion');
+      const selected = await cdp.evaluate(`(() => { const bead = document.querySelector('.sched-ladder-bead'); const hex = bead.dataset.hex; bead.click(); return hex; })()`);
       await until("airport board closed", () => cdp.evaluate("!_activeAirportPopup"));
-      return landings + " landings";
+      assert.equal(await cdp.evaluate('selectedAircraftId'), selected, 'bead selects the same aircraft as a list row');
+      // Selection centers and zooms the map; restore the fixture view for the existing outage/count checks.
+      await cdp.evaluate(`(() => { closeMapPopup(); setSelectedAircraft(null); setMapView(${VIEW.lat}, ${VIEW.lng}, ${VIEW.zoom}); })()`);
+      await until('fixture view restored after selection', () => cdp.evaluate("!map.isMoving() && viewZoom() === " + VIEW.zoom + " && " + summary + " === " + JSON.stringify(aircraftCount + " planes in view")));
+      return landings + " landings; runway chips, sequence, countdown, persisted ladder and bead selection";
     });
     await check("outage shown at failure threshold", async () => {
       await until("settled traffic request", () => cdp.evaluate("clearMapFetchTimer(); clearTimeout(moveEndDebounceTimer); moveEndDebounceTimer = null; clearRefreshTimer(); !fetchAbortController && !map.isMoving()"));
@@ -542,6 +566,7 @@ async function main() {
   }
   if (!perf) await check("route provenance fits cards and boards at 390 px", async () => {
     await cdp.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+    await cdp.evaluate("_airportBoardView = 'list'");
     const result = await cdp.evaluate(`(() => {
       const plane = aircraft[0], original = routeCache[plane.callsign];
       const host = document.createElement('div');
@@ -575,6 +600,65 @@ async function main() {
       assert.ok(!row.card.overflow && !row.boardOverflow && !row.rowOverflow, JSON.stringify(row));
     }
     return "reported, callsign-database and flight-path labels; no horizontal overflow";
+  });
+  if (!perf) await check('v248 board at 390 px: one-line rows, steady countdown, paired ladder and scorecard', async () => {
+    await cdp.evaluate("openAirportSchedulePopup('LHR', 'London Heathrow', 51.471, -0.46)");
+    await until('mobile board data', () => cdp.evaluate("!!_airportPopupCache.LHR.data.arrivals.length && !_airportPopupCache.LHR.loading"));
+    const before = await cdp.evaluate(`(() => {
+      clearActiveAirportRefreshTimer();
+      // Static board scenarios must not be replaced by the map's independent polling snapshots.
+      _airportPopupCache.LHR.snapshot = null;
+      const data = _airportPopupCache.LHR.data;
+      const source = data.arrivals[0], now = Date.now();
+      data.activeArrivalRunways = ['28L', '28R'];
+      data.arrivals = [
+        { ...source, hex: 'a00001', callsign: 'BAW100', runway: '28L', etaMin: 1.7, touchdownAtMs: now + 102000, sequence: 1 },
+        { ...source, hex: 'a00002', callsign: 'BAW101', runway: '28R', etaMin: 1.9, touchdownAtMs: now + 114000, sequence: 1 },
+        { ...source, hex: 'a00003', callsign: 'BAW102', runway: '28L', etaMin: 5, touchdownAtMs: now + 300000, sequence: 2 },
+        { ...source, hex: 'a00004', callsign: 'BAW103', runway: '28L', goAround: true, etaMin: 11, sequence: null }
+      ];
+      _airportCountdowns = {}; renderSchedulePopup('arrivals');
+      const rows = [...document.querySelectorAll('#airport-panel .sched-row')];
+      const card = document.querySelector('#airport-panel .sched-card').getBoundingClientRect();
+      return { top: card.top, height: card.height, right: card.right,
+        rowHeights: rows.map(r => r.getBoundingClientRect().height),
+        overflow: rows.some(r => r.scrollWidth > r.clientWidth),
+        countdown: document.querySelector('#airport-panel [data-countdown]').textContent };
+    })()`);
+    assert.ok(!before.overflow && before.right <= 390, JSON.stringify(before));
+    assert.ok(before.rowHeights.every(h => h <= 34), 'each arrival stays one line: ' + before.rowHeights);
+    assert.equal(before.countdown, '1:42');
+    await boardScreenshot('list-390');
+    await until('live countdown tick between traffic refreshes', () => cdp.evaluate("document.querySelector('#airport-panel [data-countdown]').textContent !== '1:42'"), 3500);
+    const after = await cdp.evaluate(`(() => {
+      const card = document.querySelector('#airport-panel .sched-card').getBoundingClientRect();
+      return { top: card.top, height: card.height, text: document.querySelector('#airport-panel [data-countdown]').textContent };
+    })()`);
+    assert.equal(after.top, before.top); assert.equal(after.height, before.height);
+    assert.ok(['1:41', '1:40'].includes(after.text), 'interpolated countdown: ' + after.text);
+    await cdp.evaluate("document.querySelector('#airport-panel [data-board-view=ladder]').click()");
+    assert.equal(await cdp.evaluate("document.querySelectorAll('#airport-panel .sched-ladder-bead').length"), 3);
+    assert.equal(await cdp.evaluate("document.querySelectorAll('#airport-panel .sched-ladder-pair').length"), 1);
+    assert.ok(await cdp.evaluate("document.querySelector('#airport-panel .sched-ladder-holding').textContent.includes('GO-AROUND')"));
+    await boardScreenshot('ladder-390');
+    await cdp.evaluate(`(() => {
+      const now = Date.now();
+      const completed = [18, 26].map((seconds, i) => ({ key: 'LHR:eta-fixture-' + i, airport: 'LHR', hex: 'eta-fixture-' + i,
+        firstAtMs: now - 15 * 60000, lastSeenAtMs: now - 5000, actualAtMs: now - i * 60000,
+        predictions: Object.fromEntries([10, 5, 2, 1].map(h => [h, { touchdownAtMs: now - i * 60000 + seconds * 1000 }])) }));
+      saveAirportEtaLog(loadAirportEtaLog().concat(completed)); renderSchedulePopup('arrivals');
+    })()`);
+    assert.ok(await cdp.evaluate("document.querySelector('#airport-panel .sched-accuracy-link').textContent.includes('median error 0:22 at 2 min')"));
+    await cdp.evaluate("document.querySelector('#airport-panel [data-eta-action=toggle]').click()");
+    assert.equal(await cdp.evaluate("document.querySelectorAll('#airport-panel .sched-accuracy tbody tr').length"), 4);
+    assert.ok(await cdp.evaluate("document.querySelector('#airport-panel .sched-accuracy').textContent.includes('only while this board is open')"));
+    assert.ok(await cdp.evaluate("document.querySelector('#airport-panel .sched-accuracy').scrollWidth <= document.querySelector('#airport-panel .sched-accuracy').clientWidth"));
+    await boardScreenshot('scorecard-390');
+    await cdp.evaluate("document.querySelector('#airport-panel [data-eta-action=reset]').click()");
+    assert.equal(await cdp.evaluate("loadAirportEtaLog().filter(r => r.airport === 'LHR').length"), 0);
+    await cdp.evaluate("document.getElementById('airport-panel-close').click()");
+    assert.equal(await cdp.evaluate('_airportCountdownTimer'), null, 'closing the board stops the countdown timer');
+    return '390×844; rows ≤34 px; stable sheet height; seconds tick; three beads and parallel pair; local scorecard/reset';
   });
   await check("app requests local or fulfilled by fixtures", async () => {
     assert.deepEqual(unexpectedRequests, []);

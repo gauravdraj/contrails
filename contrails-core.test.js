@@ -2564,3 +2564,280 @@ test('v247 board: route rows and next-flight summary disclose inferred versus re
   assert.equal((html.match(/>reported</g) || []).length, 2);
   assert.match(html, /from FR24 live schedule/);
 });
+
+// v2.48: airport board observations use real report timestamps, never synthetic trail seeds.
+const v248End = core.matchRunwayDesignator(reviewRunways.SFO, 'SFO', '28L');
+const v248Heading = core.bearingDegrees(v248End.thresholdLat, v248End.thresholdLon, v248End.farEndLat, v248End.farEndLon);
+const v248Now = Date.UTC(2026, 10, 18, 12);
+function v248Track(altitudes, options = {}) {
+  return altitudes.map((alt, i) => {
+    const p = core.projectLatLng(v248End.thresholdLat, v248End.thresholdLon, (v248Heading + 180) % 360, 4000 - i * 350);
+    return [p[0], p[1], v248Now + i * 10000, alt + (options.elevation || 0), options.groundFrom <= i, false, false];
+  });
+}
+function v248Go(points, state, options) {
+  return core.updateGoAround(state, points, points.at(-1)[2], { runways: [v248End], ...options });
+}
+test('v248 go-around: sustained climb after descending final, repeated samples and elevated fields', () => {
+  for (const elevation of [0, 5400]) {
+    const track = v248Track([1100, 850, 600, 750, 940], { elevation });
+    const opts = { fieldElevFt: elevation };
+    assert.equal(v248Go(track.slice(0, 4), null, opts).goAroundAtMs, null);
+    const state = v248Go(track, null, opts);
+    assert.equal(state.goAroundAtMs, track.at(-1)[2]);
+    assert.equal(state.runway, '28L');
+    assert.equal(state.backAtMs - state.goAroundAtMs, 11 * 60000);
+    assert.deepEqual(v248Go(track, state, opts), state, 'same reports do not count twice');
+  }
+});
+for (const [name, alts, opts] of [
+  ['normal landing', [1100, 850, 600, 200, 0, 0], { groundFrom: 4 }],
+  ['departure', [0, 0, 200, 500, 800], { groundFrom: Infinity }],
+  ['single noisy sample', [1100, 850, 600, 1100, 550, 300], {}],
+  ['low pass that lands', [1100, 850, 600, 620, 700, 200, 0], { groundFrom: 6 }],
+  ['touch-and-go', [1100, 850, 600, 0, 200, 600], {}]
+]) test('v248 go-around: rejects ' + name, () => {
+  const points = v248Track(alts, opts);
+  if (name === 'touch-and-go') points[3][4] = true;
+  assert.equal(v248Go(points).goAroundAtMs, null);
+});
+test('v248 go-around: requires this airport, fresh continuous real reports and clears on final/ground/expiry', () => {
+  const points = v248Track([1100, 850, 600, 750, 940]);
+  assert.equal(v248Go(points, null, { runways: [] }).goAroundAtMs, null);
+  assert.equal(v248Go(points, null, { departing: true }).goAroundAtMs, null);
+  const seeded = points.map(p => [...p.slice(0, 6), true]);
+  assert.equal(v248Go(seeded).goAroundAtMs, null);
+  const broken = points.map(p => p.slice()); broken[3][5] = true;
+  assert.equal(v248Go(broken).goAroundAtMs, null);
+  const state = v248Go(points);
+  const reentry = v248Track([1100, 850, 600, 750, 940, 850, 600]);
+  assert.equal(v248Go(reentry, state).goAroundAtMs, null);
+  const ground = v248Track([1100, 850, 600, 750, 940, 0], { groundFrom: 5 });
+  assert.equal(v248Go(ground, state).goAroundAtMs, null);
+  assert.equal(core.updateGoAround(state, points, state.goAroundAtMs + 25 * 60000, { runways: [v248End] }).goAroundAtMs, null);
+  assert.equal(core.updateGoAround(null, points, v248Now + 10 * 60000, { runways: [v248End] }).goAroundAtMs, null);
+});
+test('v248 go-around: explicit state excludes runway inference and feed ETA blending', () => {
+  const plane = onRunwayAircraft('28L', { vRate: 15, goAround: true });
+  assert.equal(core.deriveActiveRunways(reviewRunways.SFO, 'SFO', [plane]), null);
+  assert.equal(core.blendArrivalEta(12, 40, { goAround: true }), 12);
+});
+test('v248 go-around: clears on re-entry to extended final above the initial arming height', () => {
+  const points = v248Track([1100, 850, 600, 750, 940]);
+  const state = v248Go(points);
+  const reentry = [3000, 2800, 2600].map((alt, i) => {
+    const [lat, lng] = core.projectLatLng(v248End.thresholdLat, v248End.thresholdLon, (v248Heading + 180) % 360, 12000 - i * 500);
+    return [lat, lng, v248Now + 120000 + i * 10000, alt, false];
+  });
+  assert.equal(v248Go(reentry, state).goAroundAtMs, null);
+});
+test('v248 runway: closest final centerline wins on staggered parallels; assumptions stay separate', () => {
+  const ends = core.runwayApproachEnds(reviewRunways.LAX, { designators: true });
+  const end = core.matchRunwayDesignator(reviewRunways.LAX, 'LAX', '25L');
+  const track = core.bearingDegrees(end.thresholdLat, end.thresholdLon, end.farEndLat, end.farEndLon);
+  const [lat, lng] = core.projectLatLng(end.thresholdLat, end.thresholdLon, (track + 180) % 360, 4000);
+  const matched = core.matchArrivalRunway({ lat, lng, track }, ends);
+  assert.equal(matched.runway.designator, '25L');
+  assert.equal(matched.onFinal, true);
+  assert.equal(core.matchArrivalRunway({ lat, lng, track: (track + 180) % 360 }, ends), null);
+  assert.equal(core.matchArrivalRunway({ lat, lng, track: null }, ends), null);
+});
+test('v248 sequence: independent per runway, stable ties, unknown and go-arounds unnumbered', () => {
+  const rows = [{ hex: 'b', runway: '28L', pathKm: 4, etaMin: 2 }, { hex: 'a', runway: '28L', pathKm: 4, etaMin: 2 },
+    { hex: 'c', runway: '28R', pathKm: 8, etaMin: 3 }, { hex: 'd', runway: '28L', pathKm: 1, etaMin: 1 },
+    { hex: 'e', etaMin: 0.2 }, { hex: 'f', runway: '28L', etaMin: 1, goAround: true }];
+  const copy = JSON.stringify(rows);
+  const sequenced = core.sequenceAirportArrivals(rows);
+  assert.deepEqual(sequenced.map(r => r.sequence), [3, 2, 1, 1, null, null]);
+  assert.equal(JSON.stringify(rows), copy);
+});
+test('v248 countdown: seconds formatting, interpolation, bounded corrections and duplicate renders', () => {
+  assert.equal(core.formatArrivalCountdown(102), '1:42');
+  assert.equal(core.formatArrivalCountdown(-9), '0:00');
+  assert.equal(core.formatArrivalCountdown(null), '—');
+  let s = core.updateArrivalCountdown(null, v248Now + 102000, v248Now);
+  s = core.updateArrivalCountdown(s, s.targetMs, v248Now + 5000);
+  assert.equal(s.remainingSec, 97);
+  const corrected = core.updateArrivalCountdown(s, v248Now + 300000, v248Now + 6000);
+  assert.ok(corrected.remainingSec <= s.remainingSec + 2);
+  assert.deepEqual(core.updateArrivalCountdown(corrected, corrected.targetMs, corrected.atMs), corrected);
+  const earlier = core.updateArrivalCountdown(s, v248Now + 20000, v248Now + 6000);
+  assert.ok(earlier.remainingSec >= s.remainingSec - 3);
+});
+test('v248 countdown: crossing ten minutes keeps easing; scorecard captures the displayed forecast on its display clock', () => {
+  const c = v248BoardContext();
+  c._airportCountdowns.abc123 = core.updateArrivalCountdown(null, v248Now + 102000, v248Now);
+  const row = { hex: 'abc123', etaMin: 12 };
+  assert.match(c.scheduleArrivalTime(row), />1:42</, 'a revised raw forecast must not bypass easing');
+  const log = core.recordArrivalPrediction([], { airport: 'SFO', hex: 'abc123', nowMs: v248Now,
+    predictionAtMs: v248Now + 20000, etaMin: 1 });
+  assert.equal(log[0].predictions[1].touchdownAtMs, v248Now + 80000);
+  assert.equal(log[0].predictions[1].observedAtMs, v248Now + 20000);
+});
+test('v248 ladder: clamped time positions, parallel pairs only, one pair per bead and four strips', () => {
+  const rows = [
+    { hex: 'a', runway: '28L', etaMin: 2 }, { hex: 'b', runway: '28R', etaMin: 2.3 },
+    { hex: 'c', runway: '28R', etaMin: 2.4 }, { hex: 'd', runway: '1L', etaMin: 2.1 },
+    { hex: 'e', runway: '28L', etaMin: -2 }, { hex: 'f', runway: '28L', etaMin: 25 },
+    { hex: 'g', runway: '28L', etaMin: 3, goAround: true }, { hex: 'h', etaMin: 3 }
+  ];
+  const layout = core.layoutApproachLadder(rows, { runways: ['28L', '28R', '1L', '1R', '10L'] });
+  assert.equal(layout.runways.length, 4);
+  assert.equal(layout.beads.find(b => b.hex === 'e').y, 1);
+  assert.equal(layout.beads.find(b => b.hex === 'f').y, 0);
+  assert.ok(Math.abs(layout.beads[0].y - 13 / 15) < 1e-9);
+  assert.deepEqual(layout.pairs.map(p => [p.a, p.b]), [['a', 'b']]);
+  assert.equal(layout.beads.length, 6);
+  assert.deepEqual(core.layoutApproachLadder([], {}).beads, []);
+  const crowded = core.layoutApproachLadder(Array.from({ length: 12 }, (_, i) => ({ hex: String(i), runway: '27R', etaMin: 2 })), {});
+  assert.ok(crowded.beads.every(b => b.compactLabel && b.labelY >= 0 && b.labelY <= 1));
+  assert.ok(crowded.beads.every((b, i, all) => !i || b.labelY - all[i - 1].labelY > 0.08));
+});
+test('v248 scorecard: buckets, first forecast, touchdown matching, midnight and airport isolation', () => {
+  const observe = (records, extra) => core.recordArrivalPrediction(records, { airport: 'SFO', hex: 'abc123', nowMs: v248Now, etaMin: 2, ...extra });
+  assert.equal(core.arrivalEtaHorizon(9.7), 10);
+  assert.equal(core.arrivalEtaHorizon(5.2), 5);
+  assert.equal(core.arrivalEtaHorizon(2.1), 2);
+  assert.equal(core.arrivalEtaHorizon(0.9), 1);
+  assert.equal(core.arrivalEtaHorizon(3), null);
+  let records = observe([], {});
+  const original = JSON.stringify(records);
+  records = observe(records, { nowMs: v248Now + 5000, etaMin: 2.1 });
+  assert.equal(records[0].predictions[2].touchdownAtMs, v248Now + 120000);
+  assert.notEqual(JSON.stringify(records), original);
+  assert.equal(observe(records, { airport: 'OAK', touchdown: true, atAirport: true, nowMs: v248Now + 90000 }).length, 1);
+  assert.equal(observe(records, { touchdown: true, atAirport: false, nowMs: v248Now + 90000 })[0].actualAtMs, null);
+  records = observe(records, { touchdown: true, atAirport: true, nowMs: v248Now + 90000 });
+  assert.equal(records[0].actualAtMs, v248Now + 90000);
+  assert.equal(observe(records, { touchdown: true, atAirport: true, nowMs: v248Now + 95000 })[0].actualAtMs, records[0].actualAtMs);
+  const midnight = Date.UTC(2026, 10, 19);
+  const crossDay = observe(observe([], { nowMs: midnight - 60000, etaMin: 1 }), { nowMs: midnight + 5000, touchdown: true, atAirport: true });
+  assert.equal(crossDay.length, 1);
+  assert.equal(crossDay[0].actualAtMs, midnight + 5000);
+  assert.equal(observe([], { goAround: true }).length, 0);
+  assert.equal(observe([], { touchdown: true, atAirport: true }).length, 0, 'ground-only sightings cannot be scored');
+  assert.equal(observe(observe([], {}), { nowMs: v248Now + 3600000, touchdown: true, atAirport: true })[0].actualAtMs, null);
+});
+test('v248 scorecard: absolute error median/p90, last 50 per airport, cap prunes oldest', () => {
+  const records = [10, 20, 30, 100].map((error, i) => ({ airport: 'SFO', hex: String(i), key: String(i),
+    firstAtMs: v248Now + i, actualAtMs: v248Now + 120000 + i,
+    predictions: { 2: { touchdownAtMs: v248Now + 120000 + i + (i % 2 ? -1 : 1) * error * 1000 } } }));
+  const score = core.arrivalEtaScorecard(records.concat({ ...records[0], airport: 'OAK' }), 'SFO');
+  assert.equal(score.count, 4);
+  assert.deepEqual(score.horizons.find(h => h.minutes === 2), { minutes: 2, count: 4, medianSec: 25, p90Sec: 100 });
+  assert.equal(core.arrivalEtaScorecard(records, 'OAK').count, 0);
+  const many = Array.from({ length: 2001 }, (_, i) => ({ ...records[0], key: String(i), firstAtMs: v248Now + i, actualAtMs: v248Now + 120000 + i }));
+  assert.equal(core.arrivalEtaScorecard(many, 'SFO').count, 50);
+  const pruned = core.pruneArrivalLog(many);
+  assert.equal(pruned.length, 2000);
+  assert.equal(pruned[0].key, '1');
+  assert.equal(many.length, 2001);
+});
+function v248BoardContext() {
+  return classicScript('./js/airport-board.js', { runwayData: reviewRunways, airportData: [['SFO', 37.62, -122.375]],
+    posHistory: {}, extraState: {}, routeCache: {}, scheduleDataCache: {}, SCHEDULE_CACHE_TTL: 60000,
+    validateCachedRoute: () => ({ destination: { iata: 'SFO' }, confidence: 'high' }) });
+}
+test('v248 board: go-around stays in Landings, no departure inference; runway chip, countdown and ladder markup', () => {
+  const c = v248BoardContext();
+  let now = v248Now + 40000;
+  c.Date = class extends Date { static now() { return now; } };
+  const points = v248Track([1100, 850, 600, 750, 940]);
+  const last = points.at(-1);
+  const plane = { icao24: 'abc123', callsign: 'UAL123', aircraftType: 'A320', lat: last[0], lng: last[1],
+    altFt: last[3], track: v248Heading, speedKts: 150, vRate: 19, ground: false, reportTs: now };
+  c.posHistory.abc123 = points;
+  let board = c.buildLiveScheduleData('SFO', 37.62, -122.375, [plane]);
+  assert.equal(board.arrivals[0]?.goAround, true);
+  assert.equal(board.departures.length, 0);
+  assert.match(c.buildScheduleCardContent('SFO', 'San Francisco', board, 'arrivals'), /GO-AROUND.*back in ~11 min/);
+  now += 5000;
+  board = c.buildLiveScheduleData('SFO', 37.62, -122.375, []);
+  assert.equal(board.arrivals[0]?.goAround, true, 'one missing poll retains the go-around');
+  const arriving = { ...plane, icao24: 'def456', callsign: 'UAL456', altFt: 900, vRate: -12, reportTs: now };
+  board = c.buildLiveScheduleData('SFO', 37.62, -122.375, [arriving]);
+  assert.equal(board.arrivals[0].runway, '28L');
+  assert.equal(board.arrivals[0].sequence, 1);
+  let html = c.buildScheduleCardContent('SFO', 'San Francisco', board, 'arrivals');
+  assert.match(html, /sched-runway[^>]*>28L</);
+  assert.match(html, /#1/);
+  assert.match(html, /data-countdown=/);
+  c._airportBoardView = 'ladder';
+  html = c.buildScheduleCardContent('SFO', 'San Francisco', board, 'arrivals');
+  assert.match(html, /sched-ladder-bead/);
+  assert.match(html, /ETA accuracy/);
+});
+test('v248 board: scorecard records only an open board, persists, resets one airport and tolerates blocked storage', () => {
+  const c = v248BoardContext();
+  const storage = {};
+  c.window = { localStorage: { getItem: k => storage[k], setItem: (k, v) => { storage[k] = v; } } };
+  let now = v248Now;
+  c.Date = class extends Date { static now() { return now; } };
+  const row = { hex: 'abc123', etaMin: 2, reportTs: v248Now };
+  c.observeAirportEta('SFO', { arrivals: [row] }, []);
+  assert.equal(c.loadAirportEtaLog().length, 0);
+  c._activeAirportPopup = {}; c._activeAirportIata = 'SFO';
+  c.observeAirportEta('SFO', { arrivals: [row] }, []);
+  assert.equal(c.loadAirportEtaLog().length, 1);
+  assert.ok(Object.values(storage).some(s => JSON.parse(s).length === 1));
+  c.resetAirportEta('SFO');
+  assert.equal(c.loadAirportEtaLog().length, 0);
+  c.observeAirportEta('SFO', { arrivals: [row] }, []);
+  assert.equal(c.loadAirportEtaLog().length, 0, 'reset does not replay the same report');
+  now += 5000;
+  c.window.localStorage.setItem = () => { throw new Error('quota'); };
+  assert.doesNotThrow(() => c.observeAirportEta('SFO', { arrivals: [{ ...row, reportTs: now }] }, []));
+  assert.equal(c.loadAirportEtaLog().length, 1);
+  assert.equal(c._airportEtaStorageAvailable, false);
+});
+test('v248 board: off-viewport reports detect a go-around without counting repeated refreshes', () => {
+  const c = v248BoardContext();
+  let now = v248Now;
+  c.Date = class extends Date { static now() { return now; } };
+  const points = v248Track([1100, 850, 600, 750, 940]);
+  let board;
+  points.forEach((p, i) => {
+    now = p[2];
+    const plane = { icao24: 'abc123', callsign: 'UAL123', lat: p[0], lng: p[1], altFt: p[3],
+      track: v248Heading, speedKts: 150, vRate: i < 3 ? -20 : 15, ground: false, reportTs: now };
+    for (let repeat = 0; repeat < 3; repeat++) board = c.buildLiveScheduleData('SFO', 37.62, -122.375, [plane]);
+    assert.equal(board.arrivals.some(r => r.goAround), i === 4);
+  });
+  assert.equal(board.arrivals[0].goAround, true);
+  assert.equal(c.rememberActiveRunways('SFO', null).departing_runways.length, 0);
+  assert.deepEqual(Object.keys(c.posHistory), [], 'board observations do not mutate map trails');
+  now += 25 * 60000;
+  assert.equal(c.buildLiveScheduleData('SFO', 37.62, -122.375, []).arrivals.length, 0);
+});
+test('v248 board: active-runway assumptions are dimmed and matched departures carry a chip', () => {
+  const c = v248BoardContext();
+  const [lat, lng] = core.projectLatLng(v248End.thresholdLat, v248End.thresholdLon, (v248Heading + 90) % 360, 8000);
+  const plane = { icao24: 'abc123', callsign: 'UAL123', lat, lng, altFt: 2500,
+    track: (v248Heading + 180) % 360, speedKts: 180, vRate: -12, ground: false };
+  const board = c.buildLiveScheduleData('SFO', 37.62, -122.375, [plane], { arriving_runways: ['28L'] });
+  assert.equal(board.arrivals[0].runwayAssumed, true);
+  assert.match(c.buildScheduleCardContent('SFO', 'San Francisco', board, 'arrivals'), /sched-runway assumed/);
+  c.validateCachedRoute = () => ({ origin: { iata: 'SFO' }, destination: { iata: 'LAX' } });
+  const departure = onRunwayAircraft('28L', { callsign: 'UAL456', icao24: 'def456', speedKts: 90, ground: true, vRate: 0 });
+  const dep = c.buildLiveScheduleData('SFO', 37.62, -122.375, [departure], { departing_runways: ['28L'] });
+  assert.equal(dep.departures[0].runway, '28L');
+  assert.match(c.buildScheduleCardContent('SFO', 'San Francisco', dep, 'departures'), /sched-runway/);
+});
+test('v248 scorecard: actual ground reports match an earlier displayed arrival and preserve other airports on reset', () => {
+  const c = v248BoardContext();
+  let now = v248Now;
+  c.Date = class extends Date { static now() { return now; } };
+  c._activeAirportPopup = {}; c._activeAirportIata = 'SFO'; c._activeAirportLat = 37.62; c._activeAirportLng = -122.375;
+  c.observeAirportEta('SFO', { arrivals: [{ hex: 'abc123', etaMin: 1, reportTs: now }] }, []);
+  now += 55000;
+  const plane = { icao24: 'abc123', ground: true, lat: 37.62, lng: -122.375, reportTs: now };
+  c.observeAirportEta('SFO', { arrivals: [] }, [{ ...plane, lat: 38 }]);
+  assert.equal(c.loadAirportEtaLog()[0].actualAtMs, null, 'ground at another airport is not touchdown here');
+  c.observeAirportEta('SFO', { arrivals: [] }, [plane]);
+  assert.equal(c.loadAirportEtaLog()[0].actualAtMs, now);
+  assert.equal(core.arrivalEtaScorecard(c.loadAirportEtaLog(), 'SFO').horizons[3].medianSec, 5);
+  c.saveAirportEtaLog([...c.loadAirportEtaLog(), { ...c.loadAirportEtaLog()[0], airport: 'OAK', key: 'OAK:abc123:2026-11-18' }]);
+  c.resetAirportEta('SFO');
+  assert.equal(c.loadAirportEtaLog().length, 1);
+  assert.equal(c.loadAirportEtaLog()[0].airport, 'OAK');
+});

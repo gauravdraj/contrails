@@ -682,6 +682,7 @@
     for (var i = 0; i < aircraft.length; i++) {
       var a = aircraft[i];
       if (!a || a.lat == null || a.lng == null || a.track == null) continue;
+      if (a.goAround) continue;
       if (a.altFt != null && a.altFt > maxAltFt) continue;
       var vRateFpm = a.vRate != null ? a.vRate * 60 : null;
       if (!a.ground && Number.isFinite(a.altFt) && vRateFpm != null && vRateFpm <= 0) {
@@ -864,13 +865,19 @@
   // shorter than the straight line. Null without runways.
   // runways.json entries ([leLat, leLon, leElev, heLat, heLon, heElev, label]) as landing ends in both
   // directions, shaped like matchRunwayDesignator results.
-  function runwayApproachEnds(entries) {
+  function runwayApproachEnds(entries, options) {
     var ends = [];
     for (var i = 0; entries && i < entries.length; i++) {
       var e = entries[i];
       if (!e || e.length < 5) continue;
-      ends.push({ thresholdLat: e[0], thresholdLon: e[1], farEndLat: e[3], farEndLon: e[4] });
-      ends.push({ thresholdLat: e[3], thresholdLon: e[4], farEndLat: e[0], farEndLon: e[1] });
+      var label = typeof e[6] === "string" && /^(\S+)\s+(\S+)\/(\S+)$/.exec(e[6]);
+      if (label && options && options.designators) {
+        ends.push(matchRunwayDesignator([e], label[1], label[2]));
+        ends.push(matchRunwayDesignator([e], label[1], label[3]));
+      } else {
+        ends.push({ thresholdLat: e[0], thresholdLon: e[1], farEndLat: e[3], farEndLon: e[4] });
+        ends.push({ thresholdLat: e[3], thresholdLon: e[4], farEndLat: e[0], farEndLon: e[1] });
+      }
     }
     return ends;
   }
@@ -901,6 +908,212 @@
     return best;
   }
 
+  // A measured final/runway match uses the nearest centerline, including staggered parallel thresholds.
+  // Callers may separately fall back to an active-runway path; that is an assumption, not a match.
+  function matchArrivalRunway(a, runways) {
+    if (!a || !Number.isFinite(a.track)) return null;
+    var best = null, bestCross = Infinity;
+    for (var i = 0; runways && i < runways.length; i++) {
+      var r = runways[i];
+      if (!r || angleDiffDeg(a.track, bearingDegrees(r.thresholdLat, r.thresholdLon, r.farEndLat, r.farEndLon)) > 30) continue;
+      var path = approachPathKm(a.lat, a.lng, a.track, [r]);
+      var on = pointOnRunway(a.lat, a.lng, r.thresholdLat, r.thresholdLon, r.farEndLat, r.farEndLon);
+      if (!path || (!path.onFinal && !on.onRunway)) continue;
+      var cross = Math.abs(crossTrackKm(a.lat, a.lng, r.thresholdLat, r.thresholdLon, r.farEndLat, r.farEndLon));
+      if (cross < bestCross) {
+        bestCross = cross;
+        best = { runway: r, onFinal: path.onFinal, onRunway: on.onRunway, pathKm: on.onRunway ? 0 : path.pathKm };
+      }
+    }
+    return best;
+  }
+
+  // Real posHistory points: [lat, lng, reportMs, altitudeMSL, ground, breakBefore, synthetic].
+  // Two consecutive >500 fpm altitude intervals AND >300 ft gained after a low descending final.
+  // State consumes each report once, survives lost polls, and never bridges ground or a history gap.
+  function updateGoAround(previous, points, nowMs, options) {
+    options = options || {};
+    var state = Object.assign({ goAroundAtMs: null, lastTs: null }, previous);
+    var elevation = options.fieldElevFt || 0;
+    function disarm() { state.armedAtMs = null; state.climbSamples = 0; state.lowAltFt = null; }
+    function clear() { disarm(); state.goAroundAtMs = null; state.backAtMs = null; state.finalSamples = 0; }
+    if (state.goAroundAtMs != null && nowMs - state.goAroundAtMs >= 25 * 60000) clear();
+    for (var i = 0; points && i < points.length; i++) {
+      var p = points[i];
+      if (!p || p[6] || !Number.isFinite(p[2]) || p[2] > nowMs || p[2] < nowMs - 180000 ||
+          (state.lastTs != null && p[2] <= state.lastTs)) continue;
+      var before = state.previous;
+      if (before && !p[4] && p[2] - before[2] < 1000) continue;
+      state.lastTs = p[2];
+      state.previous = p;
+      if (p[4]) { clear(); continue; }
+      var dt = before ? p[2] - before[2] : 0;
+      if (!before || before[4] || p[5] || dt < 1000 || dt > 30000 ||
+          !Number.isFinite(p[3]) || !Number.isFinite(before[3])) {
+        disarm(); state.finalSamples = 0; continue;
+      }
+      var rate = (p[3] - before[3]) * 60000 / dt;
+      var match = matchArrivalRunway({ lat: p[0], lng: p[1], track: bearingDegrees(before[0], before[1], p[0], p[1]) }, options.runways);
+      var finalApproach = match && (match.onFinal || match.onRunway) && rate < -100;
+      var final = finalApproach && match.pathKm <= 6 && p[3] - elevation < 1500 && p[3] - elevation >= -100;
+      if (state.goAroundAtMs != null) {
+        state.finalSamples = finalApproach ? (state.finalSamples || 0) + 1 : 0;
+        if (state.finalSamples >= 2) clear();
+        else continue;
+      }
+      if (options.departing) { disarm(); continue; }
+      if (final) {
+        state.armedAtMs = p[2]; state.runway = match.runway.designator || null;
+        state.lowAltFt = p[3]; state.climbSamples = 0;
+      } else if (state.armedAtMs != null && p[2] - state.armedAtMs <= 120000) {
+        state.lowAltFt = Math.min(state.lowAltFt, p[3]);
+        state.climbSamples = rate > 500 ? (state.climbSamples || 0) + 1 : 0;
+        if (state.climbSamples >= 2 && p[3] - state.lowAltFt > 300) {
+          state.goAroundAtMs = p[2]; state.backAtMs = p[2] + 11 * 60000; state.finalSamples = 0;
+        }
+      } else disarm();
+    }
+    return state;
+  }
+
+  function sequenceAirportArrivals(rows) {
+    var result = (rows || []).map(function(row) { return Object.assign({}, row, { sequence: null }); });
+    var groups = {};
+    result.forEach(function(row) {
+      if (!row.runway || row.goAround) return;
+      var key = normalizeRunwayDesignator(row.runway);
+      if (!key) return;
+      (groups[key] || (groups[key] = [])).push(row);
+    });
+    Object.keys(groups).forEach(function(key) {
+      groups[key].sort(function(a, b) {
+        var distance = Number.isFinite(a.pathKm) && Number.isFinite(b.pathKm) ? a.pathKm - b.pathKm : 0;
+        var etaA = Number.isFinite(a.etaMin) ? a.etaMin : Infinity;
+        var etaB = Number.isFinite(b.etaMin) ? b.etaMin : Infinity;
+        return (etaA === etaB ? 0 : etaA - etaB) || distance || String(a.hex || a.callsign).localeCompare(String(b.hex || b.callsign));
+      }).forEach(function(row, i) { row.sequence = i + 1; });
+    });
+    return result;
+  }
+
+  function formatArrivalCountdown(seconds) {
+    if (!Number.isFinite(seconds)) return "\u2014";
+    var sec = Math.max(0, Math.ceil(seconds));
+    return Math.floor(sec / 60) + ":" + (sec % 60 < 10 ? "0" : "") + sec % 60;
+  }
+
+  function updateArrivalCountdown(previous, targetMs, nowMs) {
+    var desired = Math.max(0, (targetMs - nowMs) / 1000);
+    if (!previous) return { atMs: nowMs, targetMs: targetMs, remainingSec: desired };
+    var elapsed = Math.max(0, (nowMs - previous.atMs) / 1000);
+    var remaining = Math.max(0, previous.remainingSec - elapsed);
+    // Ease both earlier and later corrections; repeated render calls at the same time cannot compound them.
+    var step = Math.min(2, elapsed * 2);
+    remaining += Math.max(-step, Math.min(step, desired - remaining));
+    return { atMs: nowMs, targetMs: targetMs, remainingSec: Math.max(0, remaining) };
+  }
+
+  function layoutApproachLadder(rows, options) {
+    options = options || {};
+    var runways = [], beads = [], pairs = [];
+    function addRunway(r) {
+      if (r && runways.indexOf(r) === -1 && runways.length < 4) runways.push(r);
+    }
+    (options.runways || []).forEach(addRunway);
+    (rows || []).filter(function(r) { return !r.goAround && r.runway; }).map(function(r) { return r.runway; }).sort().forEach(addRunway);
+    (rows || []).forEach(function(r) {
+      var lane = runways.indexOf(r.runway);
+      if (r.goAround || lane < 0 || !Number.isFinite(r.etaMin)) return;
+      beads.push(Object.assign({}, r, { lane: lane, y: 1 - Math.max(0, Math.min(15, r.etaMin)) / 15 }));
+    });
+    // Keep dots at the true time; spread labels within each strip and connect displaced labels to dots.
+    runways.forEach(function(runway, lane) {
+      var labels = beads.filter(function(b) { return b.lane === lane; }).sort(function(a, b) { return a.y - b.y; });
+      var gap = Math.min(0.14, 1 / Math.max(1, labels.length - 1));
+      labels.forEach(function(b, i) {
+        b.labelY = Math.max(b.y, i ? labels[i - 1].labelY + gap : 0);
+        b.compactLabel = labels.length > 8;
+      });
+      for (var i = labels.length - 1; i >= 0; i--) labels[i].labelY = Math.max(0, Math.min(labels[i].labelY, i === labels.length - 1 ? 1 : labels[i + 1].labelY - gap));
+    });
+    var candidates = [];
+    for (var i = 0; i < beads.length; i++) for (var j = i + 1; j < beads.length; j++) {
+      var a = beads[i], b = beads[j];
+      var ar = /^(\d+)[LRC]$/.exec(a.runway), br = /^(\d+)[LRC]$/.exec(b.runway);
+      var delta = Math.abs(a.etaMin - b.etaMin) * 60;
+      if (ar && br && ar[1] === br[1] && a.lane !== b.lane && delta <= 20 && !a.runwayAssumed && !b.runwayAssumed) {
+        candidates.push({ a: a.hex, b: b.hex, left: Math.min(a.lane, b.lane), right: Math.max(a.lane, b.lane),
+          y: (a.y + b.y) / 2, deltaSec: delta });
+      }
+    }
+    var paired = {};
+    candidates.sort(function(a, b) { return a.deltaSec - b.deltaSec; }).forEach(function(pair) {
+      if (paired[pair.a] || paired[pair.b]) return;
+      paired[pair.a] = paired[pair.b] = true; pairs.push(pair);
+    });
+    return { runways: runways, beads: beads, pairs: pairs };
+  }
+
+  // Capture once near each *predicted* horizon, avoiding invented samples when the board was closed.
+  function arrivalEtaHorizon(etaMin) {
+    if (!Number.isFinite(etaMin)) return null;
+    var horizons = [10, 5, 2, 1], windows = [1, 0.5, 0.25, 0.2];
+    for (var i = 0; i < horizons.length; i++) if (Math.abs(etaMin - horizons[i]) <= windows[i]) return horizons[i];
+    return null;
+  }
+
+  function pruneArrivalLog(records) {
+    return (records || []).filter(function(r) { return r && r.airport && r.hex && Number.isFinite(r.firstAtMs) && r.predictions; })
+      .slice().sort(function(a, b) { return a.firstAtMs - b.firstAtMs; }).slice(-2000);
+  }
+
+  function recordArrivalPrediction(records, observation) {
+    var o = observation || {}, now = o.nowMs;
+    if (!o.airport || !o.hex || !Number.isFinite(now) || o.goAround) return records;
+    var day = new Date(now).toISOString().slice(0, 10);
+    var key = o.airport + ":" + o.hex + ":" + day;
+    var index = -1;
+    // An unfinished arrival can cross UTC midnight; completed records never absorb a new day's flight.
+    for (var i = records.length - 1; i >= 0; i--) {
+      var r = records[i];
+      if (r.airport !== o.airport || r.hex !== o.hex) continue;
+      if (r.key === key || (r.actualAtMs == null && now >= r.lastSeenAtMs && now - r.lastSeenAtMs <= 30 * 60000)) { index = i; break; }
+    }
+    var record = index < 0 ? null : records[index];
+    if (record && record.actualAtMs != null) return records;
+    if (o.touchdown) {
+      if (!record || !o.atAirport || now < record.lastSeenAtMs || now - record.lastSeenAtMs > 120000) return records;
+      record = Object.assign({}, record, { actualAtMs: now });
+    } else {
+      if (!Number.isFinite(o.etaMin) || o.etaMin <= 0 || (record && now <= record.lastSeenAtMs)) return records;
+      record = Object.assign({}, record || { key: key, airport: o.airport, hex: o.hex, firstAtMs: now, actualAtMs: null, predictions: {} },
+        { lastSeenAtMs: now });
+      var horizon = arrivalEtaHorizon(o.etaMin);
+      if (horizon && !record.predictions[horizon]) {
+        var predictedAt = Number.isFinite(o.predictionAtMs) ? o.predictionAtMs : now;
+        record.predictions = Object.assign({}, record.predictions);
+        record.predictions[horizon] = { observedAtMs: predictedAt, touchdownAtMs: predictedAt + o.etaMin * 60000 };
+      }
+    }
+    var result = records.slice();
+    if (index < 0) result.push(record); else result[index] = record;
+    return pruneArrivalLog(result);
+  }
+
+  function arrivalEtaScorecard(records, airport) {
+    var landings = (records || []).filter(function(r) { return r.airport === airport && Number.isFinite(r.actualAtMs); })
+      .sort(function(a, b) { return b.actualAtMs - a.actualAtMs; }).slice(0, 50);
+    return { count: landings.length, horizons: [10, 5, 2, 1].map(function(minutes) {
+      var errors = landings.map(function(r) {
+        var prediction = r.predictions && r.predictions[minutes];
+        return prediction && Number.isFinite(prediction.touchdownAtMs) ? Math.abs(prediction.touchdownAtMs - r.actualAtMs) / 1000 : null;
+      }).filter(function(e) { return e != null; }).sort(function(a, b) { return a - b; });
+      var n = errors.length;
+      return { minutes: minutes, count: n, medianSec: n ? (errors[Math.floor((n - 1) / 2)] + errors[Math.floor(n / 2)]) / 2 : null,
+        p90Sec: n ? errors[Math.ceil(n * 0.9) - 1] : null };
+    }) };
+  }
+
   // Minutes to fly `distKm` to the airport, slowing down on the way in: the current ground speed out to 60 km,
   // at most 220 kts from 60 to 15 km (approach), at most 150 kts on the last 15 km (final).
   function arrivalPathTimeMin(distKm, spdKts) {
@@ -914,7 +1127,8 @@
 
   // Far out, the feed's (FR24) estimated landing time knows the schedule and routing better than geometry;
   // close in, live geometry wins. Blend linearly from the geometry ETA at 10 min to the feed ETA at 20 min.
-  function blendArrivalEta(geoEtaMin, feedEtaMin) {
+  function blendArrivalEta(geoEtaMin, feedEtaMin, options) {
+    if (options && options.goAround) return geoEtaMin;
     if (feedEtaMin == null || !Number.isFinite(feedEtaMin) || feedEtaMin < 0) return geoEtaMin;
     if (geoEtaMin == null || !Number.isFinite(geoEtaMin)) return feedEtaMin;
     var w = Math.max(0, Math.min(1, (geoEtaMin - 10) / 10));
@@ -961,7 +1175,7 @@
       etaMin = 999;
     }
     if (altFt != null) etaMin = Math.max(etaMin, altFt / 1500);
-    if (destinationMatch) etaMin = blendArrivalEta(etaMin, input.feedEtaMin);
+    if (destinationMatch) etaMin = blendArrivalEta(etaMin, input.feedEtaMin, input);
 
     if (phase === "departing" || phase === "landed") eligible = false;
     if (originMatch) eligible = false;
@@ -1738,6 +1952,16 @@
     descendedRecently: descendedRecently,
     arrivalPathTimeMin: arrivalPathTimeMin,
     approachPathKm: approachPathKm,
+    matchArrivalRunway: matchArrivalRunway,
+    updateGoAround: updateGoAround,
+    sequenceAirportArrivals: sequenceAirportArrivals,
+    formatArrivalCountdown: formatArrivalCountdown,
+    updateArrivalCountdown: updateArrivalCountdown,
+    layoutApproachLadder: layoutApproachLadder,
+    arrivalEtaHorizon: arrivalEtaHorizon,
+    pruneArrivalLog: pruneArrivalLog,
+    recordArrivalPrediction: recordArrivalPrediction,
+    arrivalEtaScorecard: arrivalEtaScorecard,
     runwayApproachEnds: runwayApproachEnds,
     crossTrackKm: crossTrackKm,
     alongTrackKm: alongTrackKm,
