@@ -263,15 +263,16 @@ var AIRLINES_DATA = {"airlines":{"AAL":{"name":"American","iata":"AA"},"AAR":{"n
 
   // One-degree cells; store catalog positions so queries retain its order for equal-distance ties.
   function buildAirportGrid(airports) {
-    var cells = {};
+    var cells = {}, byIata = {};
     for (var i = 0; i < airports.length; i++) {
       var ap = airports[i];
+      byIata[ap[0]] = ap;
       var row = Math.min(179, Math.floor(ap[1] + 90));
       var col = Math.floor(((ap[2] + 180) % 360 + 360) % 360);
       var key = row + ":" + col;
       (cells[key] || (cells[key] = [])).push(i);
     }
-    return { airports: airports, cells: cells };
+    return { airports: airports, cells: cells, byIata: byIata };
   }
 
   function airportGridCandidates(grid, lat, lng, km) {
@@ -1507,18 +1508,21 @@ var AIRLINES_DATA = {"airlines":{"AAL":{"name":"American","iata":"AA"},"AAR":{"n
     return !lastOkAt || now - lastOkAt > (staleMs == null ? 30000 : staleMs);
   }
 
+  var routeAirportGrids = new WeakMap();
+
   function isReportedRouteSource(source) {
     return ["schedule", "fr24-search", "fr24", "live-feed"].indexOf(source) !== -1;
   }
 
   function routeProvenance(route) {
     var sources = [];
-    if (route && route.origin) sources.push(route.originSource);
+    // The destination is the claim shown in the route label; its source stands on its own.
     if (route && route.destination) sources.push(route.destSource);
+    else if (route && route.origin) sources.push(route.originSource);
     var reported = sources.length > 0 && sources.every(isReportedRouteSource);
     var database = sources.indexOf("adsbdb") !== -1 || sources.indexOf("cross-validated") !== -1;
     return { label: reported ? "reported" : "inferred",
-      note: reported ? (sources.indexOf("live-feed") !== -1 ? "from live feed" : "from FR24 live schedule")
+      note: reported ? "from FR24 live schedule"
         : database ? "from callsign database — may be outdated" : "estimated from flight path" };
   }
 
@@ -1530,11 +1534,15 @@ var AIRLINES_DATA = {"airlines":{"AAL":{"name":"American","iata":"AA"},"AAR":{"n
     var keepOrigin = route.origin && (isReportedRouteSource(route.originSource) || route.originSource === "track");
     var keepDest = route.destination && isReportedRouteSource(route.destSource);
     if ((!route.origin || isReportedRouteSource(route.originSource)) && (!route.destination || keepDest)) return route;
-    var origin = null, dest = null, nearest = null, nearestKm = 40;
-    for (var i = 0; airports && i < airports.length; i++) {
-      var ap = airports[i];
-      if (route.origin && ap[0] === route.origin.iata) origin = ap;
-      if (route.destination && ap[0] === route.destination.iata) dest = ap;
+    if (!airports) return route;
+    var grid = routeAirportGrids.get(airports);
+    if (!grid) { grid = buildAirportGrid(airports); routeAirportGrids.set(airports, grid); }
+    var origin = route.origin && grid.byIata[route.origin.iata];
+    var dest = route.destination && grid.byIata[route.destination.iata];
+    var nearest = null, nearestKm = 40;
+    var nearby = airportGridCandidates(grid, state.lat, state.lng, nearestKm);
+    for (var i = 0; i < nearby.length; i++) {
+      var ap = nearby[i];
       var km = haversineKm(state.lat, state.lng, ap[1], ap[2]);
       if (km < nearestKm) { nearestKm = km; nearest = ap; }
     }
@@ -1544,8 +1552,6 @@ var AIRLINES_DATA = {"airlines":{"AAL":{"name":"American","iata":"AA"},"AAR":{"n
       var low = agl != null && agl < 10000;
       var atOrigin = route.origin && route.origin.iata === nearest[0];
       var atDest = route.destination && route.destination.iata === nearest[0];
-      // A climb can pass a neighboring airport. Keep a plausible nearby origin until outside its area.
-      var nearOrigin = origin && haversineKm(state.lat, state.lng, origin[1], origin[2]) < 40;
       var destFar = dest && haversineKm(nearest[1], nearest[2], dest[1], dest[2]) > 150;
       var closing = null;
       if (state.previous && Number.isFinite(state.previous.lat) && Number.isFinite(state.previous.lng)) {
@@ -1557,8 +1563,8 @@ var AIRLINES_DATA = {"airlines":{"AAL":{"name":"American","iata":"AA"},"AAR":{"n
       }
       if (!atOrigin && !atDest) {
         contradiction = !!((state.ground && nearestKm < 8) ||
-          (low && state.vRate > 300 && closing === false && !nearOrigin) ||
-          (low && state.vRate < -300 && closing === true && destFar));
+          (closing === true && destFar && ((agl != null && agl < 5000 && nearestKm < 25) ||
+            (low && state.vRate < -300))));
       }
     }
     // Distance to the minor great-circle segment, including its endpoints (not the infinite great circle).
@@ -1571,7 +1577,7 @@ var AIRLINES_DATA = {"airlines":{"AAL":{"name":"American","iata":"AA"},"AAR":{"n
       var offPath = along < 0 ? fromOrigin : along > length
         ? haversineKm(dest[1], dest[2], state.lat, state.lng)
         : Math.abs(Math.asin(Math.max(-1, Math.min(1, Math.sin(fromOrigin / 6371) * Math.sin(delta))))) * 6371;
-      contradiction = offPath > Math.max(300, length * 0.25);
+      contradiction = offPath > Math.max(500, length * 0.5);
     }
     if (!contradiction) return route;
     if (!keepOrigin && !keepDest) return null;
@@ -4255,6 +4261,7 @@ function processAircraft(ac, feedNow) {
 var routeRetryAt = {};
 var ROUTE_MISS_RETRY_MS = 10 * 60 * 1000;
 var routesetPending = null;
+var routeEvidenceMemo = new Map();
 
 function buildRouteFetchPayload(sourcePlanes, options) {
   options = options || {};
@@ -4299,6 +4306,15 @@ function noteRouteMisses(needed, routes) {
 function routeForAircraft(a, entry) {
   if (!a || !entry) return entry;
   var history = typeof posHistory !== "undefined" && posHistory[a.icao24];
+  var now = Date.now();
+  var airports = typeof airportData !== "undefined" ? airportData : null;
+  var key = [a.icao24, Math.floor(a.lat * 100), Math.floor(a.lng * 100), a.altFt, a.vRate, a.track, a.ground,
+    entry.origin && entry.origin.iata, entry.destination && entry.destination.iata,
+    entry.destination && entry.destination.region, entry.originSource, entry.destSource,
+    history && history.length, history && history.length && history[history.length - 1][2]].join("|");
+  var memo = a.callsign && routeEvidenceMemo.get(a.callsign);
+  if (memo && memo.entry === entry && memo.key === key && memo.airports === airports &&
+      memo.history === history && now - memo.at < 5000) return memo.checked;
   var previous = null;
   for (var i = history ? history.length - 1 : -1; i >= 0; i--) {
     if (history[i][5] || Date.now() - history[i][2] > 120000) break;
@@ -4308,10 +4324,14 @@ function routeForAircraft(a, entry) {
   }
   var checked = core.rejectContradictoryRoute(entry, { lat: a.lat, lng: a.lng, altFt: a.altFt,
     ground: a.ground, track: a.track, vRate: a.vRate == null ? null : a.vRate * 60, previous: previous },
-    typeof airportData !== "undefined" ? airportData : null);
+    airports);
   if (checked && checked !== entry) {
     checked.display = formatClientRouteLabel(checked.origin, checked.destination, checked.phase || "cruising");
     checked.iata = [checked.origin && checked.origin.iata, checked.destination && checked.destination.iata].filter(Boolean).join(" to ");
+  }
+  if (a.callsign) {
+    if (routeEvidenceMemo.size >= 1000) routeEvidenceMemo.delete(routeEvidenceMemo.keys().next().value);
+    routeEvidenceMemo.set(a.callsign, { entry: entry, key: key, airports: airports, history: history, at: now, checked: checked });
   }
   return checked;
 }
@@ -4337,10 +4357,11 @@ function mergeRoutesetEntries(routes, sourcePlanes) {
     if (!routeEntryReplaceable(routeCache[r.callsign], fetchedAt)) continue;
     var routePlane = aircraft.find(function(a) { return a.callsign === r.callsign; }) ||
       sourcePlanes.find(function(a) { return a.callsign === r.callsign; });
-    if (r.destSource === "adsbdb" || r.originSource === "adsbdb") adsbdbCallsigns.push(r.callsign);
     var checked = routeForAircraft(routePlane, r);
+    if (checked !== r) routeRetryAt[r.callsign] = fetchedAt + 60000;
     if (!checked) { if (routePlane) validateCachedRoute(routePlane); continue; }
     r = checked;
+    if (r.destSource === "adsbdb" || r.originSource === "adsbdb") adsbdbCallsigns.push(r.callsign);
     var dest = r.destination;
     var destIata = dest ? (dest.region ? dest.display : dest.iata) : null;
     var iataParts = [r.origin ? r.origin.iata : null, destIata].filter(Boolean);
@@ -4358,7 +4379,7 @@ function mergeRoutesetEntries(routes, sourcePlanes) {
   }
   for (var ac = 0; ac < adsbdbCallsigns.length; ac++) {
     var cs = adsbdbCallsigns[ac];
-    if (fr24SearchPending[cs] || isLikelyPrivateCallsign(cs)) continue;
+    if (fr24SearchPending[cs] || routeRetryAt[cs] > fetchedAt || isLikelyPrivateCallsign(cs)) continue;
     var plane = null;
     for (var p = 0; p < sourcePlanes.length; p++) {
       if (sourcePlanes[p].callsign === cs) {
@@ -4406,8 +4427,8 @@ async function postRouteset(needed, candidates) {
     if (!resp.ok) return false;
     var routes = await resp.json();
     if (!Array.isArray(routes)) return false;
-    mergeRoutesetEntries(routes, candidates);
     noteRouteMisses(needed, routes);
+    mergeRoutesetEntries(routes, candidates);
     return true;
   } catch (e) {
     console.warn("Route fetch failed:", e);
@@ -5409,9 +5430,6 @@ function runOriginDetection(hex, data) {
     if (core.tracePointOnGround(path[i]) || (Number.isFinite(altM) && altM <= 2500)) { originPt = path[i]; break; }
   }
   if (!originPt) return;
-  var lastPt = path[path.length - 1];
-  if (Number.isFinite(path[0][3]) && Number.isFinite(lastPt[3]) && path[0][3] > lastPt[3] &&
-      !path.some(function(pt) { return core.tracePointOnGround(pt); })) return;
   var bestDist = Infinity, bestApt = null;
   for (var j = 0; j < airportData.length; j++) {
     var ap = airportData[j];
@@ -5612,7 +5630,7 @@ function proactiveFr24SearchSweep() {
   for (var i = 0; i < aircraft.length; i++) {
     var a = aircraft[i];
     if (!a.callsign || a.private) continue;
-    if (fr24SearchPending[a.callsign]) continue;
+    if (fr24SearchPending[a.callsign] || routeRetryAt[a.callsign] > now) continue;
     if (fr24SearchFailed[a.callsign] && now - fr24SearchFailed[a.callsign] < 120000) continue;
     if (isLikelyPrivateCallsign(a.callsign)) continue;
     var rc = validateCachedRoute(a);

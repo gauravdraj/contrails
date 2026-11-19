@@ -1,5 +1,40 @@
-// Pure helper copy from contrails-core.js; parity is tested.
+// Pure helper copies from contrails-core.js; parity is tested.
 import { haversineKm, bearingDeg as bearingDegrees } from "./geo.js";
+
+  function buildAirportGrid(airports) {
+    var cells = {}, byIata = {};
+    for (var i = 0; i < airports.length; i++) {
+      var ap = airports[i];
+      byIata[ap[0]] = ap;
+      var row = Math.min(179, Math.floor(ap[1] + 90));
+      var col = Math.floor(((ap[2] + 180) % 360 + 360) % 360);
+      var key = row + ":" + col;
+      (cells[key] || (cells[key] = [])).push(i);
+    }
+    return { airports: airports, cells: cells, byIata: byIata };
+  }
+
+  function airportGridCandidates(grid, lat, lng, km) {
+    var angular = km / 6371;
+    var latPad = angular * 180 / Math.PI + 1e-9;
+    var lngPad = Math.abs(lat) + latPad >= 90 ? 180
+      : Math.asin(Math.min(1, Math.sin(angular) / Math.cos(lat * Math.PI / 180))) * 180 / Math.PI + 1e-9;
+    var south = Math.max(0, Math.floor(lat - latPad + 90));
+    var north = Math.min(179, Math.floor(lat + latPad + 90));
+    var west = Math.floor(lng - lngPad + 180);
+    var east = Math.min(west + 359, Math.floor(lng + lngPad + 180));
+    var indices = [];
+    for (var row = south; row <= north; row++) {
+      for (var col = west; col <= east; col++) {
+        var cell = grid.cells[row + ":" + ((col % 360 + 360) % 360)];
+        if (cell) for (var i = 0; i < cell.length; i++) indices.push(cell[i]);
+      }
+    }
+    indices.sort(function(a, b) { return a - b; });
+    return indices.map(function(i) { return grid.airports[i]; });
+  }
+
+  var routeAirportGrids = new WeakMap();
 
   function isReportedRouteSource(source) {
     return ["schedule", "fr24-search", "fr24", "live-feed"].indexOf(source) !== -1;
@@ -7,12 +42,13 @@ import { haversineKm, bearingDeg as bearingDegrees } from "./geo.js";
 
   function routeProvenance(route) {
     var sources = [];
-    if (route && route.origin) sources.push(route.originSource);
+    // The destination is the claim shown in the route label; its source stands on its own.
     if (route && route.destination) sources.push(route.destSource);
+    else if (route && route.origin) sources.push(route.originSource);
     var reported = sources.length > 0 && sources.every(isReportedRouteSource);
     var database = sources.indexOf("adsbdb") !== -1 || sources.indexOf("cross-validated") !== -1;
     return { label: reported ? "reported" : "inferred",
-      note: reported ? (sources.indexOf("live-feed") !== -1 ? "from live feed" : "from FR24 live schedule")
+      note: reported ? "from FR24 live schedule"
         : database ? "from callsign database — may be outdated" : "estimated from flight path" };
   }
 
@@ -24,11 +60,15 @@ import { haversineKm, bearingDeg as bearingDegrees } from "./geo.js";
     var keepOrigin = route.origin && (isReportedRouteSource(route.originSource) || route.originSource === "track");
     var keepDest = route.destination && isReportedRouteSource(route.destSource);
     if ((!route.origin || isReportedRouteSource(route.originSource)) && (!route.destination || keepDest)) return route;
-    var origin = null, dest = null, nearest = null, nearestKm = 40;
-    for (var i = 0; airports && i < airports.length; i++) {
-      var ap = airports[i];
-      if (route.origin && ap[0] === route.origin.iata) origin = ap;
-      if (route.destination && ap[0] === route.destination.iata) dest = ap;
+    if (!airports) return route;
+    var grid = routeAirportGrids.get(airports);
+    if (!grid) { grid = buildAirportGrid(airports); routeAirportGrids.set(airports, grid); }
+    var origin = route.origin && grid.byIata[route.origin.iata];
+    var dest = route.destination && grid.byIata[route.destination.iata];
+    var nearest = null, nearestKm = 40;
+    var nearby = airportGridCandidates(grid, state.lat, state.lng, nearestKm);
+    for (var i = 0; i < nearby.length; i++) {
+      var ap = nearby[i];
       var km = haversineKm(state.lat, state.lng, ap[1], ap[2]);
       if (km < nearestKm) { nearestKm = km; nearest = ap; }
     }
@@ -38,8 +78,6 @@ import { haversineKm, bearingDeg as bearingDegrees } from "./geo.js";
       var low = agl != null && agl < 10000;
       var atOrigin = route.origin && route.origin.iata === nearest[0];
       var atDest = route.destination && route.destination.iata === nearest[0];
-      // A climb can pass a neighboring airport. Keep a plausible nearby origin until outside its area.
-      var nearOrigin = origin && haversineKm(state.lat, state.lng, origin[1], origin[2]) < 40;
       var destFar = dest && haversineKm(nearest[1], nearest[2], dest[1], dest[2]) > 150;
       var closing = null;
       if (state.previous && Number.isFinite(state.previous.lat) && Number.isFinite(state.previous.lng)) {
@@ -51,8 +89,8 @@ import { haversineKm, bearingDeg as bearingDegrees } from "./geo.js";
       }
       if (!atOrigin && !atDest) {
         contradiction = !!((state.ground && nearestKm < 8) ||
-          (low && state.vRate > 300 && closing === false && !nearOrigin) ||
-          (low && state.vRate < -300 && closing === true && destFar));
+          (closing === true && destFar && ((agl != null && agl < 5000 && nearestKm < 25) ||
+            (low && state.vRate < -300))));
       }
     }
     // Distance to the minor great-circle segment, including its endpoints (not the infinite great circle).
@@ -65,7 +103,7 @@ import { haversineKm, bearingDeg as bearingDegrees } from "./geo.js";
       var offPath = along < 0 ? fromOrigin : along > length
         ? haversineKm(dest[1], dest[2], state.lat, state.lng)
         : Math.abs(Math.asin(Math.max(-1, Math.min(1, Math.sin(fromOrigin / 6371) * Math.sin(delta))))) * 6371;
-      contradiction = offPath > Math.max(300, length * 0.25);
+      contradiction = offPath > Math.max(500, length * 0.5);
     }
     if (!contradiction) return route;
     if (!keepOrigin && !keepDest) return null;
@@ -74,4 +112,4 @@ import { haversineKm, bearingDeg as bearingDegrees } from "./geo.js";
       destSource: keepDest ? route.destSource : null, display: "", iata: "", confidence: "low" });
   }
 
-export { isReportedRouteSource, routeProvenance, rejectContradictoryRoute };
+export { buildAirportGrid, airportGridCandidates, isReportedRouteSource, routeProvenance, rejectContradictoryRoute };

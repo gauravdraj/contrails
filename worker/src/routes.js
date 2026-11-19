@@ -111,10 +111,7 @@ export function extractOriginDest(track) {
     const pt = path[i];
     if (isLowPoint(pt, ORIGIN_MAX_ALT_M)) {
       const match = nearestAirport(pt[1], pt[2], ORIGIN_MAX_DIST_KM);
-      // A partial descent near an airport is arrival evidence, not a takeoff origin.
-      const descendingTrace = Number.isFinite(path[legStart][3]) && Number.isFinite(lastTrackPoint[3]) &&
-        path[legStart][3] > lastTrackPoint[3] && !path.slice(legStart, i + 1).some(p => p[5] === true);
-      if (match && !descendingTrace) {
+      if (match) {
         origin = { iata: match.iata, name: match.name };
         break;
       }
@@ -177,9 +174,12 @@ export function mergeRoutes(trackResult, adsbdbEntry, aircraftInfo) {
   const state = { ...aircraftInfo };
   // Old clients may omit position/heading; a trace still supplies those observations.
   if (!Number.isFinite(state.lat) && last) { state.lat = last[1]; state.lng = last[2]; }
-  if (!Number.isFinite(state.track) && last) state.track = last[4];
-  if (previous && last && haversineKm(state.lat, state.lng, last[1], last[2]) < 5) {
-    state.previous = { lat: previous[1], lng: previous[2] };
+  const traceAge = last ? Date.now() / 1000 - last[0] : Infinity;
+  if (last && traceAge >= 0 && traceAge < 60 && haversineKm(state.lat, state.lng, last[1], last[2]) < 2) {
+    if (!Number.isFinite(state.track)) {
+      state.track = last[4];
+      if (previous) state.previous = { lat: previous[1], lng: previous[2] };
+    }
   }
   if (adsbdbEntry) adsbdbEntry = rejectContradictoryRoute({ ...adsbdbEntry,
     originSource: "adsbdb", destSource: "adsbdb" }, state, AIRPORTS);

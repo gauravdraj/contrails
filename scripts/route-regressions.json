@@ -1,0 +1,121 @@
+{
+  "departures": [
+    {
+      "name": "LCY missing from catalog",
+      "from": "LCY",
+      "to": "FRA",
+      "lat": 51.5,
+      "lng": 0.1,
+      "altFt": 6000,
+      "vRate": 1200,
+      "track": 90
+    },
+    {
+      "name": "HPN missing from catalog",
+      "from": "HPN",
+      "to": "BOS",
+      "lat": 41.07,
+      "lng": -73.7,
+      "altFt": 6000,
+      "vRate": 1200,
+      "track": 30
+    },
+    {
+      "name": "LHR-FRA 50 km out at 8000 ft",
+      "from": "LHR",
+      "to": "FRA",
+      "lat": 51.7,
+      "lng": 0.16,
+      "altFt": 8000,
+      "vRate": 1200,
+      "track": 100
+    },
+    {
+      "name": "OAK-LAS 50 km southeast at 9000 ft",
+      "from": "OAK",
+      "to": "LAS",
+      "lat": 37.4,
+      "lng": -121.82,
+      "altFt": 9000,
+      "vRate": 1200,
+      "track": 120
+    }
+  ],
+  "detours": [
+    {
+      "from": "LHR",
+      "to": "HND",
+      "lat": 64,
+      "lng": -165,
+      "altFt": 37000
+    },
+    {
+      "from": "HND",
+      "to": "LHR",
+      "lat": 72,
+      "lng": -120,
+      "altFt": 37000
+    },
+    {
+      "from": "AMS",
+      "to": "NRT",
+      "lat": 66,
+      "lng": -160,
+      "altFt": 37000
+    },
+    {
+      "from": "HEL",
+      "to": "NRT",
+      "lat": 80,
+      "lng": 150,
+      "altFt": 37000
+    },
+    {
+      "from": "LHR",
+      "to": "ICN",
+      "lat": 45,
+      "lng": 70,
+      "altFt": 37000
+    },
+    {
+      "from": "CDG",
+      "to": "ICN",
+      "lat": 43,
+      "lng": 60,
+      "altFt": 37000
+    },
+    {
+      "from": "HEL",
+      "to": "ICN",
+      "lat": 45,
+      "lng": 60,
+      "altFt": 37000
+    }
+  ],
+  "approaches": [
+    {
+      "name": "3000 ft downwind",
+      "lat": 37.49,
+      "lng": -122.18,
+      "altFt": 3000,
+      "vRate": 0,
+      "track": 315
+    },
+    {
+      "name": "4000 ft base",
+      "lat": 37.55,
+      "lng": -122.24,
+      "altFt": 4000,
+      "vRate": 0,
+      "track": 270
+    },
+    {
+      "name": "3000 ft -100 fpm intercept",
+      "lat": 37.6,
+      "lng": -122.3,
+      "altFt": 3000,
+      "vRate": -100,
+      "track": 280
+    }
+  ]
+}

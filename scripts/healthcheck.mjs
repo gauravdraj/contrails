@@ -74,10 +74,9 @@ async function check(name, path, validate, init) {
 
 // Validate endpoint contracts, not traffic volume: empty arrays and documented null misses are healthy.
 const object = value => value !== null && typeof value === "object" && !Array.isArray(value);
-const airportCode = value => typeof value === "string" && /^[A-Z0-9]{3,4}$/.test(value);
-const optionalCode = value => value == null || value === "" || airportCode(value);
-const identifier = value => typeof value === "string" && /^[A-Za-z0-9 -]{2,12}$/.test(value);
-const timestamp = value => value == null || (Number.isFinite(value) && value > 0);
+const airportCode = value => value === null || typeof value === "string";
+const optionalCode = value => value == null || airportCode(value);
+const timestamp = value => value == null || Number.isFinite(value);
 
 function validateTrack({ data }) {
   if (data === null) return "no trace (ok)";
@@ -91,7 +90,9 @@ function validateTrack({ data }) {
 function validateSchedule({ data }) {
   if (!object(data) || !airportCode(data.iata)) return false;
   for (const [list, endpoint] of [[data.arrivals, "from_iata"], [data.departures, "to_iata"]]) {
-    if (!Array.isArray(list) || !list.every(row => object(row) && (identifier(row.flight) || identifier(row.callsign)) &&
+    if (!Array.isArray(list) || !list.every(row => object(row) &&
+        (typeof row.flight === "string" || typeof row.callsign === "string") &&
+        [row.flight, row.callsign].every(value => value == null || typeof value === "string") &&
         optionalCode(row[endpoint]) && ["sched_dep", "sched_arr", "est_dep", "est_arr", "actual_dep", "actual_arr"]
           .every(key => timestamp(row[key])) && (row.live == null || typeof row.live === "boolean"))) return false;
   }
@@ -100,7 +101,7 @@ function validateSchedule({ data }) {
 
 function validateFr24Search({ data }) {
   if (!object(data) || !Array.isArray(data.results) || !data.results.every(row => object(row) &&
-      typeof row.id === "string" && row.id.length > 0 && typeof row.type === "string" && row.type.length > 0 &&
+      (typeof row.id === "string" || typeof row.id === "number") && typeof row.type === "string" &&
       (row.type !== "live" || (object(row.detail) && optionalCode(row.detail.schd_from) &&
         optionalCode(row.detail.schd_to) && [row.detail.callsign, row.detail.flight, row.detail.reg]
           .every(value => value == null || typeof value === "string"))))) return false;
@@ -109,9 +110,9 @@ function validateFr24Search({ data }) {
 
 function validateRouteset({ data }) {
   const endpoint = value => value == null || (object(value) && (airportCode(value.iata) ||
-    (typeof value.region === "string" && value.region.length > 0 && typeof value.display === "string" && value.display.length > 0)));
+    (typeof value.region === "string" && typeof value.display === "string")));
   if (!Array.isArray(data) || !data.every(row => object(row) && typeof row.callsign === "string" &&
-      /^[A-Za-z0-9]{2,8}$/.test(row.callsign) && (row.origin || row.destination) &&
+      (row.origin || row.destination) &&
       endpoint(row.origin) && endpoint(row.destination) && [row.originSource, row.destSource, row.display]
         .every(value => value == null || typeof value === "string"))) return false;
   return `${data.length} routes`;

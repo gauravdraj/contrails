@@ -2374,9 +2374,8 @@ test('v247 contradiction: UA3911 final rejects SYD-LAX and retains HNL-SFO', () 
   assert.equal(kept.destination, null);
   assert.equal(core.rejectContradictoryRoute(route247('SYD', 'LAX', 'cross-validated'), arrival247, routeAirports247), null);
 });
-test('v247 contradiction: ground, climb, AGL, missing state and great-circle controls', () => {
-  for (const a of [{ ...arrival247, ground: true, lat: 37.62, lng: -122.375 },
-    { ...arrival247, vRate: 1200, track: 100 }]) {
+test('v247 contradiction: ground, AGL, missing state and great-circle controls', () => {
+  for (const a of [{ ...arrival247, ground: true, lat: 37.62, lng: -122.375 }]) {
     assert.equal(core.rejectContradictoryRoute(route247(), a, routeAirports247), null);
     const good = route247('SFO', 'LAX');
     assert.equal(core.rejectContradictoryRoute(good, a, routeAirports247), good);
@@ -2409,7 +2408,7 @@ test('v247 provenance: source mapping includes mixed and cross-validated routes'
     assert.doesNotMatch(p.note, /confirmed/i);
     if (['adsbdb', 'cross-validated'].includes(source)) assert.match(p.note, /may be outdated/);
   }
-  assert.equal(core.routeProvenance({ ...route247('HNL', 'SFO', 'schedule'), originSource: 'adsbdb' }).label, 'inferred');
+  assert.equal(core.routeProvenance({ ...route247('HNL', 'SFO', 'schedule'), originSource: 'adsbdb' }).label, 'reported');
 });
 function routeClient247() {
   const c = classicScript('./js/data.js', { FETCH_TIMEOUT_MS: 20000, routeCache: {}, airportData: routeAirports247,
@@ -2451,9 +2450,107 @@ test('v247 client: an arrival-only trace cannot invent a track origin after reje
 });
 test('v247 evidence: Worker copy stays identical to the pure core helper', async () => {
   const worker = await import('./worker/src/route-evidence.js');
-  for (const name of ['isReportedRouteSource', 'routeProvenance', 'rejectContradictoryRoute']) {
+  for (const name of ['buildAirportGrid', 'airportGridCandidates', 'isReportedRouteSource', 'routeProvenance', 'rejectContradictoryRoute']) {
     assert.equal(worker[name].toString(), core[name].toString());
   }
+});
+
+const round247 = require('./scripts/route-regressions.json');
+for (const fixture of [...round247.departures, ...round247.detours]) {
+  test('v247 round core: retain ' + (fixture.name || fixture.from + '-' + fixture.to), () => {
+    const route = route247(fixture.from, fixture.to);
+    assert.equal(core.rejectContradictoryRoute(route, fixture, routeAirports247), route);
+  });
+}
+for (const fixture of round247.approaches) {
+  test('v247 round core: UA3911 ' + fixture.name, () => {
+    assert.equal(core.rejectContradictoryRoute(route247(), fixture, routeAirports247), null);
+    for (const route of [route247('HNL', 'SFO'), route247('SFO', 'LAX')]) {
+      assert.equal(core.rejectContradictoryRoute(route, fixture, routeAirports247), route);
+    }
+    const unknown = route247();
+    assert.equal(core.rejectContradictoryRoute(unknown, { ...fixture, track: null }, routeAirports247), unknown);
+  });
+}
+for (const ground of [false, true]) {
+  test('v247 round client: airborne 300 m SFO origin survives ' + (ground ? 'landing' : 'final'), () => {
+    const c = routeClient247();
+    Object.assign(c.aircraft[0], { lat: 33.943, lng: -118.408, altFt: ground ? 0 : 500, ground });
+    c.runOriginDetection('a1244b', { path: [[1000, 37.62, -122.375, 300, 150, false],
+      [1600, 36, -120, 10000, 150, false], [2200, 33.943, -118.408, ground ? 0 : 150, 250, ground]] });
+    assert.equal(c.routeCache.UAL3911?.origin?.iata, 'SFO');
+  });
+}
+test('v247 round client: rejected routes wait 60 seconds without repeated FR24 searches', async () => {
+  const c = routeClient247();
+  let now = 1800000000000, searches = 0, requests = 0;
+  c.Date = class extends Date { static now() { return now; } };
+  c.currentViewPolicy = () => ({ allowRoutes: true });
+  c.visibleAircraftCount = () => 1;
+  c.tryFr24Search = async () => { searches++; };
+  c.routesetUrl = () => '/routeset';
+  c.fetchWithTimeout = async () => {
+    requests++;
+    return { ok: true, json: async () => [{ callsign: 'UAL3911', ...route247() }] };
+  };
+  await c.fetchRoutesForPlanes(c.aircraft);
+  assert.equal(c.routeRetryAt.UAL3911, now + 60000);
+  for (let i = 0; i < 11; i++) {
+    now += 5000;
+    await c.fetchRoutesForPlanes(c.aircraft);
+    c.proactiveFr24SearchSweep();
+    await Promise.resolve();
+  }
+  assert.equal(requests, 1);
+  assert.equal(searches, 0);
+  now += 5001;
+  await c.fetchRoutesForPlanes(c.aircraft);
+  assert.equal(requests, 2);
+});
+test('v247 round client: memoize route evidence by callsign and coarse position with invalidation', () => {
+  const c = routeClient247();
+  let calls = 0, now = 1800000000000;
+  c.Date = class extends Date { static now() { return now; } };
+  c.core = { ...core, rejectContradictoryRoute(...args) { calls++; return core.rejectContradictoryRoute(...args); } };
+  const plane = { ...c.aircraft[0], lat: 37.601, lng: -122.301 };
+  const route = route247('HNL', 'SFO');
+  c.routeForAircraft(plane, route);
+  for (let i = 0; i < 20; i++) c.routeForAircraft({ ...plane, lat: 37.6011 }, route);
+  assert.equal(calls, 1);
+  c.routeForAircraft({ ...plane, lat: 37.63 }, route);
+  assert.equal(calls, 2);
+  route.destination.iata = 'LAX';
+  assert.equal(c.routeForAircraft(plane, route), null);
+  assert.equal(calls, 3);
+  c.routeForAircraft({ ...plane, track: 100 }, route);
+  assert.equal(calls, 4);
+  now += 5001;
+  c.routeForAircraft({ ...plane, track: 100 }, route);
+  assert.equal(calls, 5);
+});
+test('v247 round core: repeated evidence queries avoid scanning the airport catalog', async () => {
+  const worker = await import('./worker/src/route-evidence.js');
+  for (const reject of [core.rejectContradictoryRoute, worker.rejectContradictoryRoute]) {
+    let reads = 0;
+    const airports = new Proxy(routeAirports247.slice(), { get(target, key) {
+      if (/^\d+$/.test(String(key))) reads++;
+      return target[key];
+    } });
+    const route = route247();
+    reject(route, arrival247, airports);
+    reads = 0;
+    assert.equal(reject(route, { ...arrival247, lat: 37.601 }, airports), null);
+    assert.ok(reads < 50, 'read ' + reads + ' catalog rows for one nearby query');
+  }
+});
+test('v247 round provenance: a reported destination retains its label with an inferred origin', () => {
+  const c = routeClient247();
+  for (const source of ['schedule', 'fr24-search', 'fr24']) {
+    const route = { ...route247('HNL', 'SFO'), destSource: source, display: 'HNL to SFO' };
+    assert.equal(core.routeProvenance(route).label, 'reported');
+    assert.match(c.buildPopupSubheader(c.aircraft[0], route), />reported</);
+  }
+  assert.doesNotMatch(core.routeProvenance(route247('HNL', 'SFO', 'live-feed')).note, /from live feed/);
 });
 
 test('v247 board: route rows and next-flight summary disclose inferred versus reported', () => {

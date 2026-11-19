@@ -29,17 +29,44 @@ const gridState = new Map();
 // it so concurrent requests keep using the working feed while one request tests recovery.
 const providerHealth = new Map();
 
-async function withProviderHealth(provider, attempt) {
+function probeActive(state, now) {
+  return state?.probing && now - state.probeAt < 2 * FETCH_TIMEOUT_MS;
+}
+
+function providerCooling(name, now) {
+  const state = providerHealth.get(name);
+  return state && (probeActive(state, now) || state.retryAt > now);
+}
+
+// If the entire chain is cooling, reserve its oldest retry for this request. A live probe still owns
+// its lease; cancelled Cloudflare requests lose that lease even if their promises never settle.
+function oldestCoolingProvider() {
+  const names = relay ? ["primary", "backup", "relay"] : ["primary", "backup"];
+  const now = Date.now();
+  if (!names.every(name => providerCooling(name, now))) return null;
+  return names.filter(name => !probeActive(providerHealth.get(name), now))
+    .sort((a, b) => providerHealth.get(a).retryAt - providerHealth.get(b).retryAt)[0] || null;
+}
+
+async function withProviderHealth(provider, attempt, forced) {
   const state = providerHealth.get(provider);
-  if (state && (state.retryAt > Date.now() || state.probing)) throw new Error(provider + " cooling down");
-  if (state) state.probing = true;
+  const now = Date.now();
+  if (state && (probeActive(state, now) || (state.retryAt > now && forced !== provider))) {
+    throw new Error(provider + " cooling down");
+  }
+  const lease = state?.failures >= HARD_FAIL_THRESHOLD ? { ...state, probing: true, probeAt: now } : null;
+  if (lease) providerHealth.set(provider, lease);
   try {
     const data = await attempt();
     if (!isValidPayload(data)) throw new Error(provider + " invalid payload");
-    providerHealth.delete(provider);
+    if (!lease || providerHealth.get(provider) === lease) providerHealth.delete(provider);
     return data;
   } catch (error) {
-    providerHealth.set(provider, { retryAt: Date.now() + RECOVERY_PROBE_MS, probing: false });
+    if (!lease || providerHealth.get(provider) === lease) {
+      const failures = (providerHealth.get(provider)?.failures || 0) + 1;
+      providerHealth.set(provider, { failures, probing: false, probeAt: null,
+        retryAt: failures >= HARD_FAIL_THRESHOLD ? Date.now() + RECOVERY_PROBE_MS : 0 });
+    }
     throw error;
   }
 }
@@ -63,8 +90,8 @@ function getGridState(key) {
   return s;
 }
 
-async function fetchFromPrimary(gridPath) {
-  return withProviderHealth("primary", () => fetchJsonFrom(PRIMARY_API + gridPath, PROXY_HEADERS, "Primary"));
+async function fetchFromPrimary(gridPath, forced) {
+  return withProviderHealth("primary", () => fetchJsonFrom(PRIMARY_API + gridPath, PROXY_HEADERS, "Primary"), forced);
 }
 
 export function buildBackupPath(snapped) {
@@ -87,9 +114,9 @@ export function configureRelay(env) {
     : null;
 }
 
-async function fetchFromRelay(path) {
+async function fetchFromRelay(path, forced) {
   return withProviderHealth("relay", () => fetchJsonFrom(relay.url + "/adsb" + path,
-    { ...PROXY_HEADERS, "X-Relay-Key": relay.key }, "Relay"));
+    { ...PROXY_HEADERS, "X-Relay-Key": relay.key }, "Relay"), forced);
 }
 
 // Fetch an allowlisted FR24 URL through the relay. Returns null when the relay
@@ -107,17 +134,17 @@ export async function fetchFr24ViaRelay(targetUrl) {
   }
 }
 
-async function fetchFromBackupPath(path) {
+async function fetchFromBackupPath(path, forced) {
   try {
-    return await withProviderHealth("backup", () => fetchJsonFrom(BACKUP_API + path, PROXY_HEADERS, "Backup"));
+    return await withProviderHealth("backup", () => fetchJsonFrom(BACKUP_API + path, PROXY_HEADERS, "Backup"), forced);
   } catch (err) {
     if (!relay) throw err;
-    return fetchFromRelay(path);
+    return fetchFromRelay(path, forced);
   }
 }
 
-async function fetchFromBackup(snapped) {
-  return fetchFromBackupPath(buildBackupPath(snapped));
+async function fetchFromBackup(snapped, forced) {
+  return fetchFromBackupPath(buildBackupPath(snapped), forced);
 }
 
 export function isValidPayload(data) {
@@ -140,9 +167,9 @@ export function normalizePayload(data, source) {
   };
 }
 
-async function tryBackup(snapped, state) {
+async function tryBackup(snapped, state, forced) {
   try {
-    const data = await fetchFromBackup(snapped);
+    const data = await fetchFromBackup(snapped, forced);
     if (isValidPayload(data)) {
       state.usingBackup = true;
       state.lastProbeTs = Date.now();
@@ -155,9 +182,9 @@ async function tryBackup(snapped, state) {
 // Serve the backup for a single request without flipping the grid into the
 // sticky "usingBackup" state. Used to absorb a transient primary blip so a
 // single upstream hiccup doesn't surface as a 502.
-async function backupOnce(snapped) {
+async function backupOnce(snapped, forced) {
   try {
-    const data = await fetchFromBackup(snapped);
+    const data = await fetchFromBackup(snapped, forced);
     if (isValidPayload(data)) return normalizePayload(data, "backup");
   } catch (_) {}
   return null;
@@ -168,15 +195,16 @@ async function backupOnce(snapped) {
 // throws only when both providers are unusable. radiusNm is passed straight
 // through to both providers' radius parameter.
 export async function fetchAircraftResilient(lat, lon, radiusNm) {
+  const forced = oldestCoolingProvider();
   const primaryPath = "/lat/" + lat.toFixed(4) + "/lon/" + lon.toFixed(4) + "/dist/" + radiusNm;
   try {
-    const data = await fetchFromPrimary(primaryPath);
+    const data = await fetchFromPrimary(primaryPath, forced);
     if (isValidPayload(data)) return normalizePayload(data, "primary");
   } catch (_) {
     // fall through to the backup provider
   }
 
-  const data = await fetchFromBackupPath(buildTrafficPath(lat, lon, radiusNm, 2));
+  const data = await fetchFromBackupPath(buildTrafficPath(lat, lon, radiusNm, 2), forced);
   if (isValidPayload(data)) return normalizePayload(data, "backup");
   throw new Error("Traffic data unavailable");
 }
@@ -194,13 +222,14 @@ async function fetchJsonFrom(url, headers, label) {
 // Hex / callsign lookup with the same provider chain as traffic:
 // adsb.lol, then adsb.fi, then the relay. kind is "hex" or "callsign".
 export async function fetchLookupResilient(kind, value) {
+  const forced = oldestCoolingProvider();
   const path = "/" + kind + "/" + encodeURIComponent(value);
   const attempts = [
-    () => fetchFromPrimary(path).then((d) => [d, "primary"]),
-    () => withProviderHealth("backup", () => fetchJsonFrom(BACKUP_LOOKUP_API + path, PROXY_HEADERS, "Backup")).then((d) => [d, "backup"]),
+    () => fetchFromPrimary(path, forced).then((d) => [d, "primary"]),
+    () => withProviderHealth("backup", () => fetchJsonFrom(BACKUP_LOOKUP_API + path, PROXY_HEADERS, "Backup"), forced).then((d) => [d, "backup"]),
   ];
   if (relay) {
-    attempts.push(() => fetchFromRelay(path)
+    attempts.push(() => fetchFromRelay(path, forced)
       .then((d) => [d, "relay"]));
   }
   let lastError = null;
@@ -216,16 +245,20 @@ export async function fetchLookupResilient(kind, value) {
 }
 
 export async function fetchTraffic(gridPath, snapped, env) {
+  const forced = oldestCoolingProvider();
   const key = gridKey(snapped.lat, snapped.lon, snapped.dist);
   const state = getGridState(key);
   const now = Date.now();
   const hasBackup = true;
 
   if (state.usingBackup) {
-    if (now - state.lastProbeTs >= RECOVERY_PROBE_MS) {
+    const primaryHealth = providerHealth.get("primary");
+    const expiredProbe = primaryHealth?.probing && !probeActive(primaryHealth, now);
+    const backupsCooling = (relay ? ["backup", "relay"] : ["backup"]).every(name => providerCooling(name, now));
+    if (forced === "primary" || expiredProbe || backupsCooling || now - state.lastProbeTs >= RECOVERY_PROBE_MS) {
       state.lastProbeTs = now;
       try {
-        const data = await fetchFromPrimary(gridPath);
+        const data = await fetchFromPrimary(gridPath, forced);
         if (isValidPayload(data) && isFresh(data, state)) {
           state.failCount = 0;
           state.staleCount = 0;
@@ -237,7 +270,7 @@ export async function fetchTraffic(gridPath, snapped, env) {
     }
     if (hasBackup) {
       try {
-        const data = await fetchFromBackup(snapped);
+        const data = await fetchFromBackup(snapped, forced);
         if (isValidPayload(data)) return normalizePayload(data, "backup");
       } catch (_) {}
     }
@@ -248,7 +281,7 @@ export async function fetchTraffic(gridPath, snapped, env) {
   let data = null;
   let primaryOk = false;
   try {
-    data = await fetchFromPrimary(gridPath);
+    data = await fetchFromPrimary(gridPath, forced);
     primaryOk = isValidPayload(data);
   } catch (_) {
     primaryOk = false;
@@ -259,20 +292,20 @@ export async function fetchTraffic(gridPath, snapped, env) {
     // Once the primary has hard-failed enough times, switch to the backup
     // stickily so we stop paying the primary timeout on every request.
     if (state.failCount >= HARD_FAIL_THRESHOLD && hasBackup) {
-      const sticky = await tryBackup(snapped, state);
+      const sticky = await tryBackup(snapped, state, forced);
       if (sticky) return sticky;
       return null;
     }
     // Transient blip: serve the backup for this one request without going
     // sticky, so a single primary failure never becomes a user-visible 502.
-    if (hasBackup) return backupOnce(snapped);
+    if (hasBackup) return backupOnce(snapped, forced);
     return null;
   }
 
   if (!isFresh(data, state)) {
     state.staleCount++;
     if (state.staleCount >= STALE_THRESHOLD && hasBackup) {
-      const backupResult = await tryBackup(snapped, state);
+      const backupResult = await tryBackup(snapped, state, forced);
       if (backupResult) return backupResult;
     }
     return normalizePayload(data, "primary");
