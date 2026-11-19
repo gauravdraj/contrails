@@ -6,7 +6,7 @@ import http from 'node:http';
 import vm from 'node:vm';
 import { spawn, execFileSync } from 'node:child_process';
 import { readFile, writeFile, mkdir, mkdtemp, rm, cp, access } from 'node:fs/promises';
-import { constants } from 'node:fs';
+import { constants, existsSync, readFileSync } from 'node:fs';
 import { gunzipSync } from 'node:zlib';
 import { tmpdir } from 'node:os';
 import { resolve, join, sep, delimiter } from 'node:path';
@@ -1211,52 +1211,15 @@ async function shotRun(origin) {
 }
 
 function guard() {
-  let ref;
-  for (const r of ['live/main', 'origin/main'])
-    try {
-      execFileSync('git', ['rev-parse', '--verify', r], { cwd: ROOT, stdio: 'pipe' });
-      ref = r;
-      break;
-    }
-    catch { }
-  if (!ref) {
-    throw new Error('Isolation baseline missing: provide live/main or origin/main before running watch-check (no network fetch is performed).');
-  }
-  const allowed = p => p.startsWith('_watch/') || [
-    'scripts/watch-check.mjs',
-    'scripts/watch-fixtures.mjs',
-    'scripts/build-watch-geo.mjs',
-    'scripts/deploy-watch-homeserver.sh',
-    '.github/workflows/ci.yml',
-    'docs/superpowers/specs/2026-11-19-airport-watch-design.md'
-  ].includes(p);
-  // Check both merge-base history and the working-tree comparison (uncommitted changes matter here).
-  for (const range of [ref + '...', ref]) {
-    const paths = execFileSync('git', ['diff', '--name-only', range], { cwd: ROOT, encoding: 'utf8' })
-      .trim().split('\n').filter(Boolean);
-    assert.ok(paths.every(allowed), 'public-site files changed: ' + paths.filter(p => !allowed(p)).join(','));
-  }
-  const prohibited = execFileSync(
-    'git',
-    [
-      'diff',
-      '--name-only',
-      ref,
-      '--',
-      'contrails-core.js',
-      'js',
-      'worker',
-      'relay',
-      'index.html',
-      'sw.js',
-      'app.bundle.js',
-      'manifest.json',
-      'styles.css'
-    ],
-    { cwd: ROOT, encoding: 'utf8' }
-  ).trim();
-  assert.equal(prohibited, '');
-  return ref + '; existing app/core/worker/relay byte-identical';
+  // What keeps _watch/ off the public Pages site is structural, not a diff: Pages is a legacy Jekyll build, and Jekyll
+  // never publishes "_"-prefixed paths unless .nojekyll disables Jekyll or _config.yml includes them. (The earlier
+  // check diffed against main and failed every later PR that touched any app/worker file.)
+  assert.ok(existsSync(join(ROOT, '_watch', 'index.html')), '_watch/index.html missing');
+  assert.ok(!existsSync(join(ROOT, '.nojekyll')), '.nojekyll would publish _watch/ on the public site');
+  const config = join(ROOT, '_config.yml');
+  if (existsSync(config))
+    assert.ok(!/_watch/.test(readFileSync(config, 'utf8')), '_config.yml must not include _watch');
+  return '_watch/ stays unpublished (Jekyll skips "_" paths; no .nojekyll; no _config.yml include)';
 }
 async function cleanup() {
   stopping = true;

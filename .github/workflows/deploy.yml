@@ -15,6 +15,8 @@ on:
     paths:
       - "worker/**"
       - "airports.json"
+      - "contrails-core.js"
+      - "runways.json"
       - "airlines.json"
       - ".github/workflows/deploy.yml"
   workflow_dispatch:
