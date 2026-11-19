@@ -12,23 +12,26 @@ import {
   formatRouteLabel,
 } from "./routes.js";
 
-for (const fixture of [...round247.departures, ...round247.detours]) {
+for (const fixture of [...round247.departures, ...round247.detours, ...round247.neighbourDepartures]) {
   test('v247 round Worker: retain ' + (fixture.name || fixture.from + '-' + fixture.to), () => {
     const route = mergeRoutes(null, { origin: { iata: fixture.from }, destination: { iata: fixture.to } }, fixture);
     assert.equal(route?.origin?.iata, fixture.from);
     assert.equal(route?.destination?.iata, fixture.to);
   });
 }
-for (const fixture of round247.approaches) {
-  test('v247 round Worker: UA3911 ' + fixture.name, () => {
-    assert.equal(mergeRoutes(null, { origin: { iata: 'SYD' }, destination: { iata: 'LAX' } }, fixture), null);
-    for (const [from, to] of [['HNL', 'SFO'], ['SFO', 'LAX']]) {
-      const route = mergeRoutes(null, { origin: { iata: from }, destination: { iata: to } }, fixture);
-      assert.equal(route?.origin?.iata, from);
-      assert.equal(route?.destination?.iata, to);
-    }
+// Accepted residual (see contrails-core.test.js): level approach segments keep the route; the descending final is rejected.
+for (const fixture of round247.levelApproachesKept) {
+  test('v247 round Worker: level approach keeps the route (' + fixture.name + ')', () => {
+    const route = mergeRoutes(null, { origin: { iata: 'SYD' }, destination: { iata: 'LAX' } }, fixture);
+    assert.equal(route?.destination?.iata, 'LAX');
   });
 }
+test('v247 round Worker: UA3911 descending final still rejects SYD-LAX', () => {
+  const final = { lat: 37.60, lng: -122.30, altFt: 1500, vRate: -700, track: 280 };
+  assert.equal(mergeRoutes(null, { origin: { iata: 'SYD' }, destination: { iata: 'LAX' } }, final), null);
+  const real = mergeRoutes(null, { origin: { iata: 'HNL' }, destination: { iata: 'SFO' } }, final);
+  assert.equal(real?.destination?.iata, 'SFO');
+});
 for (const ground of [false, true]) {
   test('v247 round Worker: airborne 300 m SFO origin survives ' + (ground ? 'landing' : 'final'), () => {
     const path = [[1000, 37.62, -122.375, 300, 150, false], [1600, 36, -120, 10000, 150, false],

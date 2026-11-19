@@ -2456,20 +2456,19 @@ test('v247 evidence: Worker copy stays identical to the pure core helper', async
 });
 
 const round247 = require('./scripts/route-regressions.json');
-for (const fixture of [...round247.departures, ...round247.detours]) {
+for (const fixture of [...round247.departures, ...round247.detours, ...round247.neighbourDepartures]) {
   test('v247 round core: retain ' + (fixture.name || fixture.from + '-' + fixture.to), () => {
     const route = route247(fixture.from, fixture.to);
     assert.equal(core.rejectContradictoryRoute(route, fixture, routeAirports247), route);
   });
 }
-for (const fixture of round247.approaches) {
-  test('v247 round core: UA3911 ' + fixture.name, () => {
-    assert.equal(core.rejectContradictoryRoute(route247(), fixture, routeAirports247), null);
-    for (const route of [route247('HNL', 'SFO'), route247('SFO', 'LAX')]) {
-      assert.equal(core.rejectContradictoryRoute(route, fixture, routeAirports247), route);
-    }
-    const unknown = route247();
-    assert.equal(core.rejectContradictoryRoute(unknown, { ...fixture, track: null }, routeAirports247), unknown);
+// Accepted residual of review round 2: without a descent, a stale route on a level approach segment is kept
+// (the rule that caught these also nulled departures passing a neighbouring airport). The descending final
+// (-700 fpm, the reported UA3911 case) is still rejected above.
+for (const fixture of round247.levelApproachesKept) {
+  test('v247 round core: level approach keeps the route (' + fixture.name + ')', () => {
+    const route = route247();
+    assert.equal(core.rejectContradictoryRoute(route, fixture, routeAirports247), route);
   });
 }
 for (const ground of [false, true]) {

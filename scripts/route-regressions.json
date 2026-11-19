@@ -92,7 +92,13 @@
       "altFt": 37000
     }
   ],
-  "approaches": [
+  "neighbourDepartures": [
+    { "name": "DAL-LAS passing DFW", "from": "DAL", "to": "LAS", "lat": 32.845, "lng": -96.955, "altFt": 3500, "vRate": 1500, "track": 290 },
+    { "name": "SFO-DEN passing OAK", "from": "SFO", "to": "DEN", "lat": 37.68, "lng": -122.29, "altFt": 4000, "vRate": 1200, "track": 50 },
+    { "name": "DFW-ATL passing DAL", "from": "DFW", "to": "ATL", "lat": 32.897, "lng": -96.93, "altFt": 4000, "vRate": 1200, "track": 90 },
+    { "name": "MDW-MSP level passing ORD", "from": "MDW", "to": "MSP", "lat": 41.87, "lng": -87.86, "altFt": 3000, "vRate": 0, "track": 315 }
+  ],
+  "levelApproachesKept": [
     {
       "name": "3000 ft downwind",
       "lat": 37.49,

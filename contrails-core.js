@@ -1558,9 +1558,10 @@
         closing = Math.cos((state.track - bearingDegrees(state.lat, state.lng, nearest[1], nearest[2])) * Math.PI / 180) > 0.5;
       }
       if (!atOrigin && !atDest) {
+        // Only a real descent toward another airport counts: a "low and closing" rule without a descent also
+        // caught departures passing a neighbour (DAL->LAS near DFW), so it was removed (v2.47 review round 2).
         contradiction = !!((state.ground && nearestKm < 8) ||
-          (closing === true && destFar && ((agl != null && agl < 5000 && nearestKm < 25) ||
-            (low && state.vRate < -300))));
+          (closing === true && destFar && low && state.vRate < -300));
       }
     }
     // Distance to the minor great-circle segment, including its endpoints (not the infinite great circle).
