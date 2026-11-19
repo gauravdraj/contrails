@@ -9,6 +9,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0 # watch-check diffs against origin/main (public-site guard)
       - uses: actions/setup-node@v5
         with:
           node-version: 22
@@ -18,4 +20,6 @@ jobs:
       - run: node smoke-boot.mjs
       - run: python3 -m unittest discover -s relay -p 'test_*.py'
       - run: node scripts/browser-check.mjs
+        timeout-minutes: 5
+      - run: node scripts/watch-check.mjs
         timeout-minutes: 5
