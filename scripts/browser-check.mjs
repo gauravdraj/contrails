@@ -48,6 +48,11 @@ const report = (message) => (perf ? console.error : console.log)(message);
 const errors = [], unexpectedRequests = [], networkFixtures = new Map(), workerRequests = new Map();
 const mock = { offline: false, failed: 0, traffic: 0, startedAt: 0 };
 let browser, cdp, profile, staticServer, workerServer, watchdog;
+const openSockets = new Set();
+function trackSockets(server) {
+  server.on("connection", socket => { openSockets.add(socket); socket.on("close", () => openSockets.delete(socket)); });
+  return server;
+}
 let chromeStderr = "", chromeFailure = null, stopping = false;
 
 async function check(name, action) {
@@ -366,15 +371,20 @@ async function cleanup() {
   clearTimeout(watchdog);
   watchdog = setTimeout(() => { process.stderr.write("cleanup timed out\n"); process.exit(1); }, 15000);
   watchdog.unref();
-  await stopBrowser();
-  cdp?.socket.close();
+  const t0 = Date.now(); const step = name => { if (process.env.CLEANUP_TRACE) process.stderr.write("cleanup " + name + " +" + (Date.now() - t0) + "ms\n"); };
+  await stopBrowser(); step("browser");
+  cdp?.socket.close(); step("cdp");
+  // closeAllConnections() skips CONNECT tunnels from the deny-all proxy, which then hold server.close() open.
+  for (const socket of openSockets) socket.destroy();
   for (const server of [staticServer, workerServer]) {
     if (!server?.listening) continue;
     server.closeAllConnections();
-    await new Promise(resolve => server.close(resolve));
+    await Promise.race([new Promise(resolve => server.close(resolve)), delay(2000)]);
   }
+  step("servers");
   if (profile) await rm(profile, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 })
     .catch(error => report("WARN profile cleanup: " + error.message));
+  step("profile");
 }
 
 async function main() {
@@ -384,9 +394,9 @@ async function main() {
   await check("bundle drift", async () => {
     assert.ok(await readFile(join(ROOT, BUNDLE_FILE), "utf8") === bundle, "app.bundle.js is stale; run node scripts/build-bundle.mjs");
   });
-  workerServer = http.createServer((req, res) => {
+  workerServer = trackSockets(http.createServer((req, res) => {
     handleWorker(req, res).catch(error => { errors.push("Mock Worker: " + error.message); json(res, 500, { error: error.message }); });
-  });
+  }));
   for (let attempt = 0; ; attempt++) {
     try { await listen(workerServer, 8791); break; }
     catch (error) {
@@ -395,9 +405,9 @@ async function main() {
       await delay(1000);
     }
   }
-  staticServer = http.createServer((req, res) => {
+  staticServer = trackSockets(http.createServer((req, res) => {
     serveStatic(req, res, bundle).catch(error => { errors.push("Static server: " + error.message); res.writeHead(500).end(); });
-  });
+  }));
   staticServer.on("connect", (_req, socket) => {
     // Chrome may reset a speculative proxy connection after receiving the denial.
     socket.on("error", () => {});
@@ -699,4 +709,10 @@ catch (error) {
   if (unexpectedRequests.length) report("Unmocked requests: " + JSON.stringify(unexpectedRequests));
   if (chromeFailure) report(chromeFailure);
 }
-finally { await cleanup(); }
+finally {
+  await cleanup();
+  // Everything is torn down; exit now with the checks' verdict rather than waiting for stray handles (e.g. a
+  // keep-alive socket) to drain, which tripped the cleanup hard-stop and turned passing runs into exit 1.
+  clearTimeout(watchdog);
+  process.exit(process.exitCode || 0);
+}
