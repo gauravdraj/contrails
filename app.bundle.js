@@ -1507,6 +1507,79 @@ var AIRLINES_DATA = {"airlines":{"AAL":{"name":"American","iata":"AA"},"AAR":{"n
     return !lastOkAt || now - lastOkAt > (staleMs == null ? 30000 : staleMs);
   }
 
+  function isReportedRouteSource(source) {
+    return ["schedule", "fr24-search", "fr24", "live-feed"].indexOf(source) !== -1;
+  }
+
+  function routeProvenance(route) {
+    var sources = [];
+    if (route && route.origin) sources.push(route.originSource);
+    if (route && route.destination) sources.push(route.destSource);
+    var reported = sources.length > 0 && sources.every(isReportedRouteSource);
+    var database = sources.indexOf("adsbdb") !== -1 || sources.indexOf("cross-validated") !== -1;
+    return { label: reported ? "reported" : "inferred",
+      note: reported ? (sources.indexOf("live-feed") !== -1 ? "from live feed" : "from FR24 live schedule")
+        : database ? "from callsign database — may be outdated" : "estimated from flight path" };
+  }
+
+  // Airport rows are airports.json's [iata, lat, lng, name, city, rank, elevationFt].
+  // State uses feet and feet/minute, with an optional previous {lat, lng} or heading (track).
+  // This rejects evidence for a different leg; it does not detect or describe diversions.
+  function rejectContradictoryRoute(route, state, airports) {
+    if (!route || !state || !Number.isFinite(state.lat) || !Number.isFinite(state.lng)) return route;
+    var keepOrigin = route.origin && (isReportedRouteSource(route.originSource) || route.originSource === "track");
+    var keepDest = route.destination && isReportedRouteSource(route.destSource);
+    if ((!route.origin || isReportedRouteSource(route.originSource)) && (!route.destination || keepDest)) return route;
+    var origin = null, dest = null, nearest = null, nearestKm = 40;
+    for (var i = 0; airports && i < airports.length; i++) {
+      var ap = airports[i];
+      if (route.origin && ap[0] === route.origin.iata) origin = ap;
+      if (route.destination && ap[0] === route.destination.iata) dest = ap;
+      var km = haversineKm(state.lat, state.lng, ap[1], ap[2]);
+      if (km < nearestKm) { nearestKm = km; nearest = ap; }
+    }
+    var contradiction = false;
+    if (nearest) {
+      var agl = Number.isFinite(state.altFt) ? state.altFt - (nearest[6] || 0) : null;
+      var low = agl != null && agl < 10000;
+      var atOrigin = route.origin && route.origin.iata === nearest[0];
+      var atDest = route.destination && route.destination.iata === nearest[0];
+      // A climb can pass a neighboring airport. Keep a plausible nearby origin until outside its area.
+      var nearOrigin = origin && haversineKm(state.lat, state.lng, origin[1], origin[2]) < 40;
+      var destFar = dest && haversineKm(nearest[1], nearest[2], dest[1], dest[2]) > 150;
+      var closing = null;
+      if (state.previous && Number.isFinite(state.previous.lat) && Number.isFinite(state.previous.lng)) {
+        var change = haversineKm(state.previous.lat, state.previous.lng, nearest[1], nearest[2]) - nearestKm;
+        if (Math.abs(change) > 0.1) closing = change > 0;
+      }
+      if (closing == null && Number.isFinite(state.track)) {
+        closing = Math.cos((state.track - bearingDegrees(state.lat, state.lng, nearest[1], nearest[2])) * Math.PI / 180) > 0.5;
+      }
+      if (!atOrigin && !atDest) {
+        contradiction = !!((state.ground && nearestKm < 8) ||
+          (low && state.vRate > 300 && closing === false && !nearOrigin) ||
+          (low && state.vRate < -300 && closing === true && destFar));
+      }
+    }
+    // Distance to the minor great-circle segment, including its endpoints (not the infinite great circle).
+    if (!contradiction && origin && dest) {
+      var length = haversineKm(origin[1], origin[2], dest[1], dest[2]);
+      var fromOrigin = haversineKm(origin[1], origin[2], state.lat, state.lng);
+      var delta = (bearingDegrees(origin[1], origin[2], state.lat, state.lng) -
+        bearingDegrees(origin[1], origin[2], dest[1], dest[2])) * Math.PI / 180;
+      var along = Math.atan2(Math.sin(fromOrigin / 6371) * Math.cos(delta), Math.cos(fromOrigin / 6371)) * 6371;
+      var offPath = along < 0 ? fromOrigin : along > length
+        ? haversineKm(dest[1], dest[2], state.lat, state.lng)
+        : Math.abs(Math.asin(Math.max(-1, Math.min(1, Math.sin(fromOrigin / 6371) * Math.sin(delta))))) * 6371;
+      contradiction = offPath > Math.max(300, length * 0.25);
+    }
+    if (!contradiction) return route;
+    if (!keepOrigin && !keepDest) return null;
+    return Object.assign({}, route, { origin: keepOrigin ? route.origin : null,
+      destination: keepDest ? route.destination : null, originSource: keepOrigin ? route.originSource : null,
+      destSource: keepDest ? route.destSource : null, display: "", iata: "", confidence: "low" });
+  }
+
   // Route sources the client's own track/convergence guesses must not overwrite.
   var AUTHORITATIVE_DEST_SOURCES = ["fr24-search", "schedule", "cross-validated"];
   function isAuthoritativeDestSource(source) {
@@ -1721,6 +1794,9 @@ var AIRLINES_DATA = {"airlines":{"AAL":{"name":"American","iata":"AA"},"AAR":{"n
     unwrapLngNear: unwrapLngNear,
     trafficRetryDelayMs: trafficRetryDelayMs,
     trafficOutage: trafficOutage,
+    isReportedRouteSource: isReportedRouteSource,
+    routeProvenance: routeProvenance,
+    rejectContradictoryRoute: rejectContradictoryRoute,
     isAuthoritativeDestSource: isAuthoritativeDestSource,
     routeCacheEntryStale: routeCacheEntryStale,
     selectRouteFetchPlanes: selectRouteFetchPlanes,
@@ -1812,7 +1888,7 @@ if (!airlineName || !angleDiffDeg || !bearingDegrees || !buildViewPolicy || !bui
   throw new Error("Contrails core helpers failed to load.");
 }
 
-const APP_VERSION = "2.46";
+const APP_VERSION = "2.47";
 const isLocal = location.hostname === "localhost" || location.hostname === "127.0.0.1";
 const isIOSDevice = /iP(ad|hone|od)/.test(navigator.userAgent) ||
   (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
@@ -3254,7 +3330,7 @@ function updateRouteLine() {
   var id = selectedAircraftId;
   if (!id) { if (_routeLineKey) clearRouteLine(); return; }
   var plane = findAircraftById(id);
-  var rc = plane && plane.callsign ? routeCache[plane.callsign] : null;
+  var rc = validateCachedRoute(plane);
   var oIata = rc && rc.origin && rc.origin.iata ? String(rc.origin.iata).toUpperCase() : null;
   var dIata = rc && rc.destination && rc.destination.iata ? String(rc.destination.iata).toUpperCase() : null;
   var key = id + "|" + (oIata || "") + "|" + (dIata || "");
@@ -4193,6 +4269,7 @@ function buildRouteFetchPayload(sourcePlanes, options) {
       hex: isIcaoHex(a.icao24) ? a.icao24 : null,
       lat: a.lat,
       lng: a.lng,
+      track: a.track,
       altFt: a.altFt,
       vRate: a.vRate != null ? Math.round(a.vRate * 60) : null,
       ground: a.ground
@@ -4218,6 +4295,37 @@ function noteRouteMisses(needed, routes) {
   }
 }
 
+// Validate again against the current observation: routes can outlive a leg or arrive after a slow request.
+function routeForAircraft(a, entry) {
+  if (!a || !entry) return entry;
+  var history = typeof posHistory !== "undefined" && posHistory[a.icao24];
+  var previous = null;
+  for (var i = history ? history.length - 1 : -1; i >= 0; i--) {
+    if (history[i][5] || Date.now() - history[i][2] > 120000) break;
+    if (!history[i][6] && haversineKm(a.lat, a.lng, history[i][0], history[i][1]) > 0.1) {
+      previous = { lat: history[i][0], lng: history[i][1] }; break;
+    }
+  }
+  var checked = core.rejectContradictoryRoute(entry, { lat: a.lat, lng: a.lng, altFt: a.altFt,
+    ground: a.ground, track: a.track, vRate: a.vRate == null ? null : a.vRate * 60, previous: previous },
+    typeof airportData !== "undefined" ? airportData : null);
+  if (checked && checked !== entry) {
+    checked.display = formatClientRouteLabel(checked.origin, checked.destination, checked.phase || "cruising");
+    checked.iata = [checked.origin && checked.origin.iata, checked.destination && checked.destination.iata].filter(Boolean).join(" to ");
+  }
+  return checked;
+}
+
+function validateCachedRoute(a) {
+  var entry = a && a.callsign && routeCache[a.callsign];
+  var checked = routeForAircraft(a, entry);
+  if (checked !== entry) {
+    if (checked) routeCache[a.callsign] = checked;
+    else delete routeCache[a.callsign];
+  }
+  return checked;
+}
+
 function mergeRoutesetEntries(routes, sourcePlanes) {
   sourcePlanes = sourcePlanes || [];
   var fetchedAt = Date.now();
@@ -4227,6 +4335,12 @@ function mergeRoutesetEntries(routes, sourcePlanes) {
     if (!r.callsign || (!r.origin && !r.destination)) continue;
     // FR24 or the schedule may have resolved this flight while the request was out.
     if (!routeEntryReplaceable(routeCache[r.callsign], fetchedAt)) continue;
+    var routePlane = aircraft.find(function(a) { return a.callsign === r.callsign; }) ||
+      sourcePlanes.find(function(a) { return a.callsign === r.callsign; });
+    if (r.destSource === "adsbdb" || r.originSource === "adsbdb") adsbdbCallsigns.push(r.callsign);
+    var checked = routeForAircraft(routePlane, r);
+    if (!checked) { if (routePlane) validateCachedRoute(routePlane); continue; }
+    r = checked;
     var dest = r.destination;
     var destIata = dest ? (dest.region ? dest.display : dest.iata) : null;
     var iataParts = [r.origin ? r.origin.iata : null, destIata].filter(Boolean);
@@ -4241,7 +4355,6 @@ function mergeRoutesetEntries(routes, sourcePlanes) {
       phase: r.phase || null,
       fetchedAt: fetchedAt
     };
-    if (r.destSource === "adsbdb" || r.originSource === "adsbdb") adsbdbCallsigns.push(r.callsign);
   }
   for (var ac = 0; ac < adsbdbCallsigns.length; ac++) {
     var cs = adsbdbCallsigns[ac];
@@ -4322,7 +4435,7 @@ function clientConvergenceRefine() {
   for (var i = 0; i < aircraft.length; i++) {
     var a = aircraft[i];
     if (!a.callsign || a.private || a.ground) continue;
-    var rc = routeCache[a.callsign];
+    var rc = validateCachedRoute(a);
     if (rc && rc.destination && rc.originSource === "track") continue;
     if (a.altFt != null && a.altFt < 15000 && a.vRate != null && a.vRate * 60 > 100) {
       var hiSrc = ["adsbdb", "track", "cross-validated", "schedule", "fr24-search"];
@@ -5113,7 +5226,7 @@ function buildPopup(a, policy) {
     emergLine = '<span style="color:#f87171;font-weight:700">' + emergText + "</span><br>";
   }
 
-  var rc = a.callsign ? routeCache[a.callsign] : null;
+  var rc = validateCachedRoute(a);
   var subheaderHtml = buildPopupSubheader(a, rc);
 
   var distanceLine = "";
@@ -5152,6 +5265,7 @@ function popupRouteDisplay(routeEntry) {
 
 function buildPopupSubheader(a, routeEntry) {
   var airline = !a.private && a.callsign ? airlineName(a.callsign) : "";
+  routeEntry = routeForAircraft(a, routeEntry);
   var routeDisplay = popupRouteDisplay(routeEntry);
   if (!airline && !routeDisplay) return "";
   var html = "";
@@ -5159,7 +5273,10 @@ function buildPopupSubheader(a, routeEntry) {
     html += '<span class="popup-airline" style="display:inline;margin-top:0;white-space:nowrap">&nbsp;&middot;&nbsp;' + escapeHtml(airline) + "</span>";
   }
   if (routeDisplay) {
-    html += '<div class="popup-route">' + escapeHtml(routeDisplay) + "</div>";
+    var provenance = core.routeProvenance(routeEntry);
+    html += '<div class="popup-route">' + escapeHtml(routeDisplay) +
+      ' <span class="route-provenance">' + provenance.label + '</span></div>' +
+      '<div class="route-source">' + escapeHtml(provenance.note) + '</div>';
   }
   return html;
 }
@@ -5274,7 +5391,9 @@ function runOriginDetection(hex, data) {
     if (aircraft[i].icao24 === hex) { cs = aircraft[i].callsign; break; }
   }
   if (!cs) return;
-  var rc = routeCache[cs];
+  var plane = aircraft.find(function(a) { return a.icao24 === hex; });
+  var rc = validateCachedRoute(plane);
+  if (rc && core.isReportedRouteSource(rc.originSource)) return;
   var path = data.path || data;
   if (!path || path.length < 2) return;
   var flightStart = findFlightStartIndex(path);
@@ -5290,6 +5409,9 @@ function runOriginDetection(hex, data) {
     if (core.tracePointOnGround(path[i]) || (Number.isFinite(altM) && altM <= 2500)) { originPt = path[i]; break; }
   }
   if (!originPt) return;
+  var lastPt = path[path.length - 1];
+  if (Number.isFinite(path[0][3]) && Number.isFinite(lastPt[3]) && path[0][3] > lastPt[3] &&
+      !path.some(function(pt) { return core.tracePointOnGround(pt); })) return;
   var bestDist = Infinity, bestApt = null;
   for (var j = 0; j < airportData.length; j++) {
     var ap = airportData[j];
@@ -5329,6 +5451,7 @@ function runOriginDetection(hex, data) {
       fetchedAt: Date.now()
     };
   }
+  validateCachedRoute(plane);
 }
 
 // trackExtended is set only once the Worker has answered (a 200 with no path included), so a failed fetch is
@@ -5376,7 +5499,7 @@ function selectClientScheduleMatch(variants, sources, a) {
 
 function applyScheduleMatch(a, match) {
   if (!a || !match) return false;
-  var currentRc = routeCache[a.callsign];
+  var currentRc = validateCachedRoute(a);
   var origin = null, destination = null, originSource = null, destSource = null;
 
   // The selector has already checked direction; an arrival row cannot be reversed into an onward leg.
@@ -5462,7 +5585,7 @@ function cascadeScheduleMatches() {
   for (var i = 0; i < aircraft.length; i++) {
     var a = aircraft[i];
     if (!a.callsign || a.private) continue;
-    var rc = routeCache[a.callsign];
+    var rc = validateCachedRoute(a);
     if (rc && rc.destSource === "schedule") continue;
     var variants = callsignVariants(a.callsign);
     if (!variants.length) continue;
@@ -5492,7 +5615,7 @@ function proactiveFr24SearchSweep() {
     if (fr24SearchPending[a.callsign]) continue;
     if (fr24SearchFailed[a.callsign] && now - fr24SearchFailed[a.callsign] < 120000) continue;
     if (isLikelyPrivateCallsign(a.callsign)) continue;
-    var rc = routeCache[a.callsign];
+    var rc = validateCachedRoute(a);
     if (rc && rc.destSource === "fr24-search") continue;
     if (rc && (rc.destSource === "adsbdb" || rc.originSource === "adsbdb")) {
       targets.push(a);
@@ -5524,7 +5647,7 @@ async function tryFr24Search(a, options) {
   var variants = callsignVariants(a.callsign);
   if (!variants.length) return;
   var force = options && options.force;
-  var rc = routeCache[a.callsign];
+  var rc = validateCachedRoute(a);
   if (!force && rc && (rc.destSource === "schedule" || rc.destSource === "fr24-search" || rc.destSource === "cross-validated")) return;
 
   // The IATA form stays the first query; regional carriers fly under a marketing carrier's number, so an
@@ -5592,7 +5715,7 @@ async function tryFr24Search(a, options) {
 function matchScheduleRoute(hex) {
   var a = findAircraftById(hex);
   if (!a || !a.callsign || a.private) return;
-  var rc = routeCache[a.callsign];
+  var rc = validateCachedRoute(a);
   if (rc && rc.destSource === "schedule") return;
 
   var variants = callsignVariants(a.callsign);
@@ -6452,6 +6575,16 @@ function formatTakeoffSummaryStatus(row, liveData) {
   return signal.label;
 }
 
+function boardRouteTag(row, dir) {
+  var code = dir === "departures" ? row.destIata : row.originIata;
+  if (!code) return "";
+  var rc = routeCache[row.callsign];
+  var provenance = core.routeProvenance(dir === "departures"
+    ? { destination: { iata: code }, destSource: rc && rc.destSource }
+    : { origin: { iata: code }, originSource: rc && rc.originSource });
+  return ' <span class="route-provenance" title="' + escapeHtml(provenance.note) + '">' + provenance.label + '</span>';
+}
+
 function buildScheduleNextSummary(liveData, dir) {
   var tab = scheduleTab(dir);
   var next = getAirportNextRow(liveData, dir);
@@ -6495,7 +6628,7 @@ function buildScheduleNextSummary(liveData, dir) {
       '<span class="sched-next-flight">' + flightNum + '</span>' +
       '<span class="sched-next-status">' + escapeHtml(statusText) + '</span>' +
     '</div>' +
-    (routeText ? '<div class="sched-next-route">' + escapeHtml(routeText) + '</div>' : '') +
+    (routeText ? '<div class="sched-next-route">' + escapeHtml(routeText) + boardRouteTag(next, dir) + '</div>' : '') +
   '</div>';
 }
 
@@ -6717,7 +6850,7 @@ function buildLiveScheduleData(airportIata, airportLat, airportLng, sourceAircra
   for (var i = 0; i < list.length; i++) {
     var a = list[i];
     if (!a.callsign) continue;
-    var rc = routeCache[a.callsign];
+    var rc = validateCachedRoute(a);
     var destinationHere = !!(rc && rc.destination && rc.destination.iata === airportIata);
     var originHere = !!(rc && rc.origin && rc.origin.iata === airportIata);
     var distKm = haversineKm(a.lat, a.lng, airportLat, airportLng);
@@ -6844,7 +6977,7 @@ function buildLiveScheduleData(airportIata, airportLat, airportLng, sourceAircra
     var a = list[i];
     if (!a.callsign || a.ground || seenCallsigns[a.callsign]) continue;
     if (departureHexes[a.icao24]) continue;
-    var rc = routeCache[a.callsign];
+    var rc = validateCachedRoute(a);
     if (rc && rc.origin && rc.origin.iata === airportIata) continue;
     if (rc && rc.destination && rc.destination.iata !== airportIata && rc.confidence === "high") continue;
     var vRateFpm = a.vRate != null ? a.vRate * 60 : 0;
@@ -6863,7 +6996,7 @@ function buildLiveScheduleData(airportIata, airportLat, airportLng, sourceAircra
     for (var i = 0; i < list.length; i++) {
       var a = list[i];
       if (!a.callsign) continue;
-      var rc = routeCache[a.callsign];
+      var rc = validateCachedRoute(a);
       if (!rc || !rc.destination || rc.destination.iata !== airportIata) continue;
       var landedDist = haversineKm(a.lat, a.lng, airportLat, airportLng);
       if (!a.ground) {
@@ -6893,7 +7026,7 @@ function buildLiveScheduleData(airportIata, airportLat, airportLng, sourceAircra
     for (var i = 0; i < list.length; i++) {
       var a = list[i];
       if (!a.callsign || !a.ground) continue;
-      var rc = routeCache[a.callsign];
+      var rc = validateCachedRoute(a);
       if (!rc || !rc.destination || rc.destination.iata !== airportIata) continue;
       var landedDist = haversineKm(a.lat, a.lng, airportLat, airportLng);
       if (landedDist > 5) continue;
@@ -6934,7 +7067,7 @@ function buildLiveScheduleData(airportIata, airportLat, airportLng, sourceAircra
     var a = list[i];
     if (!a.callsign || !a.ground) continue;
     if (landedHexes[a.icao24]) continue;
-    var rc = routeCache[a.callsign];
+    var rc = validateCachedRoute(a);
     if (!rc || !rc.destination || rc.destination.iata !== airportIata) continue;
     var taxDist = haversineKm(a.lat, a.lng, airportLat, airportLng);
     if (taxDist > 6) continue;
@@ -7030,14 +7163,14 @@ function buildScheduleCardContent(iata, name, liveData, dir, scopeId, staleNote)
         var dot = f.landed ? "cyan" : (f.parked ? "gray" : "green");
         html += '<span class="sched-dot ' + dot + '"></span>' +
           '<span class="sched-flight">' + flightNum + '</span>' +
-          '<span class="sched-route">from ' + fromIata + (f.aircraftType ? ' \u00b7 ' + escapeHtml(f.aircraftType) : '') + '</span>' +
+          '<span class="sched-route">from ' + fromIata + (f.aircraftType ? ' \u00b7 ' + escapeHtml(f.aircraftType) : '') + boardRouteTag(f, dir) + '</span>' +
           '<span class="sched-landed">' + formatLandingSummaryStatus(f) + '</span>';
       } else {
         var altStr = f.altFt != null ? f.altFt.toLocaleString() + "ft" : "\u2014";
         var etaStr = formatLandingEta(f.etaMin);
         html += '<span class="sched-dot cyan live"></span>' +
           '<span class="sched-flight">' + flightNum + '</span>' +
-          '<span class="sched-route">from ' + fromIata + (f.aircraftType ? ' \u00b7 ' + escapeHtml(f.aircraftType) : '') + '</span>' +
+          '<span class="sched-route">from ' + fromIata + (f.aircraftType ? ' \u00b7 ' + escapeHtml(f.aircraftType) : '') + boardRouteTag(f, dir) + '</span>' +
           '<span class="sched-alt">' + altStr + '</span>' +
           (etaStr ? '<span class="sched-eta">' + etaStr + '</span>' : '');
       }
@@ -7060,7 +7193,7 @@ function buildScheduleCardContent(iata, name, liveData, dir, scopeId, staleNote)
       html += '<div class="sched-row"' + scheduleRowAttrs(f) + '>' +
         '<span class="sched-dot ' + dotColor + '"></span>' +
         '<span class="sched-flight">' + flightNum + '</span>' +
-        '<span class="sched-route">to ' + destIata + (f.aircraftType ? ' \u00b7 ' + escapeHtml(f.aircraftType) : '') + '</span>' +
+        '<span class="sched-route">to ' + destIata + (f.aircraftType ? ' \u00b7 ' + escapeHtml(f.aircraftType) : '') + boardRouteTag(f, dir) + '</span>' +
         '<span class="sched-speed">' + spdStr + '</span>' +
         '<span class="sched-hint">' + escapeHtml(hintLabel) + '</span>' +
         '</div>';
@@ -7239,7 +7372,7 @@ function applyAirportScheduleMatches(iata, scheduleData, planes) {
   for (var i = 0; i < planes.length; i++) {
     var a = planes[i];
     if (!a || !a.callsign || a.private) continue;
-    var rc = routeCache[a.callsign];
+    var rc = validateCachedRoute(a);
     if (rc && rc.destSource === "schedule") continue;
     var variants = callsignVariants(a.callsign);
     if (!variants.length) continue;

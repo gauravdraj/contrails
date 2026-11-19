@@ -1102,3 +1102,8 @@ body.noscroll { touch-action: none; }
   margin: 0;
 }
 .maplibregl-ctrl-attrib a { color: #9aa9bb; }
+
+/* Route evidence stays secondary and wraps within narrow plane cards / airport rows. */
+.route-provenance { font-size: 10px; font-weight: 400; color: var(--text-muted); opacity: 0.8; white-space: nowrap; }
+.route-source { color: var(--text-muted); font-size: 10px; line-height: 1.4; overflow-wrap: anywhere; }
+.sched-route .route-provenance { display: block; line-height: 1.2; }

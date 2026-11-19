@@ -1,4 +1,6 @@
+import * as providers from "./providers.js";
 import test from "node:test";
+test.beforeEach(() => providers._providerHealth?.clear());
 import assert from "node:assert/strict";
 import { fr24ResetBackoff } from "./fr24-backoff.js";
 

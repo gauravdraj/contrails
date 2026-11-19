@@ -24,6 +24,27 @@ const BACKUP_MAX_RADIUS_NM = 250;
 const PROXY_HEADERS = { "User-Agent": "contrails/1.0 (+https://gauravdraj.github.io/contrails/)" };
 
 const gridState = new Map();
+// Provider failures apply across locations and endpoints in this isolate. There is no cache-backed
+// provider-health state; response caches remain independent. Reserve the recovery probe before awaiting
+// it so concurrent requests keep using the working feed while one request tests recovery.
+const providerHealth = new Map();
+
+async function withProviderHealth(provider, attempt) {
+  const state = providerHealth.get(provider);
+  if (state && (state.retryAt > Date.now() || state.probing)) throw new Error(provider + " cooling down");
+  if (state) state.probing = true;
+  try {
+    const data = await attempt();
+    if (!isValidPayload(data)) throw new Error(provider + " invalid payload");
+    providerHealth.delete(provider);
+    return data;
+  } catch (error) {
+    providerHealth.set(provider, { retryAt: Date.now() + RECOVERY_PROBE_MS, probing: false });
+    throw error;
+  }
+}
+
+export { providerHealth as _providerHealth };
 
 function gridKey(lat, lon, dist) {
   return lat.toFixed(2) + "/" + lon.toFixed(2) + "/" + dist;
@@ -43,13 +64,7 @@ function getGridState(key) {
 }
 
 async function fetchFromPrimary(gridPath) {
-  const resp = await fetch(PRIMARY_API + gridPath, {
-    method: "GET",
-    headers: PROXY_HEADERS,
-    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-  });
-  if (!resp.ok) throw new Error("HTTP " + resp.status);
-  return resp.json();
+  return withProviderHealth("primary", () => fetchJsonFrom(PRIMARY_API + gridPath, PROXY_HEADERS, "Primary"));
 }
 
 export function buildBackupPath(snapped) {
@@ -73,13 +88,8 @@ export function configureRelay(env) {
 }
 
 async function fetchFromRelay(path) {
-  const resp = await fetch(relay.url + "/adsb" + path, {
-    method: "GET",
-    headers: { ...PROXY_HEADERS, "X-Relay-Key": relay.key },
-    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-  });
-  if (!resp.ok) throw new Error("Relay HTTP " + resp.status);
-  return resp.json();
+  return withProviderHealth("relay", () => fetchJsonFrom(relay.url + "/adsb" + path,
+    { ...PROXY_HEADERS, "X-Relay-Key": relay.key }, "Relay"));
 }
 
 // Fetch an allowlisted FR24 URL through the relay. Returns null when the relay
@@ -99,17 +109,7 @@ export async function fetchFr24ViaRelay(targetUrl) {
 
 async function fetchFromBackupPath(path) {
   try {
-    const resp = await fetch(BACKUP_API + path, {
-      method: "GET",
-      headers: PROXY_HEADERS,
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-    });
-    if (!resp.ok) throw new Error("Backup HTTP " + resp.status);
-    const data = await resp.json();
-    // A 200 with an error body (e.g. {"error":...}) is a failed attempt too, so
-    // it must fall through to the relay rather than be returned and rejected later.
-    if (!isValidPayload(data)) throw new Error("Backup invalid payload");
-    return data;
+    return await withProviderHealth("backup", () => fetchJsonFrom(BACKUP_API + path, PROXY_HEADERS, "Backup"));
   } catch (err) {
     if (!relay) throw err;
     return fetchFromRelay(path);
@@ -163,8 +163,8 @@ async function backupOnce(snapped) {
   return null;
 }
 
-// Resilient point lookup for callers that don't need the grid's sticky failover
-// (airport / nearby snapshots). Tries adsb.lol, then adsb.fi on any failure, and
+// Resilient point lookup (airport / nearby snapshots), sharing provider cooldowns
+// with grids and lookups. Tries adsb.lol, then adsb.fi on any failure, and
 // throws only when both providers are unusable. radiusNm is passed straight
 // through to both providers' radius parameter.
 export async function fetchAircraftResilient(lat, lon, radiusNm) {
@@ -196,11 +196,11 @@ async function fetchJsonFrom(url, headers, label) {
 export async function fetchLookupResilient(kind, value) {
   const path = "/" + kind + "/" + encodeURIComponent(value);
   const attempts = [
-    () => fetchJsonFrom(PRIMARY_API + path, PROXY_HEADERS, "Primary").then((d) => [d, "primary"]),
-    () => fetchJsonFrom(BACKUP_LOOKUP_API + path, PROXY_HEADERS, "Backup").then((d) => [d, "backup"]),
+    () => fetchFromPrimary(path).then((d) => [d, "primary"]),
+    () => withProviderHealth("backup", () => fetchJsonFrom(BACKUP_LOOKUP_API + path, PROXY_HEADERS, "Backup")).then((d) => [d, "backup"]),
   ];
   if (relay) {
-    attempts.push(() => fetchJsonFrom(relay.url + "/adsb" + path, { ...PROXY_HEADERS, "X-Relay-Key": relay.key }, "Relay")
+    attempts.push(() => fetchFromRelay(path)
       .then((d) => [d, "relay"]));
   }
   let lastError = null;
