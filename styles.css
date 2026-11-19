@@ -1114,8 +1114,18 @@ body.noscroll { touch-action: none; }
 .airport-schedule-popup .sched-header { padding-right: 30px; }
 .sched-flight-group, .sched-runway-info { display: contents; }
 @media (min-width: 760px) {
-  .sched-flight-group { display: flex; flex-direction: column; align-items: flex-start; flex-shrink: 0; }
+  .sched-flight-group { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
   .sched-runway-info { display: inline-flex; align-items: center; gap: 4px; }
+  /* min-content keeps the flight number + chip whole; the auto columns shrink and long hints wrap instead. */
+  .sched-rows > .sched-row, #airport-panel-content .sched-rows > .sched-row { display: grid; grid-template-columns: 7px minmax(min-content, 1fr) auto auto; padding: 1px 0; }
+  .sched-rows .sched-hint { text-align: right; }
+  .sched-rows .sched-dot { grid-area: 1 / 1 / 3 / 2; }
+  .sched-rows .sched-flight-group { grid-area: 1 / 2; white-space: nowrap; }
+  .sched-rows .sched-route { grid-area: 2 / 2; }
+  .sched-rows .sched-route .route-provenance { display: inline; }
+  .sched-rows .sched-alt, .sched-rows .sched-speed { grid-area: 1 / 3 / 3 / 4; }
+  .sched-rows .sched-eta, .sched-rows .sched-hint, .sched-rows .sched-landed { grid-area: 1 / 4 / 3 / 5; }
+  .sched-rows .go-around .sched-eta { grid-area: 3 / 2 / 4 / 5; }
 }
 .sched-next { flex-shrink: 0; }
 .sched-next-main { flex-wrap: wrap; }
