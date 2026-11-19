@@ -104,7 +104,7 @@ function updateRouteLine() {
   var id = selectedAircraftId;
   if (!id) { if (_routeLineKey) clearRouteLine(); return; }
   var plane = findAircraftById(id);
-  var rc = plane && plane.callsign ? routeCache[plane.callsign] : null;
+  var rc = validateCachedRoute(plane);
   var oIata = rc && rc.origin && rc.origin.iata ? String(rc.origin.iata).toUpperCase() : null;
   var dIata = rc && rc.destination && rc.destination.iata ? String(rc.destination.iata).toUpperCase() : null;
   var key = id + "|" + (oIata || "") + "|" + (dIata || "");

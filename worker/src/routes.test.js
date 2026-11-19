@@ -1041,3 +1041,16 @@ test("mergeRoutes keeps ADSBDB's JFK for the next leg after a gap + ground repor
   assert.equal(result.origin.iata, "LAX");
   assert.equal(result.destination?.iata, "JFK");
 });
+
+test('v247 Worker: UA3911 short final trace rejects stale ADSBDB without requiring two conflicting endpoints', () => {
+  const info = { callsign: 'UAL3911', lat: 37.60, lng: -122.30, altFt: 1500, vRate: -700, track: 280 };
+  const db = { origin: { iata: 'SYD' }, destination: { iata: 'LAX' } };
+  assert.equal(mergeRoutes(null, db, info), null);
+  const good = mergeRoutes(null, { origin: { iata: 'HNL' }, destination: { iata: 'SFO' } }, info);
+  assert.equal(good.origin.iata, 'HNL');
+  assert.equal(good.destination.iata, 'SFO');
+  const trace = { path: [[1000, 37.58, -122.20, 700, 280, false], [1060, 37.60, -122.30, 450, 280, false]] };
+  assert.equal(mergeRoutes(trace, db, { callsign: 'UAL3911', altFt: 1500, vRate: -700 }), null);
+  const departing = mergeRoutes(null, { origin: { iata: 'SFO' }, destination: { iata: 'LAX' } }, { ...info, vRate: 1200 });
+  assert.equal(departing.destination.iata, 'LAX');
+});

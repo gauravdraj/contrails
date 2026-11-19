@@ -1,4 +1,6 @@
 import test from "node:test";
+import * as providers from "./providers.js";
+test.beforeEach(() => { providers._providerHealth?.clear(); configureRelay({}); });
 import assert from "node:assert/strict";
 
 import {
@@ -644,4 +646,80 @@ test("fetchAircraftResilient falls through to the relay when the backup returns 
   assert.equal(result.ac[0].hex, "rly02");
   assert.equal(seen.length, 3, "primary, backup, then relay");
   assert.ok(seen[2].startsWith("https://relay.test/adsb/"));
+});
+
+test('v247 provider health: nearby, new grids and lookups skip failing primary until a recovery probe', async (t) => {
+  const calls = [];
+  let now = 1800000000000, healthy = false;
+  t.mock.method(Date, 'now', () => now);
+  t.mock.method(globalThis, 'fetch', async url => {
+    calls.push(String(url));
+    if (String(url).includes('adsb.lol') && !healthy) throw new Error('primary down');
+    return new Response(JSON.stringify({ ac: [], now }));
+  });
+  assert.equal((await fetchAircraftResilient(37, -122, 50)).source, 'backup');
+  calls.length = 0;
+  await fetchAircraftResilient(38, -122, 50);
+  await fetchTraffic('/lat/39/lon/-122/dist/50', { lat: 39, lon: -122, dist: 50 }, {});
+  await fetchLookupResilient('hex', 'abc123');
+  assert.ok(calls.length > 0);
+  assert.ok(calls.every(url => !url.includes('adsb.lol')), calls.join('\n'));
+  healthy = true;
+  now += RECOVERY_PROBE_MS + 1;
+  assert.equal((await fetchAircraftResilient(37, -122, 50)).source, 'primary');
+  assert.equal((await fetchLookupResilient('hex', 'abc123')).source, 'primary');
+});
+
+test('v247 provider health: a failed recovery probe renews cooldown; malformed data is failure', async (t) => {
+  let now = 1800000000000, primaryCalls = 0;
+  t.mock.method(Date, 'now', () => now);
+  t.mock.method(globalThis, 'fetch', async url => {
+    if (String(url).includes('adsb.lol')) { primaryCalls++; return new Response('{}'); }
+    return new Response(JSON.stringify({ ac: [], now }));
+  });
+  await fetchLookupResilient('hex', 'abc123');
+  now += RECOVERY_PROBE_MS + 1;
+  await fetchAircraftResilient(37, -122, 50);
+  await fetchLookupResilient('callsign', 'UAL3911');
+  assert.equal(primaryCalls, 2);
+});
+
+test('v247 provider health: only one recovery probe runs while other requests use backup', async (t) => {
+  let now = 1800000000000, primaryCalls = 0, resolveProbe;
+  t.mock.method(Date, 'now', () => now);
+  t.mock.method(globalThis, 'fetch', async url => {
+    if (String(url).includes('adsb.lol')) {
+      primaryCalls++;
+      if (primaryCalls === 1) throw new Error('down');
+      if (primaryCalls > 2) return new Response(JSON.stringify({ ac: [], now }));
+      return new Promise(resolve => { resolveProbe = () => resolve(new Response(JSON.stringify({ ac: [], now }))); });
+    }
+    return new Response(JSON.stringify({ ac: [], now }));
+  });
+  await fetchAircraftResilient(37, -122, 50);
+  now += RECOVERY_PROBE_MS + 1;
+  const probe = fetchAircraftResilient(37, -122, 50);
+  // Allow the async attempt to enter fetch, then a different endpoint must not join that stalled provider.
+  await Promise.resolve();
+  const fallback = await fetchLookupResilient('hex', 'abc123');
+  assert.equal(fallback.source, 'backup');
+  assert.equal(primaryCalls, 2);
+  resolveProbe();
+  assert.equal((await probe).source, 'primary');
+});
+
+test('v247 provider health: a working relay bypasses both failed direct feeds during cooldown', async (t) => {
+  configureRelay({ ADSB_RELAY_URL: 'https://relay.test', ADSB_RELAY_KEY: 'test' });
+  const calls = [];
+  t.mock.method(globalThis, 'fetch', async url => {
+    calls.push(String(url));
+    if (!String(url).startsWith('https://relay.test')) throw new Error('direct feed down');
+    return new Response(JSON.stringify({ ac: [], now: Date.now() }));
+  });
+  await fetchAircraftResilient(37, -122, 50);
+  calls.length = 0;
+  await fetchAircraftResilient(38, -122, 50);
+  assert.equal((await fetchLookupResilient('hex', 'abc123')).source, 'relay');
+  assert.equal(calls.length, 2);
+  assert.ok(calls.every(url => url.startsWith('https://relay.test')));
 });

@@ -1,6 +1,8 @@
 import { isLikelyPrivateCallsign as classifyPrivateCallsign } from "./airlines.js";
 import { MAJOR_AIRPORTS } from "./airports.js";
 import { haversineKm } from "./geo.js";
+import AIRPORTS from "../../airports.json" with { type: "json" };
+import { rejectContradictoryRoute } from "./route-evidence.js";
 import { findNearestRegion } from "./regions.js";
 
 const ORIGIN_MAX_ALT_M = 2500;
@@ -109,7 +111,10 @@ export function extractOriginDest(track) {
     const pt = path[i];
     if (isLowPoint(pt, ORIGIN_MAX_ALT_M)) {
       const match = nearestAirport(pt[1], pt[2], ORIGIN_MAX_DIST_KM);
-      if (match) {
+      // A partial descent near an airport is arrival evidence, not a takeoff origin.
+      const descendingTrace = Number.isFinite(path[legStart][3]) && Number.isFinite(lastTrackPoint[3]) &&
+        path[legStart][3] > lastTrackPoint[3] && !path.slice(legStart, i + 1).some(p => p[5] === true);
+      if (match && !descendingTrace) {
         origin = { iata: match.iata, name: match.name };
         break;
       }
@@ -165,12 +170,24 @@ function isLikelyPrivateCallsign(callsign) {
 }
 
 export function mergeRoutes(trackResult, adsbdbEntry, aircraftInfo) {
+  const airline = adsbdbEntry?.airline || null;
+  const path = trackResult?.path || [];
+  const last = path[path.length - 1];
+  const previous = path[path.length - 2];
+  const state = { ...aircraftInfo };
+  // Old clients may omit position/heading; a trace still supplies those observations.
+  if (!Number.isFinite(state.lat) && last) { state.lat = last[1]; state.lng = last[2]; }
+  if (!Number.isFinite(state.track) && last) state.track = last[4];
+  if (previous && last && haversineKm(state.lat, state.lng, last[1], last[2]) < 5) {
+    state.previous = { lat: previous[1], lng: previous[2] };
+  }
+  if (adsbdbEntry) adsbdbEntry = rejectContradictoryRoute({ ...adsbdbEntry,
+    originSource: "adsbdb", destSource: "adsbdb" }, state, AIRPORTS);
   const trackOD = trackResult ? extractOriginDest(trackResult) : null;
   const trackOrigin = trackOD?.origin || null;
   const trackDest = trackOD?.destination || null;
   const dbOrigin = adsbdbEntry?.origin || null;
   const dbDest = adsbdbEntry?.destination || null;
-  const airline = adsbdbEntry?.airline || null;
 
   const originsMatch = trackOrigin && dbOrigin && trackOrigin.iata === dbOrigin.iata;
   const destsMatch = trackDest && dbDest && trackDest.iata === dbDest.iata;
@@ -225,7 +242,7 @@ export function mergeRoutes(trackResult, adsbdbEntry, aircraftInfo) {
   const confidence = isRegionalFallback ? "low"
     : (hasCrossValidation || hasBothTrackSources) ? "high" : "medium";
 
-  return { origin, destination, originSource, destSource, confidence, airline };
+  return rejectContradictoryRoute({ origin, destination, originSource, destSource, confidence, airline }, state, AIRPORTS);
 }
 
 export function formatRouteLabel(origin, destination, phase) {

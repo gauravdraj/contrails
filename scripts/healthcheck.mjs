@@ -31,13 +31,14 @@ async function fetchJson(path, init) {
   try {
     const resp = await fetch(WORKER_URL + path, { ...init, signal: ctrl.signal });
     const text = await resp.text();
-    let data = null;
+    let data = null, validJson = false;
     try {
-      data = text ? JSON.parse(text) : null;
+      data = JSON.parse(text);
+      validJson = true;
     } catch {
       data = null;
     }
-    return { status: resp.status, text, data };
+    return { status: resp.status, text, data, validJson };
   } finally {
     clearTimeout(timer);
   }
@@ -51,6 +52,7 @@ async function attempt(path, validate, init) {
   try {
     const res = await fetchJson(path, init);
     if (res.status !== 200) return { ok: false, detail: `HTTP ${res.status}` };
+    if (!res.validJson) return { ok: false, detail: "invalid JSON" };
     const detail = validate ? validate(res) : "";
     if (detail === false) return { ok: false, detail: "unexpected payload" };
     return { ok: true, detail: detail || "ok", res };
@@ -68,6 +70,51 @@ async function check(name, path, validate, init) {
   }
   record(name, result.ok, result.detail);
   return result.res || null;
+}
+
+// Validate endpoint contracts, not traffic volume: empty arrays and documented null misses are healthy.
+const object = value => value !== null && typeof value === "object" && !Array.isArray(value);
+const airportCode = value => typeof value === "string" && /^[A-Z0-9]{3,4}$/.test(value);
+const optionalCode = value => value == null || value === "" || airportCode(value);
+const identifier = value => typeof value === "string" && /^[A-Za-z0-9 -]{2,12}$/.test(value);
+const timestamp = value => value == null || (Number.isFinite(value) && value > 0);
+
+function validateTrack({ data }) {
+  if (data === null) return "no trace (ok)";
+  if (!Array.isArray(data) || !data.every(pt => Array.isArray(pt) && pt.length >= 5 &&
+      Number.isFinite(pt[0]) && pt[0] > 0 && Number.isFinite(pt[1]) && Math.abs(pt[1]) <= 90 &&
+      Number.isFinite(pt[2]) && Math.abs(pt[2]) <= 180 && (pt[3] === null || Number.isFinite(pt[3])) &&
+      Number.isFinite(pt[4]) && (pt[5] == null || typeof pt[5] === "boolean"))) return false;
+  return `${data.length} trace points`;
+}
+
+function validateSchedule({ data }) {
+  if (!object(data) || !airportCode(data.iata)) return false;
+  for (const [list, endpoint] of [[data.arrivals, "from_iata"], [data.departures, "to_iata"]]) {
+    if (!Array.isArray(list) || !list.every(row => object(row) && (identifier(row.flight) || identifier(row.callsign)) &&
+        optionalCode(row[endpoint]) && ["sched_dep", "sched_arr", "est_dep", "est_arr", "actual_dep", "actual_arr"]
+          .every(key => timestamp(row[key])) && (row.live == null || typeof row.live === "boolean"))) return false;
+  }
+  return `${data.arrivals.length} arrivals, ${data.departures.length} departures`;
+}
+
+function validateFr24Search({ data }) {
+  if (!object(data) || !Array.isArray(data.results) || !data.results.every(row => object(row) &&
+      typeof row.id === "string" && row.id.length > 0 && typeof row.type === "string" && row.type.length > 0 &&
+      (row.type !== "live" || (object(row.detail) && optionalCode(row.detail.schd_from) &&
+        optionalCode(row.detail.schd_to) && [row.detail.callsign, row.detail.flight, row.detail.reg]
+          .every(value => value == null || typeof value === "string"))))) return false;
+  return `${data.results.length} search results`;
+}
+
+function validateRouteset({ data }) {
+  const endpoint = value => value == null || (object(value) && (airportCode(value.iata) ||
+    (typeof value.region === "string" && value.region.length > 0 && typeof value.display === "string" && value.display.length > 0)));
+  if (!Array.isArray(data) || !data.every(row => object(row) && typeof row.callsign === "string" &&
+      /^[A-Za-z0-9]{2,8}$/.test(row.callsign) && (row.origin || row.destination) &&
+      endpoint(row.origin) && endpoint(row.destination) && [row.originSource, row.destSource, row.display]
+        .every(value => value == null || typeof value === "string"))) return false;
+  return `${data.length} routes`;
 }
 
 async function run() {
@@ -90,19 +137,19 @@ async function run() {
     typeof r.data?.text === "string" ? "text returned" : false
   );
 
-  await check("schedule", `/schedule/${PROBE.iata}`, (r) => (r.data ? "board returned" : false));
-  await check("fr24search", `/fr24search/${PROBE.callsign}`, (r) => (r.data ? "search returned" : false));
+  await check("schedule", `/schedule/${PROBE.iata}`, validateSchedule);
+  await check("fr24search", `/fr24search/${PROBE.callsign}`, validateFr24Search);
   await check("airport", `/airport/${PROBE.iata}?format=json`, (r) =>
     r.data?.airport?.iata ? `${r.data.airport.iata} snapshot` : false
   );
-  await check("track", `/track/${hex}`, () => `hex ${hex}`);
+  await check("track", `/track/${hex}`, validateTrack);
   await check("aircraft", `/aircraft/${hex}`, (r) =>
     r.data === null ? `no airframe for ${hex} (ok)` : r.data?.registration || r.data?.type ? "airframe returned" : false
   );
   await check(
     "routeset",
     "/routeset",
-    (r) => (r.data ? "routes returned" : false),
+    validateRouteset,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -137,6 +184,7 @@ async function run() {
   }
 }
 
+// CLI entry point
 run().catch((err) => {
   console.error("Health check crashed:", err);
   process.exit(1);

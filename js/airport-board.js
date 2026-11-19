@@ -315,6 +315,16 @@ function formatTakeoffSummaryStatus(row, liveData) {
   return signal.label;
 }
 
+function boardRouteTag(row, dir) {
+  var code = dir === "departures" ? row.destIata : row.originIata;
+  if (!code) return "";
+  var rc = routeCache[row.callsign];
+  var provenance = core.routeProvenance(dir === "departures"
+    ? { destination: { iata: code }, destSource: rc && rc.destSource }
+    : { origin: { iata: code }, originSource: rc && rc.originSource });
+  return ' <span class="route-provenance" title="' + escapeHtml(provenance.note) + '">' + provenance.label + '</span>';
+}
+
 function buildScheduleNextSummary(liveData, dir) {
   var tab = scheduleTab(dir);
   var next = getAirportNextRow(liveData, dir);
@@ -358,7 +368,7 @@ function buildScheduleNextSummary(liveData, dir) {
       '<span class="sched-next-flight">' + flightNum + '</span>' +
       '<span class="sched-next-status">' + escapeHtml(statusText) + '</span>' +
     '</div>' +
-    (routeText ? '<div class="sched-next-route">' + escapeHtml(routeText) + '</div>' : '') +
+    (routeText ? '<div class="sched-next-route">' + escapeHtml(routeText) + boardRouteTag(next, dir) + '</div>' : '') +
   '</div>';
 }
 
@@ -580,7 +590,7 @@ function buildLiveScheduleData(airportIata, airportLat, airportLng, sourceAircra
   for (var i = 0; i < list.length; i++) {
     var a = list[i];
     if (!a.callsign) continue;
-    var rc = routeCache[a.callsign];
+    var rc = validateCachedRoute(a);
     var destinationHere = !!(rc && rc.destination && rc.destination.iata === airportIata);
     var originHere = !!(rc && rc.origin && rc.origin.iata === airportIata);
     var distKm = haversineKm(a.lat, a.lng, airportLat, airportLng);
@@ -707,7 +717,7 @@ function buildLiveScheduleData(airportIata, airportLat, airportLng, sourceAircra
     var a = list[i];
     if (!a.callsign || a.ground || seenCallsigns[a.callsign]) continue;
     if (departureHexes[a.icao24]) continue;
-    var rc = routeCache[a.callsign];
+    var rc = validateCachedRoute(a);
     if (rc && rc.origin && rc.origin.iata === airportIata) continue;
     if (rc && rc.destination && rc.destination.iata !== airportIata && rc.confidence === "high") continue;
     var vRateFpm = a.vRate != null ? a.vRate * 60 : 0;
@@ -726,7 +736,7 @@ function buildLiveScheduleData(airportIata, airportLat, airportLng, sourceAircra
     for (var i = 0; i < list.length; i++) {
       var a = list[i];
       if (!a.callsign) continue;
-      var rc = routeCache[a.callsign];
+      var rc = validateCachedRoute(a);
       if (!rc || !rc.destination || rc.destination.iata !== airportIata) continue;
       var landedDist = haversineKm(a.lat, a.lng, airportLat, airportLng);
       if (!a.ground) {
@@ -756,7 +766,7 @@ function buildLiveScheduleData(airportIata, airportLat, airportLng, sourceAircra
     for (var i = 0; i < list.length; i++) {
       var a = list[i];
       if (!a.callsign || !a.ground) continue;
-      var rc = routeCache[a.callsign];
+      var rc = validateCachedRoute(a);
       if (!rc || !rc.destination || rc.destination.iata !== airportIata) continue;
       var landedDist = haversineKm(a.lat, a.lng, airportLat, airportLng);
       if (landedDist > 5) continue;
@@ -797,7 +807,7 @@ function buildLiveScheduleData(airportIata, airportLat, airportLng, sourceAircra
     var a = list[i];
     if (!a.callsign || !a.ground) continue;
     if (landedHexes[a.icao24]) continue;
-    var rc = routeCache[a.callsign];
+    var rc = validateCachedRoute(a);
     if (!rc || !rc.destination || rc.destination.iata !== airportIata) continue;
     var taxDist = haversineKm(a.lat, a.lng, airportLat, airportLng);
     if (taxDist > 6) continue;
@@ -893,14 +903,14 @@ function buildScheduleCardContent(iata, name, liveData, dir, scopeId, staleNote)
         var dot = f.landed ? "cyan" : (f.parked ? "gray" : "green");
         html += '<span class="sched-dot ' + dot + '"></span>' +
           '<span class="sched-flight">' + flightNum + '</span>' +
-          '<span class="sched-route">from ' + fromIata + (f.aircraftType ? ' \u00b7 ' + escapeHtml(f.aircraftType) : '') + '</span>' +
+          '<span class="sched-route">from ' + fromIata + (f.aircraftType ? ' \u00b7 ' + escapeHtml(f.aircraftType) : '') + boardRouteTag(f, dir) + '</span>' +
           '<span class="sched-landed">' + formatLandingSummaryStatus(f) + '</span>';
       } else {
         var altStr = f.altFt != null ? f.altFt.toLocaleString() + "ft" : "\u2014";
         var etaStr = formatLandingEta(f.etaMin);
         html += '<span class="sched-dot cyan live"></span>' +
           '<span class="sched-flight">' + flightNum + '</span>' +
-          '<span class="sched-route">from ' + fromIata + (f.aircraftType ? ' \u00b7 ' + escapeHtml(f.aircraftType) : '') + '</span>' +
+          '<span class="sched-route">from ' + fromIata + (f.aircraftType ? ' \u00b7 ' + escapeHtml(f.aircraftType) : '') + boardRouteTag(f, dir) + '</span>' +
           '<span class="sched-alt">' + altStr + '</span>' +
           (etaStr ? '<span class="sched-eta">' + etaStr + '</span>' : '');
       }
@@ -923,7 +933,7 @@ function buildScheduleCardContent(iata, name, liveData, dir, scopeId, staleNote)
       html += '<div class="sched-row"' + scheduleRowAttrs(f) + '>' +
         '<span class="sched-dot ' + dotColor + '"></span>' +
         '<span class="sched-flight">' + flightNum + '</span>' +
-        '<span class="sched-route">to ' + destIata + (f.aircraftType ? ' \u00b7 ' + escapeHtml(f.aircraftType) : '') + '</span>' +
+        '<span class="sched-route">to ' + destIata + (f.aircraftType ? ' \u00b7 ' + escapeHtml(f.aircraftType) : '') + boardRouteTag(f, dir) + '</span>' +
         '<span class="sched-speed">' + spdStr + '</span>' +
         '<span class="sched-hint">' + escapeHtml(hintLabel) + '</span>' +
         '</div>';
@@ -1102,7 +1112,7 @@ function applyAirportScheduleMatches(iata, scheduleData, planes) {
   for (var i = 0; i < planes.length; i++) {
     var a = planes[i];
     if (!a || !a.callsign || a.private) continue;
-    var rc = routeCache[a.callsign];
+    var rc = validateCachedRoute(a);
     if (rc && rc.destSource === "schedule") continue;
     var variants = callsignVariants(a.callsign);
     if (!variants.length) continue;

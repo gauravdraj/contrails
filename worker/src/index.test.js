@@ -1,4 +1,6 @@
+import * as providers from "./providers.js";
 import test from "node:test";
+test.beforeEach(() => providers._providerHealth?.clear());
 import assert from "node:assert/strict";
 
 import handler from "./index.js";
@@ -414,4 +416,20 @@ test("schedule success that began before a fresh 429 does not clear that backoff
 test("route passthrough is gone", async () => {
   const response = await handler.fetch(new Request("https://worker.test/route/callsign/UAL1"), {}, {});
   assert.equal(response.status, 404);
+});
+
+test('v247 routeset: forwards current aircraft state to reject a stale callsign leg', async (t) => {
+  const previousCaches = globalThis.caches;
+  globalThis.caches = { default: { match: async () => null, put: async () => {} } };
+  t.after(() => { globalThis.caches = previousCaches; });
+  t.mock.method(globalThis, 'fetch', async () => new Response(JSON.stringify({ response: { flightroute: {
+    origin: { iata_code: 'SYD', name: 'Sydney' }, destination: { iata_code: 'LAX', name: 'Los Angeles' }
+  } } })));
+  const response = await handler.fetch(new Request('https://worker.test/routeset', { method: 'POST',
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ planes: [
+      { callsign: 'UAL3911', lat: 37.60, lng: -122.30, altFt: 1500, vRate: -700, track: 280 },
+      { callsign: 'UAL1', lat: 33.94, lng: -118.41, ground: true, altFt: 0 }
+    ] }) }), {}, recordingCtx());
+  assert.equal(response.status, 200);
+  assert.deepEqual((await response.json()).map(r => r.callsign), ['UAL1']);
 });

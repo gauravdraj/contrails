@@ -1651,7 +1651,12 @@ const fs = require("node:fs");
 const vm = require("node:vm");
 const airlineFixture = require("./worker/src/airlines-characterization.json");
 function classicScript(file, globals) {
-  const context = vm.createContext(Object.assign({ core, document: { addEventListener() {} } }, core, globals));
+  const context = vm.createContext(Object.assign({ core, document: { addEventListener() {} }, FETCH_TIMEOUT_MS: 20000,
+    airportData: null, routeCache: {} }, core, globals));
+  if (file === "./js/render.js" || file === "./js/airport-board.js") {
+    vm.runInContext(fs.readFileSync(require.resolve("./js/data.js"), "utf8"), context);
+    Object.assign(context, globals);
+  }
   vm.runInContext(fs.readFileSync(require.resolve(file), "utf8"), context, { filename: file });
   return context;
 }
@@ -2352,3 +2357,114 @@ test("UA3911: the board applies its own airport's schedule over a stale ADSBDB r
   assert.equal(context.routeCache.UAL3911.destSource, "schedule");
 });
 
+
+const routeAirports247 = require('./airports.json');
+const arrival247 = { callsign: 'UAL3911', icao24: 'a1244b', lat: 37.60, lng: -122.30,
+  altFt: 1500, vRate: -700, track: 280, ground: false };
+function route247(from = 'SYD', to = 'LAX', source = 'adsbdb') {
+  return { origin: { iata: from }, destination: { iata: to }, originSource: source, destSource: source };
+}
+test('v247 contradiction: UA3911 final rejects SYD-LAX and retains HNL-SFO', () => {
+  assert.equal(core.rejectContradictoryRoute(route247(), arrival247, routeAirports247), null);
+  const good = route247('HNL', 'SFO');
+  assert.equal(core.rejectContradictoryRoute(good, arrival247, routeAirports247), good);
+  const traced = { ...route247('HNL'), originSource: 'track' };
+  const kept = core.rejectContradictoryRoute(traced, arrival247, routeAirports247);
+  assert.equal(kept.origin.iata, 'HNL');
+  assert.equal(kept.destination, null);
+  assert.equal(core.rejectContradictoryRoute(route247('SYD', 'LAX', 'cross-validated'), arrival247, routeAirports247), null);
+});
+test('v247 contradiction: ground, climb, AGL, missing state and great-circle controls', () => {
+  for (const a of [{ ...arrival247, ground: true, lat: 37.62, lng: -122.375 },
+    { ...arrival247, vRate: 1200, track: 100 }]) {
+    assert.equal(core.rejectContradictoryRoute(route247(), a, routeAirports247), null);
+    const good = route247('SFO', 'LAX');
+    assert.equal(core.rejectContradictoryRoute(good, a, routeAirports247), good);
+  }
+  // SFO departures can pass closer to OAK before turning south; nearest airport alone is not takeoff evidence.
+  const bayDeparture = route247('SFO', 'LAX');
+  assert.equal(core.rejectContradictoryRoute(bayDeparture,
+    { lat: 37.74, lng: -122.30, altFt: 4500, vRate: 1500, track: 320 }, routeAirports247), bayDeparture);
+  const longHaul = route247('HNL', 'SFO');
+  assert.equal(core.rejectContradictoryRoute(longHaul, { lat: 30, lng: -140, altFt: 37000 }, routeAirports247), longHaul);
+  assert.equal(core.rejectContradictoryRoute(route247('SFO', 'LAX'), { lat: 40, lng: -74, altFt: 37000 }, routeAirports247), null);
+  const highAirport = [['XXX', 37.62, -122.375, 'High airport', '', 1, 7000], ...routeAirports247.filter(a => a[0] !== 'SFO')];
+  assert.equal(core.rejectContradictoryRoute(route247(), { ...arrival247, altFt: 11000 }, highAirport), null);
+  for (const state of [{}, { lat: null, lng: null }, { ...arrival247, altFt: null }, { ...arrival247, track: null }]) {
+    const r = route247();
+    assert.equal(core.rejectContradictoryRoute(r, state, routeAirports247), r);
+  }
+  const live = route247('SYD', 'LAX', 'schedule');
+  assert.equal(core.rejectContradictoryRoute(live, arrival247, routeAirports247), live);
+});
+test('v247 provenance: source mapping includes mixed and cross-validated routes', () => {
+  for (const source of ['schedule', 'fr24-search', 'fr24', 'live-feed']) {
+    const p = core.routeProvenance(route247('HNL', 'SFO', source));
+    assert.equal(p.label, 'reported');
+    assert.match(p.note, /live/);
+  }
+  for (const source of ['adsbdb', 'cross-validated', 'track', 'convergence', 'region', 'client', null]) {
+    const p = core.routeProvenance(route247('HNL', 'SFO', source));
+    assert.equal(p.label, 'inferred');
+    assert.doesNotMatch(p.note, /confirmed/i);
+    if (['adsbdb', 'cross-validated'].includes(source)) assert.match(p.note, /may be outdated/);
+  }
+  assert.equal(core.routeProvenance({ ...route247('HNL', 'SFO', 'schedule'), originSource: 'adsbdb' }).label, 'inferred');
+});
+function routeClient247() {
+  const c = classicScript('./js/data.js', { FETCH_TIMEOUT_MS: 20000, routeCache: {}, airportData: routeAirports247,
+    aircraft: [{ ...arrival247, vRate: arrival247.vRate / 60 }], posHistory: {}, fr24SearchPending: {},
+    tryFr24Search: async () => {}, airportDisplayName: iata => iata });
+  vm.runInContext(fs.readFileSync(require.resolve('./js/render.js'), 'utf8'), c);
+  c.tryFr24Search = async () => {};
+  return c;
+}
+test('v247 client: routeset rejects stale leg and popup rechecks a cached route', () => {
+  const c = routeClient247();
+  c.mergeRoutesetEntries([{ callsign: 'UAL3911', ...route247(), display: 'SYD to LAX' }], c.aircraft);
+  assert.ok(!c.routeCache.UAL3911);
+  c.mergeRoutesetEntries([{ callsign: 'UAL3911', ...route247('HNL', 'SFO'), display: 'HNL to SFO' }], c.aircraft);
+  assert.equal(c.routeCache.UAL3911.destination.iata, 'SFO');
+  assert.match(c.buildPopupSubheader(c.aircraft[0], c.routeCache.UAL3911), /inferred/);
+  const stale = { ...route247(), display: 'SYD to LAX' };
+  assert.doesNotMatch(c.buildPopupSubheader(c.aircraft[0], stale), /SYD|LAX/);
+});
+test('v247 client: track apply rejects stale destination but preserves reported schedule', () => {
+  const c = routeClient247();
+  c.routeCache.UAL3911 = { ...route247('HNL'), display: 'HNL to LAX' };
+  const path = [[1000, 21.3187, -157.922, 0, 90, true], [1100, 21.4, -157.8, 500, 90, false],
+    [2000, 37.60, -122.30, 450, 280, false]];
+  c.runOriginDetection('a1244b', { path });
+  assert.equal(c.routeCache.UAL3911.origin.iata, 'HNL');
+  assert.equal(c.routeCache.UAL3911.destination, null);
+  c.routeCache.UAL3911 = { ...route247('HNL', 'SFO', 'schedule'), display: 'HNL to SFO' };
+  c.runOriginDetection('a1244b', { path });
+  assert.equal(c.routeCache.UAL3911.destSource, 'schedule');
+  assert.equal(c.routeCache.UAL3911.originSource, 'schedule');
+});
+
+test('v247 client: an arrival-only trace cannot invent a track origin after rejecting the database', () => {
+  const c = routeClient247();
+  c.routeCache.UAL3911 = route247();
+  c.runOriginDetection('a1244b', { path: [[1000, 37.58, -122.20, 700, 280, false], [1060, 37.60, -122.30, 450, 280, false]] });
+  assert.ok(!c.routeCache.UAL3911);
+});
+test('v247 evidence: Worker copy stays identical to the pure core helper', async () => {
+  const worker = await import('./worker/src/route-evidence.js');
+  for (const name of ['isReportedRouteSource', 'routeProvenance', 'rejectContradictoryRoute']) {
+    assert.equal(worker[name].toString(), core[name].toString());
+  }
+});
+
+test('v247 board: route rows and next-flight summary disclose inferred versus reported', () => {
+  const c = classicScript('./js/airport-board.js', { routeCache: { UAL3911: route247('HNL', 'SFO') } });
+  const row = { callsign: 'UAL3911', hex: 'a1244b', originIata: 'HNL', destIata: 'LAX', aircraftType: 'B738', altFt: 1500, etaMin: 4 };
+  const board = { arrivals: [row, { ...row, hex: 'a1244c', etaMin: 8 }], departures: [], landed: [] };
+  let html = c.buildScheduleCardContent('SFO', 'San Francisco', board, 'arrivals');
+  assert.equal((html.match(/>inferred</g) || []).length, 2);
+  assert.match(html, /may be outdated/);
+  c.routeCache.UAL3911 = route247('HNL', 'SFO', 'schedule');
+  html = c.buildScheduleCardContent('SFO', 'San Francisco', board, 'arrivals');
+  assert.equal((html.match(/>reported</g) || []).length, 2);
+  assert.match(html, /from FR24 live schedule/);
+});

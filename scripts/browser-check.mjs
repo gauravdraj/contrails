@@ -57,7 +57,7 @@ async function check(name, action) {
   }
 }
 
-async function until(name, predicate, timeoutMs = 15000) {
+async function until(name, predicate, timeoutMs = 15000, timeoutCode) {
   const deadline = Date.now() + timeoutMs;
   do {
     if (chromeFailure) throw new Error(chromeFailure);
@@ -65,7 +65,34 @@ async function until(name, predicate, timeoutMs = 15000) {
     if (value) return value;
     await delay(100);
   } while (Date.now() < deadline);
-  throw new Error("Timed out waiting for " + name);
+  const error = new Error("Timed out waiting for " + name);
+  error.code = timeoutCode;
+  throw error;
+}
+
+// Only launch timeouts get one clean relaunch. Process exits, CDP errors and app failures stay failures.
+async function launchChromeWithRetry(launch, reset) {
+  try { return await launch(60000); }
+  catch (error) {
+    if (error.code !== "CHROME_LAUNCH_TIMEOUT") throw error;
+    report("RETRY Chrome launch after timeout: " + error.message);
+    await reset();
+    return launch(60000);
+  }
+}
+
+async function stopBrowser() {
+  const child = browser;
+  browser = null;
+  if (!child || child.exitCode != null || child.signalCode != null) return;
+  const exited = new Promise(resolve => child.once("exit", resolve));
+  child.kill("SIGTERM");
+  await Promise.race([exited, delay(1500)]);
+  if (child.exitCode == null && child.signalCode == null) {
+    child.kill("SIGKILL");
+    await Promise.race([exited, delay(1500)]);
+    if (child.exitCode == null && child.signalCode == null) throw new Error("Chrome failed to stop");
+  }
 }
 
 async function findChrome() {
@@ -83,8 +110,11 @@ async function findChrome() {
 
 function listen(server, port) {
   return new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(port, "127.0.0.1", () => { server.removeListener("error", reject); resolve(server.address().port); });
+    const failed = error => { server.removeListener("listening", listening); reject(error); };
+    const listening = () => { server.removeListener("error", failed); resolve(server.address().port); };
+    server.once("error", failed);
+    server.once("listening", listening);
+    server.listen(port, "127.0.0.1");
   });
 }
 
@@ -326,11 +356,7 @@ async function cleanup() {
   clearTimeout(watchdog);
   watchdog = setTimeout(() => { process.stderr.write("cleanup timed out\n"); process.exit(1); }, 15000);
   watchdog.unref();
-  if (browser && browser.exitCode == null && browser.signalCode == null) {
-    browser.kill("SIGTERM");
-    await Promise.race([new Promise(resolve => browser.once("exit", resolve)), delay(1500)]);
-    if (browser.exitCode == null && browser.signalCode == null) browser.kill("SIGKILL");
-  }
+  await stopBrowser();
   cdp?.socket.close();
   for (const server of [staticServer, workerServer]) {
     if (!server?.listening) continue;
@@ -351,8 +377,14 @@ async function main() {
   workerServer = http.createServer((req, res) => {
     handleWorker(req, res).catch(error => { errors.push("Mock Worker: " + error.message); json(res, 500, { error: error.message }); });
   });
-  try { await listen(workerServer, 8791); }
-  catch (error) { throw new Error("Mock Worker requires free 127.0.0.1:8791: " + error.message); }
+  for (let attempt = 0; ; attempt++) {
+    try { await listen(workerServer, 8791); break; }
+    catch (error) {
+      if (error.code !== "EADDRINUSE" || attempt >= 10) throw new Error("Mock Worker requires free 127.0.0.1:8791: " + error.message);
+      if (attempt === 0) report("RETRY waiting for mock Worker port 8791");
+      await delay(1000);
+    }
+  }
   staticServer = http.createServer((req, res) => {
     serveStatic(req, res, bundle).catch(error => { errors.push("Static server: " + error.message); res.writeHead(500).end(); });
   });
@@ -363,8 +395,8 @@ async function main() {
   });
   const port = await listen(staticServer, 0);
   const origin = "http://127.0.0.1:" + port;
-  profile = await mkdtemp(join(tmpdir(), "contrails-browser-check-"));
-  await check("Chrome launch", async () => {
+  await check("Chrome launch", () => launchChromeWithRetry(async timeoutMs => {
+    profile = await mkdtemp(join(tmpdir(), "contrails-browser-check-"));
     browser = spawn(await findChrome(), [
       "--headless=new", "--no-sandbox", "--remote-debugging-port=0", "--remote-debugging-address=127.0.0.1",
       "--user-data-dir=" + profile, ...glFlags(), "--ignore-gpu-blocklist",
@@ -375,19 +407,26 @@ async function main() {
       "--disable-renderer-backgrounding", "--disable-background-timer-throttling", "--disable-backgrounding-occluded-windows",
       "--window-size=" + VIEW.width + "," + VIEW.height, "about:blank",
     ], { stdio: ["ignore", "ignore", "pipe"] });
+    const launched = browser;
     browser.stderr.on("data", chunk => { chromeStderr = (chromeStderr + chunk).slice(-16000); });
     browser.once("error", error => { chromeFailure = "Chrome launch failed: " + error.message; });
-    browser.once("exit", (code, signal) => { if (!stopping) chromeFailure = "Chrome exited (" + (signal || code) + "): " + chromeStderr; });
+    browser.once("exit", (code, signal) => { if (!stopping && browser === launched) chromeFailure = "Chrome exited (" + (signal || code) + "): " + chromeStderr; });
     const devtoolsPort = await until("Chrome DevToolsActivePort (sandbox may prohibit launching Chrome)", async () => {
       const file = await readFile(join(profile, "DevToolsActivePort"), "utf8").catch(() => "");
       return Number(file.split("\n")[0]) || Number(/DevTools listening on ws:\/\/127\.0\.0\.1:(\d+)/.exec(chromeStderr)?.[1]);
-    }, 15000);
+    }, timeoutMs, "CHROME_LAUNCH_TIMEOUT");
     const target = await until("DevTools page target", async () => {
       const response = await fetch("http://127.0.0.1:" + devtoolsPort + "/json", { signal: AbortSignal.timeout(2000) });
       return (await response.json()).find(target => target.type === "page");
     });
     cdp = await CDP.connect(target.webSocketDebuggerUrl);
-  });
+  }, async () => {
+    await stopBrowser();
+    if (profile) await rm(profile, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+    profile = null;
+    chromeStderr = "";
+    chromeFailure = null;
+  }));
   cdp.on("Runtime.exceptionThrown", ({ exceptionDetails }, session) => {
     errors.push((session ? "Worker " : "Page ") + (exceptionDetails.exception?.description || exceptionDetails.text));
   });
@@ -501,6 +540,42 @@ async function main() {
       assert.equal(await cdp.evaluate("window.__browserCheckDocument"), "same-document");
     });
   }
+  if (!perf) await check("route provenance fits cards and boards at 390 px", async () => {
+    await cdp.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+    const result = await cdp.evaluate(`(() => {
+      const plane = aircraft[0], original = routeCache[plane.callsign];
+      const host = document.createElement('div');
+      host.className = 'maplibregl-popup-content';
+      host.style.cssText = 'position:fixed;left:12px;top:12px;width:366px;box-sizing:border-box;z-index:9999';
+      document.body.appendChild(host);
+      const rows = [];
+      try {
+        for (const source of ['adsbdb', 'track', 'schedule']) {
+          routeCache[plane.callsign] = { origin: { iata: 'JFK' }, destination: { iata: 'LHR' },
+            originSource: source, destSource: source, display: 'New York to London' };
+          host.innerHTML = buildPopup(plane);
+          const card = { label: host.querySelector('.route-provenance')?.textContent,
+            note: host.querySelector('.route-source')?.textContent, overflow: host.scrollWidth > host.clientWidth };
+          const board = { arrivals: [{ callsign: plane.callsign, hex: plane.icao24, originIata: 'JFK',
+            aircraftType: 'A320', altFt: 2000, etaMin: 4 }, { callsign: plane.callsign, hex: 'a00002', originIata: 'JFK',
+            aircraftType: 'A320', altFt: 3000, etaMin: 8 }], departures: [], landed: [] };
+          host.innerHTML = buildScheduleCardContent('LHR', 'London Heathrow', board, 'arrivals');
+          rows.push({ source, card, boardLabel: host.querySelector('.sched-row .route-provenance')?.textContent,
+            boardOverflow: host.scrollWidth > host.clientWidth,
+            rowOverflow: [...host.querySelectorAll('.sched-row')].some(row => row.scrollWidth > row.clientWidth) });
+        }
+      } finally { host.remove(); routeCache[plane.callsign] = original; }
+      return rows;
+    })()`);
+    for (const row of result) {
+      const label = row.source === "schedule" ? "reported" : "inferred";
+      assert.equal(row.card.label, label);
+      assert.equal(row.boardLabel, label);
+      assert.ok(row.card.note);
+      assert.ok(!row.card.overflow && !row.boardOverflow && !row.rowOverflow, JSON.stringify(row));
+    }
+    return "reported, callsign-database and flight-path labels; no horizontal overflow";
+  });
   await check("app requests local or fulfilled by fixtures", async () => {
     assert.deepEqual(unexpectedRequests, []);
     return mock.traffic + " traffic requests; external fixtures: " + JSON.stringify(Object.fromEntries(networkFixtures));
@@ -510,9 +585,9 @@ async function main() {
 
 if (!args.includes("--self-test")) {
   watchdog = setTimeout(() => {
-    report("FAIL browser check exceeded 110 seconds");
+    report("FAIL browser check exceeded 240 seconds");
     cleanup().finally(() => process.exit(1));
-  }, 110000);
+  }, 240000);
   for (const signal of ["SIGINT", "SIGTERM"]) process.once(signal, () => { cleanup().finally(() => process.exit(1)); });
 }
 try { await main(); }
