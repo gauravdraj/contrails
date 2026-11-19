@@ -13,9 +13,14 @@ jobs:
         with:
           node-version: 22
       - run: node --test contrails-core.test.js
+      - run: npm install --no-audit --no-fund --prefix "$RUNNER_TEMP/mcpsdk" @modelcontextprotocol/sdk@1.32.2
       - run: node --test worker/src/*.test.js
+        env:
+          MCP_SDK_DIR: ${{ runner.temp }}/mcpsdk
       - run: node --test scripts/healthcheck.test.mjs
       - run: node smoke-boot.mjs
       - run: python3 -m unittest discover -s relay -p 'test_*.py'
       - run: node scripts/browser-check.mjs
         timeout-minutes: 5
+      - run: npx --yes wrangler@4 deploy --dry-run --outdir "$RUNNER_TEMP/wrangler-out"
+        working-directory: worker

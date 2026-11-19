@@ -1,0 +1,11 @@
+{
+  "etaFlap": [11, 9, 12, 9],
+  "delayFlap": [31, 29, 31],
+  "groundEvidence": [
+    { "name": "ground at destination", "lat": 51.471, "lng": -0.46, "ground": true, "altFt": 0, "ageSec": 1, "rank": 3 },
+    { "name": "ground at origin", "lat": 49.01, "lng": 2.55, "ground": true, "altFt": 0, "ageSec": 1, "rank": 0 },
+    { "name": "airborne over runway", "lat": 51.471, "lng": -0.46, "ground": false, "altFt": 50, "ageSec": 1, "rank": 2 },
+    { "name": "stale ground", "lat": 51.471, "lng": -0.46, "ground": true, "altFt": 0, "ageSec": 61, "rank": 0 },
+    { "name": "unknown report age", "lat": 51.471, "lng": -0.46, "ground": true, "altFt": 0, "ageSec": null, "rank": 0 }
+  ]
+}
