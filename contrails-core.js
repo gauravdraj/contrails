@@ -954,11 +954,10 @@
       }
       var rate = (p[3] - before[3]) * 60000 / dt;
       var match = matchArrivalRunway({ lat: p[0], lng: p[1], track: bearingDegrees(before[0], before[1], p[0], p[1]) }, options.runways);
-      // A low point over the pavement is touchdown even when the ground bit is missing.
-      if (match && p[3] - elevation < 50 && pointOnRunway(p[0], p[1], match.runway.thresholdLat,
-          match.runway.thresholdLon, match.runway.farEndLat, match.runway.farEndLon, 0.06, 0).onRunway) {
-        clear(); continue;
-      }
+      // No altitude-based "touchdown" guess: alt_baro is uncorrected pressure altitude and swings ~100-300 ft with
+      // the day's altimeter setting, so any band either missed real go-arounds or flagged touch-and-goes depending
+      // on the weather (v2.48 review round 2). Touchdown comes from the ground bit; light aircraft, whose
+      // touch-and-goes often lack it, are excluded from detection on the board.
       var finalApproach = match && match.onFinal && !match.onRunway && rate < -100;
       var final = finalApproach && match.pathKm <= 6 && p[3] - elevation < 1500 && p[3] - elevation >= -100;
       if (state.goAroundAtMs != null) {
@@ -1016,11 +1015,16 @@
     if (!previous) return { atMs: nowMs, targetMs: targetMs, remainingSec: desired };
     var elapsed = Math.max(0, (nowMs - previous.atMs) / 1000);
     var remaining = Math.max(0, previous.remainingSec - elapsed);
-    // Large model revisions snap once. Small later corrections can hold, but never tick upward.
-    // Repeated renders at the same time cannot compound easing.
-    if (Math.abs(desired - remaining) > 20) remaining = desired;
+    // Large EARLIER revisions snap down once. A large LATER revision never makes the seconds jump backwards:
+    // the row shows the coarse "~N min" form for 30 s after the last such revision, then resumes counting
+    // from the new target. Small corrections can hold, but never tick upward.
+    var coarseUntilMs = previous.coarseUntilMs && previous.coarseUntilMs > nowMs ? previous.coarseUntilMs : 0;
+    if (desired - remaining > 20) { remaining = desired; coarseUntilMs = nowMs + 30000; }
+    else if (remaining - desired > 20 || coarseUntilMs) remaining = desired;
     else remaining += Math.max(-Math.min(2, elapsed * 2), Math.min(elapsed, desired - remaining));
-    return { atMs: nowMs, targetMs: targetMs, remainingSec: Math.max(0, remaining) };
+    var next = { atMs: nowMs, targetMs: targetMs, remainingSec: Math.max(0, remaining) };
+    if (coarseUntilMs) { next.coarseUntilMs = coarseUntilMs; next.coarse = true; }
+    return next;
   }
 
   function layoutApproachLadder(rows, options) {

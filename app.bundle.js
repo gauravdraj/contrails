@@ -958,11 +958,10 @@ var AIRLINES_DATA = {"airlines":{"AAL":{"name":"American","iata":"AA"},"AAR":{"n
       }
       var rate = (p[3] - before[3]) * 60000 / dt;
       var match = matchArrivalRunway({ lat: p[0], lng: p[1], track: bearingDegrees(before[0], before[1], p[0], p[1]) }, options.runways);
-      // A low point over the pavement is touchdown even when the ground bit is missing.
-      if (match && p[3] - elevation < 50 && pointOnRunway(p[0], p[1], match.runway.thresholdLat,
-          match.runway.thresholdLon, match.runway.farEndLat, match.runway.farEndLon, 0.06, 0).onRunway) {
-        clear(); continue;
-      }
+      // No altitude-based "touchdown" guess: alt_baro is uncorrected pressure altitude and swings ~100-300 ft with
+      // the day's altimeter setting, so any band either missed real go-arounds or flagged touch-and-goes depending
+      // on the weather (v2.48 review round 2). Touchdown comes from the ground bit; light aircraft, whose
+      // touch-and-goes often lack it, are excluded from detection on the board.
       var finalApproach = match && match.onFinal && !match.onRunway && rate < -100;
       var final = finalApproach && match.pathKm <= 6 && p[3] - elevation < 1500 && p[3] - elevation >= -100;
       if (state.goAroundAtMs != null) {
@@ -1020,11 +1019,16 @@ var AIRLINES_DATA = {"airlines":{"AAL":{"name":"American","iata":"AA"},"AAR":{"n
     if (!previous) return { atMs: nowMs, targetMs: targetMs, remainingSec: desired };
     var elapsed = Math.max(0, (nowMs - previous.atMs) / 1000);
     var remaining = Math.max(0, previous.remainingSec - elapsed);
-    // Large model revisions snap once. Small later corrections can hold, but never tick upward.
-    // Repeated renders at the same time cannot compound easing.
-    if (Math.abs(desired - remaining) > 20) remaining = desired;
+    // Large EARLIER revisions snap down once. A large LATER revision never makes the seconds jump backwards:
+    // the row shows the coarse "~N min" form for 30 s after the last such revision, then resumes counting
+    // from the new target. Small corrections can hold, but never tick upward.
+    var coarseUntilMs = previous.coarseUntilMs && previous.coarseUntilMs > nowMs ? previous.coarseUntilMs : 0;
+    if (desired - remaining > 20) { remaining = desired; coarseUntilMs = nowMs + 30000; }
+    else if (remaining - desired > 20 || coarseUntilMs) remaining = desired;
     else remaining += Math.max(-Math.min(2, elapsed * 2), Math.min(elapsed, desired - remaining));
-    return { atMs: nowMs, targetMs: targetMs, remainingSec: Math.max(0, remaining) };
+    var next = { atMs: nowMs, targetMs: targetMs, remainingSec: Math.max(0, remaining) };
+    if (coarseUntilMs) { next.coarseUntilMs = coarseUntilMs; next.coarse = true; }
+    return next;
   }
 
   function layoutApproachLadder(rows, options) {
@@ -6850,7 +6854,7 @@ function scheduleArrivalTime(row, summary) {
   var state = _airportCountdowns[key];
   var seconds = state ? state.remainingSec : row.etaMin * 60;
   return '<span data-countdown="' + escapeHtml(key || "") + '"' + (summary ? ' data-countdown-summary="true"' : '') + '>' +
-    (seconds < 600 ? core.formatArrivalCountdown(seconds) : (summary ? "ETA " : "") + formatLandingEta(seconds / 60)) + '</span>';
+    (seconds < 600 && !(state && state.coarse) ? core.formatArrivalCountdown(seconds) : (summary ? "ETA " : "") + formatLandingEta(seconds / 60)) + '</span>';
 }
 
 var SCHEDULE_TABS = [
@@ -6997,6 +7001,10 @@ function airportGoAroundObservations(iata, lat, lng, list, ends, nowMs, fieldEle
     var nearField = distanceKm <= 15;
     // Only low nearby traffic can arm; retain active approaches and recent ground evidence.
     if (!old && (!nearField || (!a.ground && (!Number.isFinite(a.altFt) || a.altFt - fieldElev > 3000)))) continue;
+    // Light aircraft are left out: their touch-and-goes often carry no ground bit and look exactly like a go-around.
+    // Only when positively known (sizeClass defaults unknown types to "light").
+    if (!old && ((a.aircraftType && sizeClass(a.aircraftType, a.category || null) === "light") ||
+        /^A[12]$/.test(a.category || ""))) continue;
     old = old || { points: [] };
     var history = posHistory[a.icao24] || [];
     if (a.ground && distanceKm <= 6 && Number.isFinite(a.reportTs) && a.reportTs <= nowMs) old.groundAtMs = a.reportTs;
@@ -7947,7 +7955,7 @@ function tickAirportCountdowns() {
   var el = _activeAirportPopup.getElement && _activeAirportPopup.getElement();
   if (el) el.querySelectorAll('[data-countdown]').forEach(function(node) {
     var state = _airportCountdowns[node.getAttribute('data-countdown')];
-    if (state) node.textContent = state.remainingSec < 600 ? core.formatArrivalCountdown(state.remainingSec) : (node.hasAttribute('data-countdown-summary') ? "ETA " : "") + formatLandingEta(state.remainingSec / 60);
+    if (state) node.textContent = state.remainingSec < 600 && !state.coarse ? core.formatArrivalCountdown(state.remainingSec) : (node.hasAttribute('data-countdown-summary') ? "ETA " : "") + formatLandingEta(state.remainingSec / 60);
   });
   _airportCountdownTimer = setTimeout(tickAirportCountdowns, 1000);
   // Small corrections can cross between feed polls. Reorder only when the displayed order changes.
