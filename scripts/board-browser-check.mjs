@@ -14,7 +14,7 @@ export async function checkBoardLayouts(cdp, screenshot, { baseline = false } = 
     for (const [width, height] of [[390,844],[1280,800]]) {
       await cdp.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: width < 760 });
       const heights = {};
-      for (const scenario of ['empty','takeoffs','landings','go-around','long-eta']) {
+      for (const scenario of ['empty','empty-takeoffs','takeoffs','landed','landings','go-around','long-eta']) {
         const metrics = await cdp.evaluate(`(() => {
           closeActiveAirportPanel();
           if (typeof _airportBoardView !== 'undefined') _airportBoardView = 'list';
@@ -22,16 +22,17 @@ export async function checkBoardLayouts(cdp, screenshot, { baseline = false } = 
           const source = { callsign: 'UAL123', hex: 'a00001', originIata: 'HNL', destIata: 'LAX', aircraftType: 'B738',
             altFt: 1200, etaMin: 2, reportTs: now, lat: 51.477, lng: -0.36, runway: '27R', sequence: 1 };
           const arrivals = Array.from({ length: scenario === 'landings' || scenario === 'go-around' ? 5 : scenario === 'long-eta' ? 3 : 0 }, (_, i) => ({
-            ...source, hex: 'a0000' + (i + 1), callsign: 'UAL' + (123 + i), sequence: i + 1,
+            ...source, hex: 'a0000' + (i + 1), callsign: 'UAL' + ((scenario === 'long-eta' || scenario === 'go-around' ? 1234 : 123) + i), sequence: i + 1,
             etaMin: scenario === 'long-eta' ? [13,13,120][i] : 2 + i, touchdownAtMs: now + (scenario === 'long-eta' ? [13,13,120][i] : 2 + i) * 60000,
             goAround: scenario === 'go-around' && i === 3 }));
           const departures = scenario === 'takeoffs' ? [ { ...source, sequence: null, status: 'Departing', speedKts: 110 },
-            { ...source, sequence: null, hex: 'b00002', callsign: 'UAL456', status: 'Taxiing', speedKts: 14 } ] : [];
-          [...arrivals,...departures].forEach(r => { routeCache[r.callsign] = { originSource: 'track', destSource: 'schedule' }; });
-          const data = { arrivals, departures, landed: [], activeArrivalRunways: ['27R'], activeDepartureRunways: true };
+            { ...source, sequence: null, hex: 'b00002', callsign: 'SWA98765', status: 'Taxiing', speedKts: 14, runwayDistKm: 0.3 } ] : [];
+          const landed = scenario === 'landed' ? [{ ...source, landed: true }, { ...source, hex: 'c00002', callsign: 'UAL1234', taxiingIn: true }] : [];
+          [...arrivals,...departures,...landed].forEach(r => { routeCache[r.callsign] = { originSource: 'track', destSource: 'schedule' }; });
+          const data = { arrivals, departures, landed, activeArrivalRunways: ['27R'], activeDepartureRunways: true };
           _airportPopupCache.LHR = { data, ts: now, snapshot: null, loading: false, stale: false };
           openAirportSchedulePopup('LHR', 'London Heathrow', 51.471, -0.46);
-          renderSchedulePopup(scenario === 'takeoffs' ? 'departures' : 'arrivals');
+          renderSchedulePopup(scenario.endsWith('takeoffs') ? 'departures' : scenario === 'landed' ? 'landed' : 'arrivals');
           const root = _activeAirportPopup.getElement(), card = root.querySelector('.sched-card');
           const rect = el => { const r = el.getBoundingClientRect(); return { left:r.left, right:r.right, top:r.top, bottom:r.bottom, height:r.height, width:r.width }; };
           const flight = card.querySelector('.sched-row .sched-flight'), route = card.querySelector('.sched-row .sched-route');
@@ -39,7 +40,10 @@ export async function checkBoardLayouts(cdp, screenshot, { baseline = false } = 
           const ladder = card.querySelector('[data-board-view=ladder]');
           const surface = root.querySelector('.maplibregl-popup-content') || document.querySelector('#airport-panel-sheet');
           return { card: rect(card), surface: rect(surface), close: rect(close), ladder: ladder && rect(ladder),
+            arrivalControls: !!card.querySelector('.sched-view-toggle'), footer: !!card.querySelector('.sched-footer'),
             rowHeights: [...card.querySelectorAll('.sched-row')].map(n => rect(n).height),
+            clippedCells: [...card.querySelectorAll('.sched-row, .sched-row span')].filter(n => n.scrollWidth > n.clientWidth)
+              .map(n => ({className:n.className, text:n.textContent, scrollWidth:n.scrollWidth, clientWidth:n.clientWidth})),
             padding: getComputedStyle(surface).padding, rowFont: flight && getComputedStyle(flight).fontSize,
             routeFont: route && getComputedStyle(route).fontSize, nextFont: card.querySelector('.sched-next-flight') && getComputedStyle(card.querySelector('.sched-next-flight')).fontSize,
             rowOverflow: [...card.querySelectorAll('.sched-row')].some(n => n.scrollWidth > n.clientWidth),
@@ -51,7 +55,7 @@ export async function checkBoardLayouts(cdp, screenshot, { baseline = false } = 
               parentFits:n.parentElement.scrollWidth <= n.parentElement.clientWidth })) };
         })()`);
         heights[scenario] = metrics.surface.height;
-        results.push({ width, scenario, height: metrics.surface.height, cardWidth: metrics.card.width, padding: metrics.padding });
+        results.push({ width, scenario, height: metrics.surface.height, rowHeights: metrics.rowHeights, cardWidth: metrics.card.width, padding: metrics.padding });
         // Popup placement runs after layout; capture only once its automatic pan has settled.
         await cdp.evaluate(`new Promise((resolve, reject) => {
           const deadline = Date.now() + 5000;
@@ -61,7 +65,23 @@ export async function checkBoardLayouts(cdp, screenshot, { baseline = false } = 
             else setTimeout(settled, 50);
           }, 100);
         })`);
-        await screenshot(`${baseline ? 'v247' : 'v248'}-${width}-${scenario}`);
+        await screenshot(`${baseline ? 'baseline' : 'v249'}-${width}-${scenario}`);
+        const arrivalTab = !['empty-takeoffs','takeoffs','landed'].includes(scenario);
+        verify(metrics.arrivalControls === arrivalTab && metrics.footer === arrivalTab,
+          `v249 tabs ${width}/${scenario}: toggle=${metrics.arrivalControls}, footer=${metrics.footer}; expected ${arrivalTab}`);
+        verify(!metrics.clippedCells.length, `v249 cells ${width}/${scenario}: ${JSON.stringify(metrics.clippedCells)}`);
+        if (width >= 760) {
+          // Exercise wider glyphs locally too; correctness depends on geometry, not Mac font metrics.
+          const wide = await cdp.evaluate(`(() => {
+            const card = _activeAirportPopup.getElement().querySelector('.sched-card');
+            card.style.fontFamily = 'monospace';
+            try {
+              return { clipped: [...card.querySelectorAll('.sched-row, .sched-row span')]
+                .filter(n => n.scrollWidth > n.clientWidth).map(n => n.className + ': ' + n.textContent) };
+            } finally { card.style.fontFamily = ''; }
+          })()`);
+          verify(!wide.clipped.length, `v249 desktop wide font ${scenario}: ${JSON.stringify(wide)}`);
+        }
         verify(!metrics.rowOverflow, `${width}/${scenario}: row overflows`);
         verify(metrics.provenance, `${width}/${scenario}: provenance clipped`);
         verify(width < 760 || metrics.card.width === 280, `${width}/${scenario}: desktop card width ${metrics.card.width}`);
@@ -79,7 +99,32 @@ export async function checkBoardLayouts(cdp, screenshot, { baseline = false } = 
           verify(metrics.summary?.startsWith('ETA '), `${width}: summary ETA prefix missing`);
         }
       }
-      verify(heights.empty < heights.takeoffs && heights.takeoffs < heights.landings, `${width}: board does not size to content: ${JSON.stringify(heights)}`);
+      verify(heights['empty-takeoffs'] < heights.takeoffs && heights.empty < heights.landings && heights.takeoffs < heights.landings,
+        `${width}: board does not size to content: ${JSON.stringify(heights)}`);
+      if (width === 390 && !baseline) {
+        for (const count of [1, 2]) for (const font of ['', 'monospace']) {
+          const holding = await cdp.evaluate(`(() => {
+            const data = _airportPopupCache.LHR.data, source = window.__v249HoldingSource || (window.__v249HoldingSource = data.arrivals[0]);
+            data.arrivals = [source, ...Array.from({length:${count}}, (_, i) => ({...source,
+              hex:'d0000'+i, callsign:['UAL1234','SWA98765'][i], goAround:true, etaMin:11, sequence:null}))];
+            _airportBoardView = 'ladder'; renderSchedulePopup('arrivals');
+            const strip = _activeAirportPopup.getElement().querySelector('.sched-ladder-holding');
+            strip.querySelectorAll('.sched-row').forEach(row => { row.style.fontFamily = ${JSON.stringify(font)}; });
+            return { labels: [...strip.querySelectorAll('.sched-row, .sched-flight, .sched-eta, .sched-go-around')].map(n => ({
+              text:n.textContent, clientWidth:n.clientWidth, scrollWidth:n.scrollWidth,
+              fitsParent:n.getBoundingClientRect().right <= n.parentElement.getBoundingClientRect().right + 0.5 })),
+              clientWidth:strip.clientWidth, scrollWidth:strip.scrollWidth, clientHeight:strip.clientHeight,
+              // The strip is a fixed-height scroller: a row that wraps (wider fonts) is clipped vertically.
+              rowHeights:[...strip.querySelectorAll('.sched-row')].map(n => n.getBoundingClientRect().height) };
+          })()`);
+          verify(holding.rowHeights.length === count && holding.labels.length >= count * 4, 'v249 holding: go-around fixtures missing ' + holding.rowHeights.length);
+          verify(holding.scrollWidth <= holding.clientWidth && holding.rowHeights.every(h => h <= holding.clientHeight + 0.5) &&
+            holding.labels.every(n => n.scrollWidth <= n.clientWidth && n.fitsParent),
+            `v249 holding 390/${count}/${font || 'default'}: clipped go-around label or strip ${JSON.stringify(holding)}`);
+          await screenshot(`v249-390-holding-${count}-${font || 'default'}`);
+        }
+        await cdp.evaluate("_airportBoardView = 'list'");
+      }
       if (!baseline) {
         const scroll = await cdp.evaluate(`(() => {
           const data = _airportPopupCache.LHR.data;
