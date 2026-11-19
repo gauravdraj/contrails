@@ -74,7 +74,7 @@ export async function checkBoardLayouts(cdp, screenshot, { baseline = false } = 
           verify(metrics.pulse === 'sched-pulse', `${width}/${scenario}: live dot is not pulsing`);
         }
         if (scenario === 'long-eta') {
-          verify(metrics.etas.some(e => e.text === '~13min') && metrics.etas.some(e => e.text === '~120min'), `${width}: long ETA fixtures missing`);
+          verify(metrics.etas.some(e => e.text === '~13min') && metrics.etas.some(e => e.text === '~2h'), `${width}: long ETA fixtures missing`);
           for (const eta of metrics.etas) verify(eta.scrollWidth <= eta.clientWidth && eta.parentFits, `${width}: clipped ${JSON.stringify(eta)}`);
           verify(metrics.summary?.startsWith('ETA '), `${width}: summary ETA prefix missing`);
         }
