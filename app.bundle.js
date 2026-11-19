@@ -686,6 +686,7 @@ var AIRLINES_DATA = {"airlines":{"AAL":{"name":"American","iata":"AA"},"AAR":{"n
     for (var i = 0; i < aircraft.length; i++) {
       var a = aircraft[i];
       if (!a || a.lat == null || a.lng == null || a.track == null) continue;
+      if (a.goAround) continue;
       if (a.altFt != null && a.altFt > maxAltFt) continue;
       var vRateFpm = a.vRate != null ? a.vRate * 60 : null;
       if (!a.ground && Number.isFinite(a.altFt) && vRateFpm != null && vRateFpm <= 0) {
@@ -868,13 +869,19 @@ var AIRLINES_DATA = {"airlines":{"AAL":{"name":"American","iata":"AA"},"AAR":{"n
   // shorter than the straight line. Null without runways.
   // runways.json entries ([leLat, leLon, leElev, heLat, heLon, heElev, label]) as landing ends in both
   // directions, shaped like matchRunwayDesignator results.
-  function runwayApproachEnds(entries) {
+  function runwayApproachEnds(entries, options) {
     var ends = [];
     for (var i = 0; entries && i < entries.length; i++) {
       var e = entries[i];
       if (!e || e.length < 5) continue;
-      ends.push({ thresholdLat: e[0], thresholdLon: e[1], farEndLat: e[3], farEndLon: e[4] });
-      ends.push({ thresholdLat: e[3], thresholdLon: e[4], farEndLat: e[0], farEndLon: e[1] });
+      var label = typeof e[6] === "string" && /^(\S+)\s+(\S+)\/(\S+)$/.exec(e[6]);
+      if (label && options && options.designators) {
+        ends.push(matchRunwayDesignator([e], label[1], label[2]));
+        ends.push(matchRunwayDesignator([e], label[1], label[3]));
+      } else {
+        ends.push({ thresholdLat: e[0], thresholdLon: e[1], farEndLat: e[3], farEndLon: e[4] });
+        ends.push({ thresholdLat: e[3], thresholdLon: e[4], farEndLat: e[0], farEndLon: e[1] });
+      }
     }
     return ends;
   }
@@ -905,6 +912,212 @@ var AIRLINES_DATA = {"airlines":{"AAL":{"name":"American","iata":"AA"},"AAR":{"n
     return best;
   }
 
+  // A measured final/runway match uses the nearest centerline, including staggered parallel thresholds.
+  // Callers may separately fall back to an active-runway path; that is an assumption, not a match.
+  function matchArrivalRunway(a, runways) {
+    if (!a || !Number.isFinite(a.track)) return null;
+    var best = null, bestCross = Infinity;
+    for (var i = 0; runways && i < runways.length; i++) {
+      var r = runways[i];
+      if (!r || angleDiffDeg(a.track, bearingDegrees(r.thresholdLat, r.thresholdLon, r.farEndLat, r.farEndLon)) > 30) continue;
+      var path = approachPathKm(a.lat, a.lng, a.track, [r]);
+      var on = pointOnRunway(a.lat, a.lng, r.thresholdLat, r.thresholdLon, r.farEndLat, r.farEndLon);
+      if (!path || (!path.onFinal && !on.onRunway)) continue;
+      var cross = Math.abs(crossTrackKm(a.lat, a.lng, r.thresholdLat, r.thresholdLon, r.farEndLat, r.farEndLon));
+      if (cross < bestCross) {
+        bestCross = cross;
+        best = { runway: r, onFinal: path.onFinal, onRunway: on.onRunway, pathKm: on.onRunway ? 0 : path.pathKm };
+      }
+    }
+    return best;
+  }
+
+  // Real posHistory points: [lat, lng, reportMs, altitudeMSL, ground, breakBefore, synthetic].
+  // Two consecutive >500 fpm altitude intervals AND >300 ft gained after a low descending final.
+  // State consumes each report once, survives lost polls, and never bridges ground or a history gap.
+  function updateGoAround(previous, points, nowMs, options) {
+    options = options || {};
+    var state = Object.assign({ goAroundAtMs: null, lastTs: null }, previous);
+    var elevation = options.fieldElevFt || 0;
+    function disarm() { state.armedAtMs = null; state.climbSamples = 0; state.lowAltFt = null; }
+    function clear() { disarm(); state.goAroundAtMs = null; state.backAtMs = null; state.finalSamples = 0; }
+    if (state.goAroundAtMs != null && nowMs - state.goAroundAtMs >= 25 * 60000) clear();
+    for (var i = 0; points && i < points.length; i++) {
+      var p = points[i];
+      if (!p || p[6] || !Number.isFinite(p[2]) || p[2] > nowMs || p[2] < nowMs - 180000 ||
+          (state.lastTs != null && p[2] <= state.lastTs)) continue;
+      var before = state.previous;
+      if (before && !p[4] && p[2] - before[2] < 1000) continue;
+      state.lastTs = p[2];
+      state.previous = p;
+      if (p[4]) { clear(); continue; }
+      var dt = before ? p[2] - before[2] : 0;
+      if (!before || before[4] || p[5] || dt < 1000 || dt > 30000 ||
+          !Number.isFinite(p[3]) || !Number.isFinite(before[3])) {
+        disarm(); state.finalSamples = 0; continue;
+      }
+      var rate = (p[3] - before[3]) * 60000 / dt;
+      var match = matchArrivalRunway({ lat: p[0], lng: p[1], track: bearingDegrees(before[0], before[1], p[0], p[1]) }, options.runways);
+      var finalApproach = match && (match.onFinal || match.onRunway) && rate < -100;
+      var final = finalApproach && match.pathKm <= 6 && p[3] - elevation < 1500 && p[3] - elevation >= -100;
+      if (state.goAroundAtMs != null) {
+        state.finalSamples = finalApproach ? (state.finalSamples || 0) + 1 : 0;
+        if (state.finalSamples >= 2) clear();
+        else continue;
+      }
+      if (options.departing) { disarm(); continue; }
+      if (final) {
+        state.armedAtMs = p[2]; state.runway = match.runway.designator || null;
+        state.lowAltFt = p[3]; state.climbSamples = 0;
+      } else if (state.armedAtMs != null && p[2] - state.armedAtMs <= 120000) {
+        state.lowAltFt = Math.min(state.lowAltFt, p[3]);
+        state.climbSamples = rate > 500 ? (state.climbSamples || 0) + 1 : 0;
+        if (state.climbSamples >= 2 && p[3] - state.lowAltFt > 300) {
+          state.goAroundAtMs = p[2]; state.backAtMs = p[2] + 11 * 60000; state.finalSamples = 0;
+        }
+      } else disarm();
+    }
+    return state;
+  }
+
+  function sequenceAirportArrivals(rows) {
+    var result = (rows || []).map(function(row) { return Object.assign({}, row, { sequence: null }); });
+    var groups = {};
+    result.forEach(function(row) {
+      if (!row.runway || row.goAround) return;
+      var key = normalizeRunwayDesignator(row.runway);
+      if (!key) return;
+      (groups[key] || (groups[key] = [])).push(row);
+    });
+    Object.keys(groups).forEach(function(key) {
+      groups[key].sort(function(a, b) {
+        var distance = Number.isFinite(a.pathKm) && Number.isFinite(b.pathKm) ? a.pathKm - b.pathKm : 0;
+        var etaA = Number.isFinite(a.etaMin) ? a.etaMin : Infinity;
+        var etaB = Number.isFinite(b.etaMin) ? b.etaMin : Infinity;
+        return (etaA === etaB ? 0 : etaA - etaB) || distance || String(a.hex || a.callsign).localeCompare(String(b.hex || b.callsign));
+      }).forEach(function(row, i) { row.sequence = i + 1; });
+    });
+    return result;
+  }
+
+  function formatArrivalCountdown(seconds) {
+    if (!Number.isFinite(seconds)) return "\u2014";
+    var sec = Math.max(0, Math.ceil(seconds));
+    return Math.floor(sec / 60) + ":" + (sec % 60 < 10 ? "0" : "") + sec % 60;
+  }
+
+  function updateArrivalCountdown(previous, targetMs, nowMs) {
+    var desired = Math.max(0, (targetMs - nowMs) / 1000);
+    if (!previous) return { atMs: nowMs, targetMs: targetMs, remainingSec: desired };
+    var elapsed = Math.max(0, (nowMs - previous.atMs) / 1000);
+    var remaining = Math.max(0, previous.remainingSec - elapsed);
+    // Ease both earlier and later corrections; repeated render calls at the same time cannot compound them.
+    var step = Math.min(2, elapsed * 2);
+    remaining += Math.max(-step, Math.min(step, desired - remaining));
+    return { atMs: nowMs, targetMs: targetMs, remainingSec: Math.max(0, remaining) };
+  }
+
+  function layoutApproachLadder(rows, options) {
+    options = options || {};
+    var runways = [], beads = [], pairs = [];
+    function addRunway(r) {
+      if (r && runways.indexOf(r) === -1 && runways.length < 4) runways.push(r);
+    }
+    (options.runways || []).forEach(addRunway);
+    (rows || []).filter(function(r) { return !r.goAround && r.runway; }).map(function(r) { return r.runway; }).sort().forEach(addRunway);
+    (rows || []).forEach(function(r) {
+      var lane = runways.indexOf(r.runway);
+      if (r.goAround || lane < 0 || !Number.isFinite(r.etaMin)) return;
+      beads.push(Object.assign({}, r, { lane: lane, y: 1 - Math.max(0, Math.min(15, r.etaMin)) / 15 }));
+    });
+    // Keep dots at the true time; spread labels within each strip and connect displaced labels to dots.
+    runways.forEach(function(runway, lane) {
+      var labels = beads.filter(function(b) { return b.lane === lane; }).sort(function(a, b) { return a.y - b.y; });
+      var gap = Math.min(0.14, 1 / Math.max(1, labels.length - 1));
+      labels.forEach(function(b, i) {
+        b.labelY = Math.max(b.y, i ? labels[i - 1].labelY + gap : 0);
+        b.compactLabel = labels.length > 8;
+      });
+      for (var i = labels.length - 1; i >= 0; i--) labels[i].labelY = Math.max(0, Math.min(labels[i].labelY, i === labels.length - 1 ? 1 : labels[i + 1].labelY - gap));
+    });
+    var candidates = [];
+    for (var i = 0; i < beads.length; i++) for (var j = i + 1; j < beads.length; j++) {
+      var a = beads[i], b = beads[j];
+      var ar = /^(\d+)[LRC]$/.exec(a.runway), br = /^(\d+)[LRC]$/.exec(b.runway);
+      var delta = Math.abs(a.etaMin - b.etaMin) * 60;
+      if (ar && br && ar[1] === br[1] && a.lane !== b.lane && delta <= 20 && !a.runwayAssumed && !b.runwayAssumed) {
+        candidates.push({ a: a.hex, b: b.hex, left: Math.min(a.lane, b.lane), right: Math.max(a.lane, b.lane),
+          y: (a.y + b.y) / 2, deltaSec: delta });
+      }
+    }
+    var paired = {};
+    candidates.sort(function(a, b) { return a.deltaSec - b.deltaSec; }).forEach(function(pair) {
+      if (paired[pair.a] || paired[pair.b]) return;
+      paired[pair.a] = paired[pair.b] = true; pairs.push(pair);
+    });
+    return { runways: runways, beads: beads, pairs: pairs };
+  }
+
+  // Capture once near each *predicted* horizon, avoiding invented samples when the board was closed.
+  function arrivalEtaHorizon(etaMin) {
+    if (!Number.isFinite(etaMin)) return null;
+    var horizons = [10, 5, 2, 1], windows = [1, 0.5, 0.25, 0.2];
+    for (var i = 0; i < horizons.length; i++) if (Math.abs(etaMin - horizons[i]) <= windows[i]) return horizons[i];
+    return null;
+  }
+
+  function pruneArrivalLog(records) {
+    return (records || []).filter(function(r) { return r && r.airport && r.hex && Number.isFinite(r.firstAtMs) && r.predictions; })
+      .slice().sort(function(a, b) { return a.firstAtMs - b.firstAtMs; }).slice(-2000);
+  }
+
+  function recordArrivalPrediction(records, observation) {
+    var o = observation || {}, now = o.nowMs;
+    if (!o.airport || !o.hex || !Number.isFinite(now) || o.goAround) return records;
+    var day = new Date(now).toISOString().slice(0, 10);
+    var key = o.airport + ":" + o.hex + ":" + day;
+    var index = -1;
+    // An unfinished arrival can cross UTC midnight; completed records never absorb a new day's flight.
+    for (var i = records.length - 1; i >= 0; i--) {
+      var r = records[i];
+      if (r.airport !== o.airport || r.hex !== o.hex) continue;
+      if (r.key === key || (r.actualAtMs == null && now >= r.lastSeenAtMs && now - r.lastSeenAtMs <= 30 * 60000)) { index = i; break; }
+    }
+    var record = index < 0 ? null : records[index];
+    if (record && record.actualAtMs != null) return records;
+    if (o.touchdown) {
+      if (!record || !o.atAirport || now < record.lastSeenAtMs || now - record.lastSeenAtMs > 120000) return records;
+      record = Object.assign({}, record, { actualAtMs: now });
+    } else {
+      if (!Number.isFinite(o.etaMin) || o.etaMin <= 0 || (record && now <= record.lastSeenAtMs)) return records;
+      record = Object.assign({}, record || { key: key, airport: o.airport, hex: o.hex, firstAtMs: now, actualAtMs: null, predictions: {} },
+        { lastSeenAtMs: now });
+      var horizon = arrivalEtaHorizon(o.etaMin);
+      if (horizon && !record.predictions[horizon]) {
+        var predictedAt = Number.isFinite(o.predictionAtMs) ? o.predictionAtMs : now;
+        record.predictions = Object.assign({}, record.predictions);
+        record.predictions[horizon] = { observedAtMs: predictedAt, touchdownAtMs: predictedAt + o.etaMin * 60000 };
+      }
+    }
+    var result = records.slice();
+    if (index < 0) result.push(record); else result[index] = record;
+    return pruneArrivalLog(result);
+  }
+
+  function arrivalEtaScorecard(records, airport) {
+    var landings = (records || []).filter(function(r) { return r.airport === airport && Number.isFinite(r.actualAtMs); })
+      .sort(function(a, b) { return b.actualAtMs - a.actualAtMs; }).slice(0, 50);
+    return { count: landings.length, horizons: [10, 5, 2, 1].map(function(minutes) {
+      var errors = landings.map(function(r) {
+        var prediction = r.predictions && r.predictions[minutes];
+        return prediction && Number.isFinite(prediction.touchdownAtMs) ? Math.abs(prediction.touchdownAtMs - r.actualAtMs) / 1000 : null;
+      }).filter(function(e) { return e != null; }).sort(function(a, b) { return a - b; });
+      var n = errors.length;
+      return { minutes: minutes, count: n, medianSec: n ? (errors[Math.floor((n - 1) / 2)] + errors[Math.floor(n / 2)]) / 2 : null,
+        p90Sec: n ? errors[Math.ceil(n * 0.9) - 1] : null };
+    }) };
+  }
+
   // Minutes to fly `distKm` to the airport, slowing down on the way in: the current ground speed out to 60 km,
   // at most 220 kts from 60 to 15 km (approach), at most 150 kts on the last 15 km (final).
   function arrivalPathTimeMin(distKm, spdKts) {
@@ -918,7 +1131,8 @@ var AIRLINES_DATA = {"airlines":{"AAL":{"name":"American","iata":"AA"},"AAR":{"n
 
   // Far out, the feed's (FR24) estimated landing time knows the schedule and routing better than geometry;
   // close in, live geometry wins. Blend linearly from the geometry ETA at 10 min to the feed ETA at 20 min.
-  function blendArrivalEta(geoEtaMin, feedEtaMin) {
+  function blendArrivalEta(geoEtaMin, feedEtaMin, options) {
+    if (options && options.goAround) return geoEtaMin;
     if (feedEtaMin == null || !Number.isFinite(feedEtaMin) || feedEtaMin < 0) return geoEtaMin;
     if (geoEtaMin == null || !Number.isFinite(geoEtaMin)) return feedEtaMin;
     var w = Math.max(0, Math.min(1, (geoEtaMin - 10) / 10));
@@ -965,7 +1179,7 @@ var AIRLINES_DATA = {"airlines":{"AAL":{"name":"American","iata":"AA"},"AAR":{"n
       etaMin = 999;
     }
     if (altFt != null) etaMin = Math.max(etaMin, altFt / 1500);
-    if (destinationMatch) etaMin = blendArrivalEta(etaMin, input.feedEtaMin);
+    if (destinationMatch) etaMin = blendArrivalEta(etaMin, input.feedEtaMin, input);
 
     if (phase === "departing" || phase === "landed") eligible = false;
     if (originMatch) eligible = false;
@@ -1742,6 +1956,16 @@ var AIRLINES_DATA = {"airlines":{"AAL":{"name":"American","iata":"AA"},"AAR":{"n
     descendedRecently: descendedRecently,
     arrivalPathTimeMin: arrivalPathTimeMin,
     approachPathKm: approachPathKm,
+    matchArrivalRunway: matchArrivalRunway,
+    updateGoAround: updateGoAround,
+    sequenceAirportArrivals: sequenceAirportArrivals,
+    formatArrivalCountdown: formatArrivalCountdown,
+    updateArrivalCountdown: updateArrivalCountdown,
+    layoutApproachLadder: layoutApproachLadder,
+    arrivalEtaHorizon: arrivalEtaHorizon,
+    pruneArrivalLog: pruneArrivalLog,
+    recordArrivalPrediction: recordArrivalPrediction,
+    arrivalEtaScorecard: arrivalEtaScorecard,
     runwayApproachEnds: runwayApproachEnds,
     crossTrackKm: crossTrackKm,
     alongTrackKm: alongTrackKm,
@@ -1895,7 +2119,7 @@ if (!airlineName || !angleDiffDeg || !bearingDegrees || !buildViewPolicy || !bui
   throw new Error("Contrails core helpers failed to load.");
 }
 
-const APP_VERSION = "2.47";
+const APP_VERSION = "2.48";
 const isLocal = location.hostname === "localhost" || location.hostname === "127.0.0.1";
 const isIOSDevice = /iP(ad|hone|od)/.test(navigator.userAgent) ||
   (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
@@ -6306,6 +6530,16 @@ var DEPARTURE_PERIMETER_KM = 6;
 var AIRPORT_POPUP_REFRESH_MS = 5000;
 var AIRPORT_POPUP_CACHE_TTL = 2 * 60 * 1000;
 var DATIS_CACHE_TTL = 60 * 1000;
+var _airportGoArounds = {};
+var _airportCountdowns = {};
+var _airportCountdownTimer = null;
+var _airportBoardView = "list";
+var _airportEtaPanelOpen = false;
+var _airportEtaLog = null;
+var _airportEtaResetAt = {};
+var _airportEtaStorageAvailable = true;
+var AIRPORT_ETA_STORAGE_KEY = "contrails-airport-eta-v1";
+try { if (window.localStorage.getItem("contrails-airport-view") === "ladder") _airportBoardView = "ladder"; } catch (err) {}
 
 function isAirportPanelDocked() {
   return typeof window.matchMedia === "function" &&
@@ -6321,6 +6555,18 @@ function closeActiveAirportPanel(options) {
 function handleAirportSchedulePanelClick(event) {
   var t = event && event.target;
   if (!t || !t.closest) return false;
+  var viewBtn = t.closest("[data-board-view]");
+  var accuracyBtn = t.closest("[data-eta-action]");
+  if (viewBtn || accuracyBtn) {
+    event.preventDefault(); event.stopPropagation();
+    if (viewBtn) {
+      _airportBoardView = viewBtn.getAttribute("data-board-view") === "ladder" ? "ladder" : "list";
+      try { window.localStorage.setItem("contrails-airport-view", _airportBoardView); } catch (err) {}
+    } else if (accuracyBtn.getAttribute("data-eta-action") === "reset") resetAirportEta(_activeAirportIata);
+    else _airportEtaPanelOpen = !_airportEtaPanelOpen;
+    renderSchedulePopup(viewBtn && _airportBoardView === "ladder" ? "arrivals" : _activeScheduleDir);
+    return true;
+  }
   var toggleBtn = t.closest(".sched-toggle-btn");
   if (toggleBtn) {
     event.preventDefault();
@@ -6332,7 +6578,7 @@ function handleAirportSchedulePanelClick(event) {
     }
     return true;
   }
-  var schedRow = t.closest(".sched-row, .sched-next-clickable");
+  var schedRow = t.closest(".sched-row, .sched-next-clickable, .sched-ladder-bead");
   if (schedRow) {
     event.preventDefault();
     event.stopPropagation();
@@ -6540,6 +6786,11 @@ function buildArrivalEntry(a, routeEntry, airportIata, distKm, options) {
     lng: a.lng,
     altFt: a.altFt,
     distKm: distKm,
+    pathKm: options.approach ? options.approach.pathKm : null,
+    runway: options.approach && options.approach.runway ? options.approach.runway.designator : null,
+    runwayAssumed: !!(options.approach && options.approach.assumed),
+    reportTs: a.reportTs,
+    touchdownAtMs: Date.now() + scored.etaMin * 60000,
     etaMin: scored.etaMin,
     arrivalScore: scored.score,
     proximity: !!options.proximity
@@ -6562,11 +6813,30 @@ function formatScheduleFlightNumber(callsign) {
 
 function formatLandingSummaryStatus(row) {
   if (!row) return "";
+  if (row.goAround) return "GO-AROUND · back in ~" + Math.max(1, Math.round(row.etaMin)) + " min";
   if (row.landed) return "On runway";
   if (row.parked) return "At gate";
   if (row.taxiingIn) return "Taxiing in";
   var eta = formatLandingEta(row.etaMin);
   return eta ? "ETA " + eta : "Inbound";
+}
+
+function scheduleRunwayChip(row) {
+  if (!row.runway) return "";
+  return '<span class="sched-runway' + (row.runwayAssumed ? ' assumed' : '') + '" title="' +
+    (row.runwayAssumed ? 'Assumed active runway' : 'Matched runway') + '">' + escapeHtml(row.runway) + '</span>' +
+    (row.sequence ? '<span class="sched-sequence">#' + row.sequence + '</span>' : '');
+}
+
+function scheduleArrivalTime(row) {
+  if (row.goAround) return '<span class="sched-go-around">' + escapeHtml(formatLandingSummaryStatus(row)) + '</span>';
+  if (row.landed || row.taxiingIn) return escapeHtml(formatLandingSummaryStatus(row));
+  if (!Number.isFinite(row.etaMin)) return "Inbound";
+  var key = row.hex || row.callsign;
+  var state = _airportCountdowns[key];
+  var seconds = state ? state.remainingSec : row.etaMin * 60;
+  return '<span data-countdown="' + escapeHtml(key || "") + '">' +
+    (seconds < 600 ? core.formatArrivalCountdown(seconds) : formatLandingEta(seconds / 60)) + '</span>';
 }
 
 var SCHEDULE_TABS = [
@@ -6626,6 +6896,7 @@ function buildScheduleNextSummary(liveData, dir) {
   var statusText;
   var routeParts = [];
   var summaryClass = "sched-next";
+  if (next.goAround) summaryClass += " go-around";
   if (dir !== "departures") {
     statusText = formatLandingSummaryStatus(next);
     if (next.originIata) routeParts.push("from " + next.originIata);
@@ -6647,8 +6918,8 @@ function buildScheduleNextSummary(liveData, dir) {
   return '<div class="' + summaryClass + ' sched-next-clickable" role="button" tabindex="0"' + scheduleRowAttrs(next) + '>' +
     '<div class="sched-next-kicker">' + escapeHtml(title) + '</div>' +
     '<div class="sched-next-main">' +
-      '<span class="sched-next-flight">' + flightNum + '</span>' +
-      '<span class="sched-next-status">' + escapeHtml(statusText) + '</span>' +
+      '<span class="sched-next-flight">' + flightNum + '</span>' + scheduleRunwayChip(next) +
+      '<span class="sched-next-status">' + (dir === "arrivals" ? scheduleArrivalTime(next) : escapeHtml(statusText)) + '</span>' +
     '</div>' +
     (routeText ? '<div class="sched-next-route">' + escapeHtml(routeText) + boardRouteTag(next, dir) + '</div>' : '') +
   '</div>';
@@ -6702,6 +6973,32 @@ function nearbyRunwayEnds(iata, lat, lng) {
   return (_nearbyRunwayEnds[iata] = ends);
 }
 
+function airportGoAroundObservations(iata, list, ends, nowMs, fieldElev) {
+  // Merge the map's posHistory with board reports: the board also sees planes outside the viewport.
+  // These short private histories never seed or modify the map's animated trails.
+  var tracked = _airportGoArounds[iata] || (_airportGoArounds[iata] = {});
+  for (var i = 0; i < list.length; i++) {
+    var a = list[i], old = tracked[a.icao24] || { points: [] };
+    var points = old.points.concat(posHistory[a.icao24] || []);
+    if (Number.isFinite(a.reportTs)) points.push([a.lat, a.lng, a.reportTs, a.altFt, a.ground, false, false]);
+    points = points.filter(function(p) { return !p[6] && p[2] >= nowMs - 180000 && p[2] <= nowMs; })
+      .sort(function(a, b) { return a[2] - b[2]; }).filter(function(p, j, all) { return !j || p[2] !== all[j - 1][2]; });
+    old.points = points;
+    old.state = core.updateGoAround(old.state, points, nowMs, { runways: ends, fieldElevFt: fieldElev });
+    old.aircraft = a; old.seenAtMs = nowMs;
+    tracked[a.icao24] = old;
+  }
+  Object.keys(_airportGoArounds).forEach(function(airport) {
+    var tracks = _airportGoArounds[airport];
+    Object.keys(tracks).forEach(function(hex) {
+      var track = tracks[hex];
+      if (nowMs - track.seenAtMs >= 25 * 60000) delete tracks[hex];
+      else if (airport === iata) track.state = core.updateGoAround(track.state, [], nowMs);
+    });
+  });
+  return tracked;
+}
+
 function buildLiveScheduleData(airportIata, airportLat, airportLng, sourceAircraft, activeRunwaysOverride) {
   var list = Array.isArray(sourceAircraft) ? sourceAircraft : aircraft;
   var arrivals = [];
@@ -6710,9 +7007,24 @@ function buildLiveScheduleData(airportIata, airportLat, airportLng, sourceAircra
   var nowMs = Date.now();
   var airportRwys = runwayData && runwayData[airportIata];
   var fieldElev = airportElevationFt(airportIata);
+  var homeEnds = runwayApproachEnds(airportRwys, { designators: true });
+  var goAroundTracks = airportGoAroundObservations(airportIata, list, homeEnds, nowMs, fieldElev);
+  var goAroundRows = [];
+  Object.keys(goAroundTracks).forEach(function(hex) {
+    var observation = goAroundTracks[hex], state = observation.state, a = observation.aircraft;
+    if (state.goAroundAtMs == null || !a.callsign) return;
+    var rc = validateCachedRoute(a);
+    goAroundRows.push({ hex: hex, callsign: a.callsign, aircraftType: a.aircraftType, lat: a.lat, lng: a.lng,
+      originIata: rc && rc.origin ? rc.origin.iata : null, altFt: a.altFt, runway: state.runway,
+      goAround: true, etaMin: Math.max(1, (state.backAtMs - nowMs) / 60000) });
+  });
+  list = list.filter(function(a) { return goAroundTracks[a.icao24].state.goAroundAtMs == null; });
   function heightFt(a) { return a.altFt == null ? null : a.altFt - fieldElev; }
   var derivedRunways = rememberActiveRunways(airportIata,
-    deriveActiveRunways(airportRwys, airportIata, list, { maxAltFt: 1500 + fieldElev }));
+    deriveActiveRunways(airportRwys, airportIata, list.filter(function(a) {
+      // A final that has only just started climbing is still awaiting confirmation, not a takeoff.
+      return !(goAroundTracks[a.icao24].state.armedAtMs != null && a.vRate > 0);
+    }), { maxAltFt: 1500 + fieldElev }));
   var activeRunways = mergeActiveRunways(activeRunwaysOverride, derivedRunways);
   var activeDepThresholds = [];
   if (activeRunways && activeRunways.departing_runways) {
@@ -6738,6 +7050,7 @@ function buildLiveScheduleData(airportIata, airportLat, airportLng, sourceAircra
         if (por.onRunway) {
           return {
             on: true,
+            designator: th.designator,
             distFromThresholdKm: por.distFromThresholdKm,
             // Bearing the aircraft would track during a takeoff roll on this end.
             bearing: bearingDegrees(th.thresholdLat, th.thresholdLon, th.farEndLat, th.farEndLon)
@@ -6745,19 +7058,19 @@ function buildLiveScheduleData(airportIata, airportLat, airportLng, sourceAircra
         }
       }
     }
-    return { on: false, distFromThresholdKm: null, bearing: null };
+    var any = core.matchArrivalRunway(a, homeEnds);
+    return { on: false, designator: any && any.onRunway ? any.runway.designator : null, distFromThresholdKm: null, bearing: null };
   }
   function matchArrRunway(a) {
     if (activeArrThresholds.length > 0) {
       for (var t = 0; t < activeArrThresholds.length; t++) {
         var th = activeArrThresholds[t];
         var por = pointOnRunway(a.lat, a.lng, th.thresholdLat, th.thresholdLon, th.farEndLat, th.farEndLon);
-        if (por.onRunway) return { on: true, distFromThresholdKm: por.distFromThresholdKm };
+        if (por.onRunway) return { on: true, designator: th.designator, distFromThresholdKm: por.distFromThresholdKm };
       }
     }
     return { on: false, distFromThresholdKm: null };
   }
-  var homeEnds = runwayApproachEnds(airportRwys);
   var neighbourEnds = nearbyRunwayEnds(airportIata, airportLat, airportLng);
   function landingElsewhere(a) {
     if (!neighbourEnds.length || a.track == null) return false;
@@ -6766,9 +7079,13 @@ function buildLiveScheduleData(airportIata, airportLat, airportLng, sourceAircra
     var here = approachPathKm(a.lat, a.lng, a.track, homeEnds);
     return !(here && here.onFinal && here.pathKm <= there.pathKm);
   }
-  function approachKm(a) {
-    var best = approachPathKm(a.lat, a.lng, a.track, activeArrThresholds);
-    return best ? best.pathKm : null;
+  function arrivalOptions(a, proximity) {
+    var best = core.matchArrivalRunway(a, homeEnds);
+    if (!best) {
+      best = approachPathKm(a.lat, a.lng, a.track, activeArrThresholds);
+      if (best) best.assumed = true;
+    }
+    return { approach: best, pathKm: best ? best.pathKm : null, proximity: !!proximity };
   }
   // Flying the downwind leg for an active landing runway: tracking opposite the landing direction, offset
   // 1.5-12 km to the side and within 20 km of the threshold along the runway line. Such planes head away
@@ -6880,7 +7197,7 @@ function buildLiveScheduleData(airportIata, airportLat, airportLng, sourceAircra
     if (!a.ground) {
       if (destinationHere) {
         if (distKm > AIRPORT_POPUP_FETCH_KM) continue;
-        var inboundEntry = buildArrivalEntry(a, rc, airportIata, distKm, { pathKm: approachKm(a) });
+        var inboundEntry = buildArrivalEntry(a, rc, airportIata, distKm, arrivalOptions(a));
         if (inboundEntry) arrivals.push(inboundEntry);
         continue;
       }
@@ -6931,6 +7248,7 @@ function buildLiveScheduleData(airportIata, airportLat, airportLng, sourceAircra
           status: depStatus,
           distKm: distKm,
           runwayDistKm: depRunwayKm,
+          runway: depRwy.designator || null,
           hasDest: !!(rc && rc.destination),
           originMatch: originHere,
           routeConfidence: rc && rc.confidence ? rc.confidence : null,
@@ -6983,6 +7301,7 @@ function buildLiveScheduleData(airportIata, airportLat, airportLng, sourceAircra
         status: groundStatus,
         distKm: distKm,
         runwayDistKm: groundRunwayKm,
+        runway: depRwyGround.designator || null,
         towardRunway: heading.toward,
         hasDest: !!(rc && rc.destination),
         originMatch: originHere,
@@ -7009,7 +7328,7 @@ function buildLiveScheduleData(airportIata, airportLat, airportLng, sourceAircra
     if (landingElsewhere(a)) continue;
     var fbDistKm = haversineKm(a.lat, a.lng, airportLat, airportLng);
     if (fbDistKm > 40) continue;
-    var fallbackEntry = buildArrivalEntry(a, rc, airportIata, fbDistKm, { proximity: true, pathKm: approachKm(a) });
+    var fallbackEntry = buildArrivalEntry(a, rc, airportIata, fbDistKm, arrivalOptions(a, true));
     if (fallbackEntry) arrivals.push(fallbackEntry);
   }
   var landed = [];
@@ -7039,6 +7358,7 @@ function buildLiveScheduleData(airportIata, airportLat, airportLng, sourceAircra
         arrivalScore: 0,
         proximity: false,
         landed: true,
+        runway: arrMatch.designator || null,
         _rolloutDist: arrMatch.distFromThresholdKm
       });
       landedHexes[a.icao24] = true;
@@ -7133,13 +7453,114 @@ function buildLiveScheduleData(airportIata, airportLat, airportLng, sourceAircra
   }
   var landedRows = sortAirportLandedRows(landed, taxiingIn);
   arrivals = sortAirportInboundRows(arrivals, { exclude: landedRows });
+  arrivals = core.sequenceAirportArrivals(sortAirportInboundRows(arrivals.concat(goAroundRows), { totalLimit: 15 + goAroundRows.length }));
   departures = sortAirportDepartureRows(departures, { activeRunways: activeDepThresholds.length > 0 });
   return {
     arrivals: arrivals,
     landed: landedRows,
     departures: departures,
+    activeArrivalRunways: activeRunways ? activeRunways.arriving_runways : [],
     activeDepartureRunways: activeDepThresholds.length > 0
   };
+}
+
+function loadAirportEtaLog() {
+  if (_airportEtaLog) return _airportEtaLog;
+  try {
+    var saved = JSON.parse(window.localStorage.getItem(AIRPORT_ETA_STORAGE_KEY) || "[]");
+    _airportEtaLog = core.pruneArrivalLog(Array.isArray(saved) ? saved : []);
+  } catch (err) { _airportEtaLog = []; _airportEtaStorageAvailable = false; }
+  return _airportEtaLog;
+}
+
+function saveAirportEtaLog(records) {
+  _airportEtaLog = records;
+  try { window.localStorage.setItem(AIRPORT_ETA_STORAGE_KEY, JSON.stringify(records)); _airportEtaStorageAvailable = true; }
+  catch (err) { _airportEtaStorageAvailable = false; }
+}
+
+function resetAirportEta(iata) {
+  _airportEtaResetAt[iata] = Date.now();
+  saveAirportEtaLog(loadAirportEtaLog().filter(function(r) { return r.airport !== iata; }));
+}
+
+function observeAirportEta(iata, liveData, snapshot) {
+  if (!_activeAirportPopup || _activeAirportIata !== iata) return;
+  var original = loadAirportEtaLog(), records = original, now = Date.now();
+  (liveData.arrivals || []).forEach(function(row) {
+    if (_activeScheduleDir !== "arrivals" || !Number.isFinite(row.reportTs) || now - row.reportTs > 30000 || row.reportTs > now || row.reportTs <= (_airportEtaResetAt[iata] || 0)) return;
+    var countdown = _airportCountdowns[row.hex];
+    var eta = countdown ? countdown.remainingSec / 60 : row.etaMin;
+    records = core.recordArrivalPrediction(records, { airport: iata, hex: row.hex, nowMs: row.reportTs,
+      predictionAtMs: now, etaMin: eta, goAround: row.goAround });
+  });
+  (snapshot || []).forEach(function(a) {
+    if (!a.ground || !Number.isFinite(a.reportTs) || now - a.reportTs > 30000 || a.reportTs > now || a.reportTs <= (_airportEtaResetAt[iata] || 0)) return;
+    // First observed ground report at this field. A missing plane or an airborne low pass is not touchdown.
+    records = core.recordArrivalPrediction(records, { airport: iata, hex: a.icao24, nowMs: a.reportTs,
+      touchdown: true, atAirport: _activeAirportLat != null && _activeAirportLng != null &&
+        haversineKm(a.lat, a.lng, _activeAirportLat, _activeAirportLng) <= 6 });
+  });
+  if (records !== original) saveAirportEtaLog(records);
+}
+
+function buildAirportEtaFooter(iata) {
+  var score = core.arrivalEtaScorecard(loadAirportEtaLog(), iata);
+  var two = score.horizons[2];
+  var summary = two.count ? 'last ' + score.count + ' landings: median error ' + core.formatArrivalCountdown(Math.round(two.medianSec)) + ' at 2 min' : 'waiting for landings';
+  var html = '<div class="sched-footer"><button type="button" class="sched-accuracy-link" data-eta-action="toggle" aria-expanded="' +
+    _airportEtaPanelOpen + '">ETA accuracy · ' + escapeHtml(summary) + '</button>';
+  if (_airportEtaPanelOpen) {
+    html += '<div class="sched-accuracy"><div class="sched-accuracy-title">' + escapeHtml(iata) + ' · last ' + score.count + ' landings' +
+      '<button type="button" data-eta-action="reset">Reset this airport</button></div>' +
+      '<table><caption>Absolute ETA error at each predicted horizon</caption><thead><tr><th>Horizon</th><th>Median</th><th>90th %</th><th>Count</th></tr></thead><tbody>';
+    score.horizons.forEach(function(h) {
+      html += '<tr><th>' + h.minutes + ' min</th><td>' + core.formatArrivalCountdown(h.medianSec == null ? null : Math.round(h.medianSec)) +
+        '</td><td>' + core.formatArrivalCountdown(h.p90Sec == null ? null : Math.round(h.p90Sec)) + '</td><td>' + h.count + '</td></tr>';
+    });
+    html += '</tbody></table><p>Logged only while this board is open. First forecast near each horizon; touchdown is the first ground report here. ' +
+      (_airportEtaStorageAvailable ? 'Stored on this device only; up to 2,000 arrivals.' : 'Storage unavailable; kept for this session only.') + '</p></div>';
+  }
+  return html + '</div>';
+}
+
+function buildApproachLadder(liveData) {
+  var layout = core.layoutApproachLadder(liveData.arrivals, { runways: liveData.activeArrivalRunways });
+  var n = layout.runways.length;
+  var waiting = (liveData.arrivals || []).filter(function(r) { return r.goAround || !r.runway || layout.runways.indexOf(r.runway) < 0; });
+  var holding = '<div class="sched-ladder-holding">';
+  waiting.forEach(function(row) {
+    holding += '<button type="button" class="sched-row"' + scheduleRowAttrs(row) + '><span class="sched-flight">' +
+      escapeHtml(row.callsign || row.hex) + '</span><span class="sched-eta">' +
+      (row.goAround ? scheduleArrivalTime(row) : 'Runway unknown · ' + scheduleArrivalTime(row)) + '</span></button>';
+  });
+  holding += '</div>';
+  var html = '<div class="sched-ladder" data-ladder-runways="' + escapeHtml(layout.runways.join(',')) + '" aria-label="Arrival times, 15 minutes to touchdown">';
+  if (!n) return html + '<div class="sched-empty">No arrival runway known yet</div>' + holding + '</div>';
+  html += '<div class="sched-ladder-plot">';
+  [15, 10, 5, 0].forEach(function(min) {
+    html += '<div class="sched-ladder-tick" style="top:' + ((15 - min) / 15 * 100) + '%"><span>' + (min ? min + 'm' : 'now') + '</span></div>';
+  });
+  layout.runways.forEach(function(runway, i) {
+    html += '<div class="sched-ladder-lane" style="left:' + (i / n * 100) + '%;width:' + (100 / n) + '%"><span>' + escapeHtml(runway) + '</span></div>';
+  });
+  layout.pairs.forEach(function(pair) {
+    html += '<span class="sched-ladder-pair" data-ladder-key="pair-' + escapeHtml(pair.a + '-' + pair.b) + '" style="top:' + (pair.y * 100) +
+      '%;left:' + (pair.left / n * 100) + '%;width:' + ((pair.right - pair.left) / n * 100) + '%" title="Parallel arrivals within 20 seconds">pair</span>';
+  });
+  layout.beads.forEach(function(bead) {
+    var key = escapeHtml(bead.hex);
+    html += '<span class="sched-ladder-dot" data-ladder-key="dot-' + key + '" style="top:' + (bead.y * 100) + '%;left:' + (bead.lane / n * 100) + '%"></span>';
+    html += '<span class="sched-ladder-leader" data-ladder-key="leader-' + key + '" style="top:' + (Math.min(bead.y, bead.labelY) * 100) +
+      '%;height:' + (Math.abs(bead.y - bead.labelY) * 100) + '%;left:' + (bead.lane / n * 100) + '%"></span>';
+    html += '<button type="button" class="sched-ladder-bead' + (bead.runwayAssumed ? ' assumed' : '') + (bead.compactLabel ? ' compact' : '') + '" data-ladder-key="bead-' + key + '"' + scheduleRowAttrs(bead) +
+      ' style="top:' + (bead.labelY * 100) + '%;left:' + (bead.lane / n * 100) + '%;width:' + (100 / n) + '%" title="' +
+      escapeHtml((bead.callsign || bead.hex) + ' · ' + bead.runway + ' · ' + formatLandingEta(bead.etaMin) + (bead.runwayAssumed ? ' · assumed runway' : '')) + '">' +
+      '<span>' + escapeHtml(bead.callsign || bead.hex) + '</span><small>' + escapeHtml(bead.aircraftType || '') + '</small></button>';
+  });
+  html += '</div>';
+  html += holding + '<div class="sched-ladder-note">Time to touchdown · tap a flight</div>';
+  return html + '</div>';
 }
 
 function buildScheduleCardContent(iata, name, liveData, dir, scopeId, staleNote) {
@@ -7157,6 +7578,9 @@ function buildScheduleCardContent(iata, name, liveData, dir, scopeId, staleNote)
     '<div class="sched-header"' + titleAttr + '>' +
       '<span class="sched-iata">' + escapeHtml(iata) + '</span> ' +
       '<span class="sched-name">' + escapeHtml(name) + '</span>' +
+      '<span class="sched-view-toggle" role="group" aria-label="Arrival display">' +
+      '<button type="button" data-board-view="list" aria-pressed="' + (_airportBoardView === 'list' || dir !== 'arrivals') + '">List</button>' +
+      '<button type="button" data-board-view="ladder" aria-pressed="' + (_airportBoardView === 'ladder' && dir === 'arrivals') + '">Ladder</button></span>' +
       (staleNote ? ' <span class="sched-stale" style="opacity:0.7;font-size:0.85em;white-space:nowrap">' + escapeHtml(staleNote) + '</span>' : '') +
     '</div>' +
     '<div class="sched-toggle" role="group" aria-label="Airport traffic view">';
@@ -7168,6 +7592,11 @@ function buildScheduleCardContent(iata, name, liveData, dir, scopeId, staleNote)
       (count ? ' <span class="sched-toggle-count">' + count + '</span>' : '') + '</button>';
   }
   html += '</div>';
+  html += '<div class="sched-body">';
+  if (_airportBoardView === "ladder" && dir === "arrivals") {
+    html += buildApproachLadder(liveData);
+    return html + '</div>' + buildAirportEtaFooter(iata) + '</div>';
+  }
   html += buildScheduleNextSummary(liveData, dir);
   html += '<div class="sched-rows">';
   if (!items.length) {
@@ -7180,21 +7609,18 @@ function buildScheduleCardContent(iata, name, liveData, dir, scopeId, staleNote)
       var cs = f.callsign || "";
       var flightNum = escapeHtml(formatScheduleFlightNumber(cs));
       var fromIata = f.originIata ? escapeHtml(f.originIata) : "\u2014";
-      html += '<div class="sched-row"' + scheduleRowAttrs(f) + '>';
+      html += '<div class="sched-row' + (f.goAround ? ' go-around' : '') + '" role="button" tabindex="0"' + scheduleRowAttrs(f) + '>';
       if (f.landed || f.taxiingIn) {
         var dot = f.landed ? "cyan" : (f.parked ? "gray" : "green");
         html += '<span class="sched-dot ' + dot + '"></span>' +
-          '<span class="sched-flight">' + flightNum + '</span>' +
+          '<span class="sched-flight">' + flightNum + '</span>' + scheduleRunwayChip(f) +
           '<span class="sched-route">from ' + fromIata + (f.aircraftType ? ' \u00b7 ' + escapeHtml(f.aircraftType) : '') + boardRouteTag(f, dir) + '</span>' +
           '<span class="sched-landed">' + formatLandingSummaryStatus(f) + '</span>';
       } else {
-        var altStr = f.altFt != null ? f.altFt.toLocaleString() + "ft" : "\u2014";
-        var etaStr = formatLandingEta(f.etaMin);
         html += '<span class="sched-dot cyan live"></span>' +
-          '<span class="sched-flight">' + flightNum + '</span>' +
+          '<span class="sched-flight">' + flightNum + '</span>' + scheduleRunwayChip(f) +
           '<span class="sched-route">from ' + fromIata + (f.aircraftType ? ' \u00b7 ' + escapeHtml(f.aircraftType) : '') + boardRouteTag(f, dir) + '</span>' +
-          '<span class="sched-alt">' + altStr + '</span>' +
-          (etaStr ? '<span class="sched-eta">' + etaStr + '</span>' : '');
+          '<span class="sched-eta">' + scheduleArrivalTime(f) + '</span>';
       }
       html += '</div>';
     }
@@ -7212,16 +7638,16 @@ function buildScheduleCardContent(iata, name, liveData, dir, scopeId, staleNote)
       else if (f.status === "Holding" || depSignal.label === "Holding short") dotColor = "yellow";
       else if (f.status === "Taxiing") dotColor = "green";
       else dotColor = "gray";
-      html += '<div class="sched-row"' + scheduleRowAttrs(f) + '>' +
+      html += '<div class="sched-row" role="button" tabindex="0"' + scheduleRowAttrs(f) + '>' +
         '<span class="sched-dot ' + dotColor + '"></span>' +
-        '<span class="sched-flight">' + flightNum + '</span>' +
+        '<span class="sched-flight">' + flightNum + '</span>' + scheduleRunwayChip(f) +
         '<span class="sched-route">to ' + destIata + (f.aircraftType ? ' \u00b7 ' + escapeHtml(f.aircraftType) : '') + boardRouteTag(f, dir) + '</span>' +
         '<span class="sched-speed">' + spdStr + '</span>' +
         '<span class="sched-hint">' + escapeHtml(hintLabel) + '</span>' +
         '</div>';
     }
   }
-  html += '</div></div>';
+  html += '</div></div>' + buildAirportEtaFooter(iata) + '</div>';
   return html;
 }
 
@@ -7450,6 +7876,75 @@ function airportBoardStaleNote(entry) {
   return "stale \u00b7 updated " + (minutes < 1 ? "<1m" : minutes + "m") + " ago";
 }
 
+function syncAirportCountdowns(liveData) {
+  var next = {}, now = Date.now();
+  (liveData.arrivals || []).forEach(function(row) {
+    var key = row.hex || row.callsign;
+    if (!key || row.goAround || !Number.isFinite(row.etaMin)) return;
+    next[key] = core.updateArrivalCountdown(_airportCountdowns[key], row.touchdownAtMs || now + row.etaMin * 60000, now);
+  });
+  _airportCountdowns = next;
+}
+
+function tickAirportCountdowns() {
+  _airportCountdownTimer = null;
+  if (!_activeAirportPopup) return;
+  var now = Date.now();
+  Object.keys(_airportCountdowns).forEach(function(key) {
+    var state = _airportCountdowns[key];
+    _airportCountdowns[key] = core.updateArrivalCountdown(state, state.targetMs, now);
+  });
+  var el = _activeAirportPopup.getElement && _activeAirportPopup.getElement();
+  if (el) el.querySelectorAll('[data-countdown]').forEach(function(node) {
+    var state = _airportCountdowns[node.getAttribute('data-countdown')];
+    if (state) node.textContent = state.remainingSec < 600 ? core.formatArrivalCountdown(state.remainingSec) : formatLandingEta(state.remainingSec / 60);
+  });
+  _airportCountdownTimer = setTimeout(tickAirportCountdowns, 1000);
+}
+
+function setAirportScheduleHtml(html) {
+  var oldRoot = _activeAirportPopup.getElement && _activeAirportPopup.getElement();
+  var oldLadder = oldRoot && oldRoot.querySelector('.sched-ladder');
+  var oldRows = oldRoot && oldRoot.querySelector('.sched-rows');
+  var scroll = oldRows ? oldRows.scrollTop : 0;
+  var focused = oldRoot && oldRoot.contains(document.activeElement) ? document.activeElement : null;
+  var focusAttrs = ['data-board-view', 'data-eta-action', 'data-dir', 'data-hex'];
+  var focusKey = null, focusValue = null;
+  if (focused) focusAttrs.some(function(attr) {
+    if (!focused.hasAttribute(attr)) return false;
+    focusKey = attr; focusValue = focused.getAttribute(attr); return true;
+  });
+  _activeAirportPopup.setHTML(html);
+  var root = _activeAirportPopup.getElement && _activeAirportPopup.getElement();
+  if (!root) return;
+  var fresh = root.querySelector('.sched-ladder');
+  if (oldLadder && fresh && oldLadder.getAttribute('data-ladder-runways') === fresh.getAttribute('data-ladder-runways')) {
+    // Keep existing bead DOM nodes: CSS transitions can then ease positions between traffic polls.
+    var oldNodes = {}, newKeys = {};
+    oldLadder.querySelectorAll('[data-ladder-key]').forEach(function(node) { oldNodes[node.getAttribute('data-ladder-key')] = node; });
+    fresh.querySelectorAll('[data-ladder-key]').forEach(function(node) {
+      var key = node.getAttribute('data-ladder-key'), old = oldNodes[key];
+      newKeys[key] = true;
+      if (!old) oldLadder.querySelector('.sched-ladder-plot').appendChild(node);
+      else {
+        Array.from(node.attributes).forEach(function(attr) { old.setAttribute(attr.name, attr.value); });
+        if (old.innerHTML !== node.innerHTML) old.innerHTML = node.innerHTML;
+      }
+    });
+    Object.keys(oldNodes).forEach(function(key) { if (!newKeys[key]) oldNodes[key].parentNode.removeChild(oldNodes[key]); });
+    var note = oldLadder.querySelector('.sched-ladder-note'), newNote = fresh.querySelector('.sched-ladder-note');
+    if (note && newNote) note.textContent = newNote.textContent;
+    var holding = oldLadder.querySelector('.sched-ladder-holding'), freshHolding = fresh.querySelector('.sched-ladder-holding');
+    if (holding && freshHolding) holding.innerHTML = freshHolding.innerHTML;
+    fresh.parentNode.replaceChild(oldLadder, fresh);
+  }
+  var rows = root.querySelector('.sched-rows');
+  if (rows) rows.scrollTop = scroll;
+  if (focusKey) root.querySelectorAll('[' + focusKey + ']').forEach(function(node) {
+    if (node.getAttribute(focusKey) === focusValue) focusWithoutScroll(node);
+  });
+}
+
 function renderSchedulePopup(dir) {
   if (!_activeAirportPopup || _activeAirportLat == null) return;
   _activeScheduleDir = dir;
@@ -7460,11 +7955,14 @@ function renderSchedulePopup(dir) {
       entry && entry.error ? entry.error : "Loading airport traffic…",
       entry && entry.error ? "error" : "loading"
     );
+  syncAirportCountdowns(liveData);
+  if (!entry || !entry.stale) observeAirportEta(_activeAirportIata, liveData, entry && entry.snapshot ? entry.snapshot : aircraft);
   var html = buildScheduleCardContent(_activeAirportIata, _activeAirportName, liveData, dir, _activeAirportScopeId,
     airportBoardStaleNote(entry));
   if (html === _lastScheduleHtml) return;
   _lastScheduleHtml = html;
-  _activeAirportPopup.setHTML(html);
+  setAirportScheduleHtml(html);
+  if (!_airportCountdownTimer) tickAirportCountdowns();
   if (!_activeAirportPopup._isAirportSheet && _activeAirportScopeId && _activeAirportPopup.getElement) {
     var el = _activeAirportPopup.getElement();
     if (el) {
@@ -7493,6 +7991,8 @@ function openAirportSchedulePopup(iata, name, lat, lng) {
   _activeAirportLng = lng;
   _activeAirportScopeId = "airport-sched-" + (++_airportScopeSeq);
   _activeScheduleDir = "arrivals";
+  _airportCountdowns = {};
+  _airportEtaPanelOpen = false;
   _lastScheduleHtml = "";
   var entry = getAirportPopupCacheEntry(iata);
 
@@ -7523,6 +8023,7 @@ function openAirportSchedulePopup(iata, name, lat, lng) {
   }
 
   _activeAirportPopup = popup;
+  renderSchedulePopup("arrivals");
   if (!popup._isAirportSheet && _activeAirportScopeId && popup.getElement) {
     var popupEl = popup.getElement();
     if (popupEl) {
@@ -7540,6 +8041,9 @@ function openAirportSchedulePopup(iata, name, lat, lng) {
       var restoreFocus = _airportRestoreFocusOnClose;
       var restoreTarget = _airportFocusOpener;
       clearActiveAirportRefreshTimer();
+      if (_airportCountdownTimer) clearTimeout(_airportCountdownTimer);
+      _airportCountdownTimer = null;
+      _airportCountdowns = {};
       _activeAirportPopup = null;
       _activeAirportIata = null;
       _activeAirportName = null;
@@ -7560,6 +8064,10 @@ function openAirportSchedulePopup(iata, name, lat, lng) {
 
 (function() {
   document.addEventListener("keydown", function(e) {
+    if ((e.key === "Enter" || e.key === " ") && e.target && e.target.matches && e.target.matches('.sched-row, .sched-next-clickable')) {
+      handleAirportSchedulePanelClick(e);
+      return;
+    }
     if (e.key !== "Escape") return;
     if (_activeAirportPopup) {
       closeActiveAirportPanel();
