@@ -57,10 +57,16 @@ contrails-watch v1 | UA837 | 1/3 departed | delayed-30
 - Terminal outcomes are `landed`, `cancelled`, `diverted` and `expired` (once `until` has passed). Each adds a second
   line, `SP-WATCH: done`.
 - Every token comes from the URL, the rank or the delay flag: no ETA minutes, times or positions.
-- `landed` needs a schedule actual arrival or an ADS-B ground report within 6 km of the destination. It is never
-  inferred from a plane disappearing.
+- `until` (unix seconds) is required. A missing value, or one more than 48 h ahead, gives 400. `track_flight` mints it
+  as (estArr, else schedArr, else now) + 3 h, capped at now + 24 h. Consumers use the URL exactly as given.
+- `landed` needs one of two kinds of evidence. It is never inferred from a plane disappearing.
+  - A schedule actual arrival.
+  - A fresh ADS-B ground report within 6 km of the destination. When the flight's hex or registration is known, the
+    report must match it, so a different aircraft on the same callsign can't end the watch.
 - If an upstream error could have raised the rank, the endpoint answers **503** `contrails-watch unavailable`, never a
   lower line.
+  - Upstream errors include: an incomplete schedule (page 2 failed), error-shaped 200 bodies, and FR24 backoff.
+  - Expect runs of 503 lasting a whole schedule-cache or backoff window (up to ~5 min), not single blips.
 - The Worker keeps **no milestone memory**: no cache, no isolate state. Non-regression is the consumer's job, using the
   reference fold `foldWatchLines` in `worker/src/flight.js`. The fold keeps the max rank, latches `delayed`, treats
   `done` as terminal, and fires only when the folded state advances.
@@ -70,6 +76,11 @@ A stateless MCP server: JSON-RPC 2.0 over streamable HTTP, no session id.
 - Methods: `initialize` (version negotiation over 2025-11-25, 2025-06-18, 2025-03-26 and 2024-11-05), `ping`,
   `tools/list`, `tools/call`.
 - Notifications get 202. `GET` gets 405.
+- On any request other than `initialize`, an unsupported `Mcp-Protocol-Version` header gives HTTP 400. Request ids
+  must be a string or an integer.
+- Media-type checks are deliberately lenient.
+- Conformance is proven in CI with the official TypeScript SDK client (1.32.2) plus raw-protocol tests. The
+  cursor-agent client has not been tested yet.
 - All tools are read-only and return short text plus `structuredContent`:
 
 | Tool | Args | Notes |
@@ -81,6 +92,8 @@ A stateless MCP server: JSON-RPC 2.0 over streamable HTTP, no session id.
 | `track_flight` | `ident`, `airport?`, `eta_min?` | returns `watch: {url, every: "1m", doneMarker, prompt}`; runs nothing |
 
 ## What the soul-pager release (step 2) must do
+0. First, smoke-test cursor-agent itself against the deployed `/mcp`: run `initialize` and `tools/list`, then call one
+   tool. Do this before writing any soul-pager code.
 1. Add a `contrails` URL entry to `~/.cursor/mcp.available.json`:
    `{"url": "https://contrails-api.therealgraj.workers.dev/mcp"}`. This is a deploy step.
 2. Add a keyword row in `mcp_select.py`.
@@ -98,6 +111,7 @@ A stateless MCP server: JSON-RPC 2.0 over streamable HTTP, no session id.
 | `/board` | 1 grid fetch (shared 3 s cache), schedule (2 FR24 pages per 300 s, shared with the site), D-ATIS (60 s), zero FR24 searches; the response is cached 20 s |
 | watch at 1/min with `airport` | ADS-B lookup (5 s cache) each poll, schedule shared, the destination board only within 120 km; zero FR24 searches |
 | `flight_status` without `airport` | 1 FR24 search per ident per 300 s (cached, backoff respected) |
+| `planes_nearby` | the existing `/nearby` path: 1 grid fetch, plus route enrichment for up to 5 planes (cached FR24 searches, ADSBDB fallback) |
 
 ## Health
 New endpoints get contract tests in CI only (`worker/src/*.test.js`, including an official MCP SDK client test).
