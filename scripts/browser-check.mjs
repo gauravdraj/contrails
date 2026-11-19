@@ -2,6 +2,8 @@
 //   node scripts/browser-check.mjs                         # boot, WebGL, board, outage/recovery, SW
 //   CHROME="/path/to/chrome" node scripts/browser-check.mjs # override automatic Chrome discovery
 //   node scripts/browser-check.mjs --perf [--aircraft 1500] # 30 s of natural polls; JSON on stdout
+//   node scripts/browser-check.mjs --board-review           # board layout regressions only
+//   node scripts/browser-check.mjs --board-baseline         # archived v2.47 screenshots/heights
 //   node scripts/browser-check.mjs --self-test              # pure fixture helpers, no browser required
 //
 // Serves fresh working-tree sources in memory and checks committed app.bundle.js for drift. Requires free
@@ -18,6 +20,7 @@
 // otherwise idle machine. No performance pass/fail thresholds.
 
 import assert from "node:assert/strict";
+import { checkBoardLayouts } from "./board-browser-check.mjs";
 import http from "node:http";
 import { spawn } from "node:child_process";
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -36,8 +39,8 @@ const args = process.argv.slice(2);
 const perf = args.includes("--perf");
 let aircraftCount = perf ? 1500 : 12;
 for (let i = 0; i < args.length; i++) {
-  if (["--perf", "--self-test"].includes(args[i])) continue;
-  if (args[i] !== "--aircraft" || !/^\d+$/.test(args[i + 1] || "")) throw new Error("Usage: browser-check.mjs [--perf] [--aircraft N] [--self-test]");
+  if (["--perf", "--self-test", "--board-review", "--board-baseline"].includes(args[i])) continue;
+  if (args[i] !== "--aircraft" || !/^\d+$/.test(args[i + 1] || "")) throw new Error("Usage: browser-check.mjs [--perf] [--aircraft N] [--self-test] [--board-review|--board-baseline]");
   aircraftCount = Number(args[++i]);
 }
 if (!Number.isSafeInteger(aircraftCount) || aircraftCount < 1 || aircraftCount > 10000) throw new Error("--aircraft must be 1..10000");
@@ -504,6 +507,11 @@ async function main() {
     })()`));
     return "app registered and activated sw.js; caching assertions skipped";
   });
+  if (args.includes('--board-review') || args.includes('--board-baseline')) {
+    await check('board review layouts', () => checkBoardLayouts(cdp, boardScreenshot, { baseline: args.includes('--board-baseline') }));
+    assert.deepEqual(unexpectedRequests, []); assert.deepEqual(errors, []);
+    return;
+  }
   if (perf) {
     await runPerf();
   } else {
@@ -601,7 +609,7 @@ async function main() {
     }
     return "reported, callsign-database and flight-path labels; no horizontal overflow";
   });
-  if (!perf) await check('v248 board at 390 px: one-line rows, steady countdown, paired ladder and scorecard', async () => {
+  if (!perf) await check('v248 board at 390 px: steady countdown, paired ladder and scorecard', async () => {
     await cdp.evaluate("openAirportSchedulePopup('LHR', 'London Heathrow', 51.471, -0.46)");
     await until('mobile board data', () => cdp.evaluate("!!_airportPopupCache.LHR.data.arrivals.length && !_airportPopupCache.LHR.loading"));
     const before = await cdp.evaluate(`(() => {
@@ -626,7 +634,6 @@ async function main() {
         countdown: document.querySelector('#airport-panel [data-countdown]').textContent };
     })()`);
     assert.ok(!before.overflow && before.right <= 390, JSON.stringify(before));
-    assert.ok(before.rowHeights.every(h => h <= 34), 'each arrival stays one line: ' + before.rowHeights);
     assert.equal(before.countdown, '1:42');
     await boardScreenshot('list-390');
     await until('live countdown tick between traffic refreshes', () => cdp.evaluate("document.querySelector('#airport-panel [data-countdown]').textContent !== '1:42'"), 3500);
@@ -658,8 +665,9 @@ async function main() {
     assert.equal(await cdp.evaluate("loadAirportEtaLog().filter(r => r.airport === 'LHR').length"), 0);
     await cdp.evaluate("document.getElementById('airport-panel-close').click()");
     assert.equal(await cdp.evaluate('_airportCountdownTimer'), null, 'closing the board stops the countdown timer');
-    return '390×844; rows ≤34 px; stable sheet height; seconds tick; three beads and parallel pair; local scorecard/reset';
+    return '390×844; stable height while counting down; seconds tick; three beads and parallel pair; local scorecard/reset';
   });
+  if (!perf) await check('board review layouts', () => checkBoardLayouts(cdp, boardScreenshot));
   await check("app requests local or fulfilled by fixtures", async () => {
     assert.deepEqual(unexpectedRequests, []);
     return mock.traffic + " traffic requests; external fixtures: " + JSON.stringify(Object.fromEntries(networkFixtures));

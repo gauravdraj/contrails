@@ -2594,6 +2594,7 @@ for (const [name, alts, opts] of [
   ['normal landing', [1100, 850, 600, 200, 0, 0], { groundFrom: 4 }],
   ['departure', [0, 0, 200, 500, 800], { groundFrom: Infinity }],
   ['single noisy sample', [1100, 850, 600, 1100, 550, 300], {}],
+  ['interrupted climb', [1100, 850, 600, 850, 750, 1010], {}],
   ['low pass that lands', [1100, 850, 600, 620, 700, 200, 0], { groundFrom: 6 }],
   ['touch-and-go', [1100, 850, 600, 0, 200, 600], {}]
 ]) test('v248 go-around: rejects ' + name, () => {
@@ -2658,13 +2659,13 @@ test('v248 countdown: seconds formatting, interpolation, bounded corrections and
   let s = core.updateArrivalCountdown(null, v248Now + 102000, v248Now);
   s = core.updateArrivalCountdown(s, s.targetMs, v248Now + 5000);
   assert.equal(s.remainingSec, 97);
-  const corrected = core.updateArrivalCountdown(s, v248Now + 300000, v248Now + 6000);
-  assert.ok(corrected.remainingSec <= s.remainingSec + 2);
+  const corrected = core.updateArrivalCountdown(s, v248Now + 107000, v248Now + 6000);
+  assert.ok(corrected.remainingSec <= s.remainingSec);
   assert.deepEqual(core.updateArrivalCountdown(corrected, corrected.targetMs, corrected.atMs), corrected);
   const earlier = core.updateArrivalCountdown(s, v248Now + 20000, v248Now + 6000);
-  assert.ok(earlier.remainingSec >= s.remainingSec - 3);
+  assert.equal(earlier.remainingSec, 14);
 });
-test('v248 countdown: crossing ten minutes keeps easing; scorecard captures the displayed forecast on its display clock', () => {
+test('v248 countdown: countdown formatting uses display state; scorecard accepts the model prediction clock', () => {
   const c = v248BoardContext();
   c._airportCountdowns.abc123 = core.updateArrivalCountdown(null, v248Now + 102000, v248Now);
   const row = { hex: 'abc123', etaMin: 12 };
@@ -2705,10 +2706,12 @@ test('v248 scorecard: buckets, first forecast, touchdown matching, midnight and 
   records = observe(records, { nowMs: v248Now + 5000, etaMin: 2.1 });
   assert.equal(records[0].predictions[2].touchdownAtMs, v248Now + 120000);
   assert.notEqual(JSON.stringify(records), original);
+  assert.equal(observe(records, { nowMs: v248Now }), records, 'an older report cannot create another open approach');
   assert.equal(observe(records, { airport: 'OAK', touchdown: true, atAirport: true, nowMs: v248Now + 90000 }).length, 1);
   assert.equal(observe(records, { touchdown: true, atAirport: false, nowMs: v248Now + 90000 })[0].actualAtMs, null);
   records = observe(records, { touchdown: true, atAirport: true, nowMs: v248Now + 90000 });
   assert.equal(records[0].actualAtMs, v248Now + 90000);
+  assert.equal(observe(records, { nowMs: v248Now + 85000 }), records, 'an older airborne report cannot reopen a completed flight');
   assert.equal(observe(records, { touchdown: true, atAirport: true, nowMs: v248Now + 95000 })[0].actualAtMs, records[0].actualAtMs);
   const midnight = Date.UTC(2026, 10, 19);
   const crossDay = observe(observe([], { nowMs: midnight - 60000, etaMin: 1 }), { nowMs: midnight + 5000, touchdown: true, atAirport: true });
@@ -2840,4 +2843,210 @@ test('v248 scorecard: actual ground reports match an earlier displayed arrival a
   c.resetAirportEta('SFO');
   assert.equal(c.loadAirportEtaLog().length, 1);
   assert.equal(c.loadAirportEtaLog()[0].airport, 'OAK');
+});
+
+// Independent review probes (score.js, ga.js, dep.js, boarddep.js, dw.js and dw2.js).
+test('v248 review score: stale same-day approach cannot absorb a later touchdown', () => {
+  const observe = (r, dt, extra) => core.recordArrivalPrediction(r, { airport: 'SFO', hex: 'abc123', nowMs: v248Now + dt, ...extra });
+  let records = observe([], 0, { etaMin: 2 });
+  records = observe(records, 6 * 3600000, { etaMin: 1 });
+  records = observe(records, 6 * 3600000 + 60000, { touchdown: true, atAirport: true });
+  assert.equal(records.length, 2);
+  assert.equal(records[0].actualAtMs, null);
+  assert.equal(records[1].key, 'SFO:abc123:' + (v248Now + 6 * 3600000));
+  assert.equal(core.arrivalEtaScorecard(records, 'SFO').horizons[2].count, 0);
+});
+test('v248 review score: two completed landings on the same UTC day both count', () => {
+  let records = [];
+  for (const dt of [0, 6 * 3600000]) {
+    records = core.recordArrivalPrediction(records, { airport: 'SFO', hex: 'abc123', nowMs: v248Now + dt, etaMin: 2 });
+    records = core.recordArrivalPrediction(records, { airport: 'SFO', hex: 'abc123', nowMs: v248Now + dt + 120000, touchdown: true, atAirport: true });
+  }
+  assert.equal(core.arrivalEtaScorecard(records, 'SFO').horizons[2].count, 2);
+  assert.equal(new Set(records.map(r => r.key)).size, 2);
+});
+test('v248 review score: go-around voids first-approach horizons before the later landing', () => {
+  const c = v248BoardContext();
+  let now = v248Now;
+  c.Date = class extends Date { static now() { return now; } };
+  c._activeAirportPopup = {}; c._activeAirportIata = 'SFO';
+  const observe = (etaMin, goAround) => c.observeAirportEta('SFO', { arrivals: [{ hex: 'abc123', reportTs: now, etaMin, goAround }] }, []);
+  observe(2, false); now += 60000; observe(1, false);
+  now += 60000; observe(11, true);
+  assert.ok(c.loadAirportEtaLog().every(r => !Object.keys(r.predictions).length), 'aborted forecasts are void');
+  now += 11 * 60000; observe(1, false);
+  const records = core.recordArrivalPrediction(c.loadAirportEtaLog(), { airport: 'SFO', hex: 'abc123', nowMs: now + 60000, touchdown: true, atAirport: true });
+  assert.equal(core.arrivalEtaScorecard(records, 'SFO').horizons[2].count, 0);
+  assert.equal(core.arrivalEtaScorecard(records, 'SFO').horizons[3].medianSec, 0);
+});
+test('v248 review countdown: small later corrections hold without counting up; large revisions snap', () => {
+  let state = core.updateArrivalCountdown(null, v248Now + 120000, v248Now);
+  for (let i = 1; i <= 8; i++) {
+    const next = core.updateArrivalCountdown(state, v248Now + 125000, v248Now + i * 1000);
+    assert.ok(next.remainingSec <= state.remainingSec);
+    state = next;
+  }
+  for (const target of [60000, 300000]) {
+    const next = core.updateArrivalCountdown(state, v248Now + target, v248Now + 9000);
+    assert.equal(next.remainingSec, target / 1000 - 9);
+    assert.deepEqual(core.updateArrivalCountdown(next, next.targetMs, next.atMs), next);
+  }
+});
+function reviewPoint(alongM, alt, ground, ts) {
+  const p = core.projectLatLng(v248End.thresholdLat, v248End.thresholdLon, alongM < 0 ? (v248Heading + 180) % 360 : v248Heading, Math.abs(alongM));
+  return [p[0], p[1], ts, alt, ground, false, false];
+}
+function reviewTrack(spec, cadence = 5000) {
+  return spec.map((s, i) => reviewPoint(s[0], s[1], !!s[2], v248Now + i * cadence));
+}
+function reviewGo(points) {
+  let state;
+  points.forEach((p, i) => { state = v248Go(points.slice(0, i + 1), state, { fieldElevFt: 13 }); assert.equal(state.goAroundAtMs, null); });
+}
+test('v248 review ga: runway-roll jitter and an unflagged touch-and-go are not go-arounds', () => {
+  reviewGo(reviewTrack([[100,25],[250,0],[400,25],[550,0],[700,25],[890,75],[1080,150],[1270,200],[1460,250],[1650,325],[1840,375]]));
+  reviewGo(reviewTrack([[-3000,900],[-2550,750],[-2100,600],[-1650,450],[-1200,300],[-750,150],[-300,0],[0,0],[250,75],[470,125],[690,175],[910,250],[1130,300],[1350,350]]));
+});
+test('v248 review dep: ground roll and a 25 ft dip after liftoff do not arm', () => {
+  reviewGo(reviewTrack([[300,null,true],[900,null,true],[1600,null,true],[2300,50],[2700,25],[3150,225],[3600,450],[4100,700]]));
+});
+test('v248 review ga: a single descending final interval cannot arm', () => {
+  assert.equal(v248Go(v248Track([850,600,750,940])).goAroundAtMs, null);
+});
+test('v248 review ga: true go-arounds survive board and merged polling cadences', () => {
+  for (const [cadences, rate] of [[[6500],1200], [[1200,5300],1200], [[1100,4900],700]]) {
+    const points = []; let ts = v248Now, x = -6000, alt = 1400, k = 0;
+    while (alt > 200) {
+      points.push(reviewPoint(x, Math.round(alt / 25) * 25, false, ts));
+      const dt = cadences[k++ % cadences.length]; ts += dt; x += 75 * dt / 1000; alt -= 750 * dt / 60000;
+    }
+    for (let i = 0; i < 12; i++) {
+      points.push(reviewPoint(x, Math.round(alt / 25) * 25, false, ts));
+      const dt = cadences[k++ % cadences.length]; ts += dt; x += 80 * dt / 1000; alt += rate * dt / 60000;
+    }
+    assert.ok(v248Go(points, null, { fieldElevFt: 13 }).goAroundAtMs);
+  }
+});
+test('v248 review boarddep: departures stay out of Landings and pass departure evidence to detector', () => {
+  for (const knownOrigin of [true, false]) {
+    const c = v248BoardContext(); let now = v248Now; const departures = [];
+    c.Date = class extends Date { static now() { return now; } };
+    c.validateCachedRoute = () => knownOrigin ? { origin: { iata: 'SFO' }, destination: { iata: 'LAX' } } : null;
+    c.core = { ...core, updateGoAround(previous, points, ts, options) {
+      if (points.length) departures.push(options.departing);
+      return core.updateGoAround(previous, points, ts, options);
+    } };
+    reviewTrack([[300,null,true],[900,null,true],[1600,null,true],[2300,50],[2700,25],[3150,225],[3600,450],[4100,700]]).forEach(p => {
+      now = p[2];
+      const plane = { icao24: 'abc123', callsign: 'UAL555', lat: p[0], lng: p[1], altFt: p[3], ground: p[4], track: v248Heading, speedKts: 170, vRate: 35, reportTs: now };
+      const board = c.buildLiveScheduleData('SFO', 37.62, -122.375, [plane], { departing_runways: ['28L'], arriving_runways: ['28L'] });
+      assert.ok(!board.arrivals.some(r => r.goAround));
+    });
+    assert.ok(departures.length && departures.every(Boolean), 'known origin or recent ground evidence is passed through');
+  }
+});
+test('v248 review ga: rows expire after two minutes missing or five minutes past expected return', () => {
+  for (const missing of [true, false]) {
+    const c = v248BoardContext(); let now = v248Now + 40000;
+    c.Date = class extends Date { static now() { return now; } };
+    const p = v248Track([1100,850,600,750,940]); c.posHistory.abc123 = p;
+    const a = { icao24: 'abc123', callsign: 'UAL123', lat: p[4][0], lng: p[4][1], altFt: 940, ground: false, reportTs: now, track: v248Heading, speedKts: 150, vRate: 19 };
+    assert.ok(c.buildLiveScheduleData('SFO',37.62,-122.375,[a]).arrivals.some(r => r.goAround));
+    now += missing ? 120001 : 16 * 60000 + 1;
+    assert.ok(!c.buildLiveScheduleData('SFO',37.62,-122.375,missing ? [] : [{ ...a, reportTs: now }]).arrivals.some(r => r.goAround));
+  }
+});
+for (const [probe, positions, speed, altitude] of [
+  ['dw', [[1.2,1],[1.5,3],[3,8],[4,15]], 100, 1000],
+  ['dw2', [10,20,25,30].flatMap(out => [2.5,3,3.5].map(lateral => [lateral,out])), 220, 6000]
+]) test('v248 review ' + probe + ': active 28L downwind cannot match reciprocal 10R', () => {
+  const c = v248BoardContext();
+  for (const [lateral, beyond] of positions) {
+    const p1 = core.projectLatLng(v248End.farEndLat, v248End.farEndLon, v248Heading, beyond * 1000);
+    const p = core.projectLatLng(p1[0], p1[1], (v248Heading + 90) % 360, lateral * 1000);
+    const plane = { icao24: 'abc123', callsign: 'UAL123', lat: p[0], lng: p[1], track: (v248Heading + 180) % 360, speedKts: speed, altFt: altitude, vRate: -8, reportTs: v248Now };
+    const board = c.buildLiveScheduleData('SFO',37.62,-122.375,[plane], { arriving_runways: ['28L'] });
+    const arrival = board.arrivals[0]; assert.ok(arrival);
+    assert.equal(arrival.runway, '28L'); assert.equal(arrival.runwayAssumed, true);
+    assert.equal(arrival.pathKm, core.approachPathKm(plane.lat, plane.lng, plane.track, [v248End]).pathKm);
+  }
+});
+test('v248 review sequence: assumed runway cannot take a matched arrival number', () => {
+  const rows = core.sequenceAirportArrivals([{ hex: 'a', runway: '28L', etaMin: 1, runwayAssumed: true },
+    { hex: 'b', runway: '28L', etaMin: 2 }, { hex: 'c', runway: '28L', etaMin: 3 }]);
+  assert.deepEqual(rows.map(r => r.sequence), [null,1,2]);
+  assert.doesNotMatch(v248BoardContext().scheduleRunwayChip({ ...rows[0], sequence: 1 }), /#1/);
+});
+test('v248 review score: model report clock, every tab, horizon-only persistence', () => {
+  const c = v248BoardContext(); let now = v248Now, writes = 0;
+  c.Date = class extends Date { static now() { return now; } };
+  c.window = { localStorage: { getItem: () => null, setItem: () => { writes++; } } };
+  c._activeAirportPopup = {}; c._activeAirportIata = 'SFO';
+  const observe = etaMin => c.observeAirportEta('SFO', { arrivals: [{ hex: 'abc123', etaMin, reportTs: now - 5000 }] }, []);
+  observe(7); assert.equal(c.loadAirportEtaLog().length, 0); assert.equal(writes, 0);
+  c._activeScheduleDir = 'departures';
+  c._airportCountdowns.abc123 = { remainingSec: 60 };
+  observe(2);
+  assert.equal(c.loadAirportEtaLog()[0].predictions[2].touchdownAtMs, now - 5000 + 120000);
+  assert.equal(c.loadAirportEtaLog()[0].predictions[1], undefined);
+  assert.equal(writes, 1);
+  now += 5000; observe(2.1); assert.equal(writes, 1);
+  assert.equal(c.loadAirportEtaLog()[0].lastSeenAtMs, now - 5000);
+  now += 5000; c._activeScheduleDir = 'landed'; observe(1); assert.equal(writes, 2);
+});
+test('v248 review report: predicted touchdown stays anchored to the aircraft report', () => {
+  const c = v248BoardContext(); let now = v248Now;
+  c.Date = class extends Date { static now() { return now; } };
+  const a = { icao24: 'abc123', callsign: 'UAL123', altFt: 1000, speedKts: 150, vRate: -10, reportTs: now - 5000 };
+  const entry = c.buildArrivalEntry(a, { destination: { iata: 'SFO' } }, 'SFO', 6);
+  assert.equal(entry.touchdownAtMs, a.reportTs + entry.etaMin * 60000);
+  now += 10000;
+  assert.equal(c.buildArrivalEntry(a, { destination: { iata: 'SFO' } }, 'SFO', 6).touchdownAtMs, entry.touchdownAtMs);
+});
+test('v248 review prefilter: high and distant traffic avoids go-around track analysis', () => {
+  const c = v248BoardContext(); let calls = 0;
+  c.core = { ...core, updateGoAround(...args) { calls++; return core.updateGoAround(...args); } };
+  c.buildLiveScheduleData('SFO',37.62,-122.375,[{ icao24: 'abc123', callsign: 'UAL123', lat: 37.62, lng: -122.375, altFt: 30000, reportTs: Date.now() },
+    { icao24: 'def456', callsign: 'UAL456', lat: 38.5, lng: -122.375, altFt: 1000, reportTs: Date.now() }]);
+  assert.equal(calls, 0);
+});
+test('v248 review ladder: overflow runways retain their labels and unknowns get a full lane', () => {
+  const c = v248BoardContext();
+  const html = c.buildApproachLadder({ arrivals: [{ hex: 'a', callsign: 'UAL1', runway: '10L', etaMin: 3 }], activeArrivalRunways: ['28L','28R','1L','1R','10L'] });
+  assert.match(html, /Runway 10L/); assert.doesNotMatch(html, /Runway unknown/);
+  const unknown = c.buildApproachLadder({ arrivals: [{ hex: 'b', callsign: 'UAL2', etaMin: 3 }] });
+  assert.match(unknown, /sched-ladder-unknown/); assert.match(unknown, /Runway unknown/);
+});
+test('v248 review layout: arrival altitude and summary ETA prefix remain visible', () => {
+  const c = v248BoardContext();
+  const row = { hex: 'abc123', callsign: 'UAL123', altFt: 1200, etaMin: 13, originIata: 'HNL', runway: '28L' };
+  const html = c.buildScheduleCardContent('SFO','San Francisco',{ arrivals: [row, { ...row, hex: 'def456' }], departures: [], landed: [] },'arrivals');
+  assert.match(html, /sched-alt[^>]*>1,200ft</);
+  assert.match(html, /sched-next-status[^>]*>.*ETA /);
+});
+test('v248 review order: eased display and sequence agree with row order', () => {
+  const c = v248BoardContext(); c.Date = class extends Date { static now() { return v248Now; } };
+  c._airportCountdowns = { a: { atMs: v248Now - 1000, remainingSec: 125 }, b: { atMs: v248Now - 1000, remainingSec: 115 } };
+  const data = { arrivals: [{ hex: 'a', runway: '28L', etaMin: 2 }, { hex: 'b', runway: '28L', etaMin: 2.1 }] };
+  c.syncAirportCountdowns(data);
+  assert.deepEqual(Array.from(data.arrivals, r => r.hex), ['b','a']);
+  assert.deepEqual(Array.from(data.arrivals, r => r.sequence), [1,2]);
+  assert.equal(data.arrivals[0].etaMin, 2.1, 'model ETA is retained for scoring');
+});
+test('v248 review order: countdown ticks reorder crossing displays and retain sequence ties', () => {
+  const c = v248BoardContext(); const now = v248Now + 1000;
+  c.Date = class extends Date { static now() { return now; } };
+  c._activeAirportIata = 'SFO'; c._activeAirportPopup = { getElement: () => ({ querySelectorAll: () => [] }) };
+  c.setTimeout = () => 1;
+  c._airportCountdowns = { a: { atMs: v248Now, remainingSec: 120, targetMs: now + 125000 },
+    b: { atMs: v248Now, remainingSec: 121, targetMs: now + 115000 } };
+  const data = { arrivals: [{ hex: 'a', runway: '28L', etaMin: 125 / 60, touchdownAtMs: now + 125000 },
+    { hex: 'b', runway: '28L', etaMin: 115 / 60, touchdownAtMs: now + 115000 }] };
+  c._airportPopupCache.SFO = { data };
+  c.renderSchedulePopup = () => c.syncAirportCountdowns(data);
+  c.tickAirportCountdowns();
+  assert.deepEqual(Array.from(data.arrivals, r => r.hex), ['b','a']);
+  const tied = { arrivals: [{ hex: 'b', runway: '28L', etaMin: 2, pathKm: 4 }, { hex: 'a', runway: '28L', etaMin: 2, pathKm: 3 }] };
+  c._airportCountdowns = {}; c.syncAirportCountdowns(tied);
+  assert.deepEqual(Array.from(tied.arrivals, r => r.sequence), [1,2]);
 });

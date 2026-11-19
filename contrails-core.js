@@ -935,9 +935,9 @@
     options = options || {};
     var state = Object.assign({ goAroundAtMs: null, lastTs: null }, previous);
     var elevation = options.fieldElevFt || 0;
-    function disarm() { state.armedAtMs = null; state.climbSamples = 0; state.lowAltFt = null; }
+    function disarm() { state.armedAtMs = null; state.climbSamples = 0; state.lowAltFt = null; state.descentSamples = 0; }
     function clear() { disarm(); state.goAroundAtMs = null; state.backAtMs = null; state.finalSamples = 0; }
-    if (state.goAroundAtMs != null && nowMs - state.goAroundAtMs >= 25 * 60000) clear();
+    if (options.departing || (state.backAtMs != null && nowMs > state.backAtMs + 5 * 60000)) clear();
     for (var i = 0; points && i < points.length; i++) {
       var p = points[i];
       if (!p || p[6] || !Number.isFinite(p[2]) || p[2] > nowMs || p[2] < nowMs - 180000 ||
@@ -954,7 +954,12 @@
       }
       var rate = (p[3] - before[3]) * 60000 / dt;
       var match = matchArrivalRunway({ lat: p[0], lng: p[1], track: bearingDegrees(before[0], before[1], p[0], p[1]) }, options.runways);
-      var finalApproach = match && (match.onFinal || match.onRunway) && rate < -100;
+      // A low point over the pavement is touchdown even when the ground bit is missing.
+      if (match && p[3] - elevation < 50 && pointOnRunway(p[0], p[1], match.runway.thresholdLat,
+          match.runway.thresholdLon, match.runway.farEndLat, match.runway.farEndLon, 0.06, 0).onRunway) {
+        clear(); continue;
+      }
+      var finalApproach = match && match.onFinal && !match.onRunway && rate < -100;
       var final = finalApproach && match.pathKm <= 6 && p[3] - elevation < 1500 && p[3] - elevation >= -100;
       if (state.goAroundAtMs != null) {
         state.finalSamples = finalApproach ? (state.finalSamples || 0) + 1 : 0;
@@ -962,9 +967,13 @@
         else continue;
       }
       if (options.departing) { disarm(); continue; }
+      state.descentSamples = final ? (state.descentSamples || 0) + 1 : 0;
       if (final) {
-        state.armedAtMs = p[2]; state.runway = match.runway.designator || null;
-        state.lowAltFt = p[3]; state.climbSamples = 0;
+        state.climbSamples = 0;
+        if (state.descentSamples >= 2) {
+          state.armedAtMs = p[2]; state.runway = match.runway.designator || null;
+          state.lowAltFt = p[3];
+        }
       } else if (state.armedAtMs != null && p[2] - state.armedAtMs <= 120000) {
         state.lowAltFt = Math.min(state.lowAltFt, p[3]);
         state.climbSamples = rate > 500 ? (state.climbSamples || 0) + 1 : 0;
@@ -980,7 +989,7 @@
     var result = (rows || []).map(function(row) { return Object.assign({}, row, { sequence: null }); });
     var groups = {};
     result.forEach(function(row) {
-      if (!row.runway || row.goAround) return;
+      if (!row.runway || row.runwayAssumed || row.goAround) return;
       var key = normalizeRunwayDesignator(row.runway);
       if (!key) return;
       (groups[key] || (groups[key] = [])).push(row);
@@ -988,8 +997,8 @@
     Object.keys(groups).forEach(function(key) {
       groups[key].sort(function(a, b) {
         var distance = Number.isFinite(a.pathKm) && Number.isFinite(b.pathKm) ? a.pathKm - b.pathKm : 0;
-        var etaA = Number.isFinite(a.etaMin) ? a.etaMin : Infinity;
-        var etaB = Number.isFinite(b.etaMin) ? b.etaMin : Infinity;
+        var etaA = Number.isFinite(a.displayEtaMin) ? a.displayEtaMin : Number.isFinite(a.etaMin) ? a.etaMin : Infinity;
+        var etaB = Number.isFinite(b.displayEtaMin) ? b.displayEtaMin : Number.isFinite(b.etaMin) ? b.etaMin : Infinity;
         return (etaA === etaB ? 0 : etaA - etaB) || distance || String(a.hex || a.callsign).localeCompare(String(b.hex || b.callsign));
       }).forEach(function(row, i) { row.sequence = i + 1; });
     });
@@ -1007,9 +1016,10 @@
     if (!previous) return { atMs: nowMs, targetMs: targetMs, remainingSec: desired };
     var elapsed = Math.max(0, (nowMs - previous.atMs) / 1000);
     var remaining = Math.max(0, previous.remainingSec - elapsed);
-    // Ease both earlier and later corrections; repeated render calls at the same time cannot compound them.
-    var step = Math.min(2, elapsed * 2);
-    remaining += Math.max(-step, Math.min(step, desired - remaining));
+    // Large model revisions snap once. Small later corrections can hold, but never tick upward.
+    // Repeated renders at the same time cannot compound easing.
+    if (Math.abs(desired - remaining) > 20) remaining = desired;
+    else remaining += Math.max(-Math.min(2, elapsed * 2), Math.min(elapsed, desired - remaining));
     return { atMs: nowMs, targetMs: targetMs, remainingSec: Math.max(0, remaining) };
   }
 
@@ -1069,26 +1079,29 @@
 
   function recordArrivalPrediction(records, observation) {
     var o = observation || {}, now = o.nowMs;
-    if (!o.airport || !o.hex || !Number.isFinite(now) || o.goAround) return records;
-    var day = new Date(now).toISOString().slice(0, 10);
-    var key = o.airport + ":" + o.hex + ":" + day;
+    if (!o.airport || !o.hex || !Number.isFinite(now)) return records;
+    var key = o.airport + ":" + o.hex + ":" + now;
     var index = -1;
-    // An unfinished arrival can cross UTC midnight; completed records never absorb a new day's flight.
+    // Match only a recent open approach; one airframe may land several times per day.
     for (var i = records.length - 1; i >= 0; i--) {
       var r = records[i];
       if (r.airport !== o.airport || r.hex !== o.hex) continue;
-      if (r.key === key || (r.actualAtMs == null && now >= r.lastSeenAtMs && now - r.lastSeenAtMs <= 30 * 60000)) { index = i; break; }
+      // A late feed/cache report must not reopen an already observed flight.
+      if (now < r.lastSeenAtMs || (r.actualAtMs != null && now <= r.actualAtMs)) return records;
+      if (r.actualAtMs == null && now >= r.lastSeenAtMs && now - r.lastSeenAtMs <= 30 * 60000) { index = i; break; }
     }
     var record = index < 0 ? null : records[index];
-    if (record && record.actualAtMs != null) return records;
+    // Aborted-approach forecasts must never be scored against a later touchdown.
+    if (o.goAround) return index < 0 ? records : records.filter(function(r, i) { return i !== index; });
     if (o.touchdown) {
       if (!record || !o.atAirport || now < record.lastSeenAtMs || now - record.lastSeenAtMs > 120000) return records;
       record = Object.assign({}, record, { actualAtMs: now });
     } else {
       if (!Number.isFinite(o.etaMin) || o.etaMin <= 0 || (record && now <= record.lastSeenAtMs)) return records;
+      var horizon = arrivalEtaHorizon(o.etaMin);
+      if (!record && !horizon) return records;
       record = Object.assign({}, record || { key: key, airport: o.airport, hex: o.hex, firstAtMs: now, actualAtMs: null, predictions: {} },
         { lastSeenAtMs: now });
-      var horizon = arrivalEtaHorizon(o.etaMin);
       if (horizon && !record.predictions[horizon]) {
         var predictedAt = Number.isFinite(o.predictionAtMs) ? o.predictionAtMs : now;
         record.predictions = Object.assign({}, record.predictions);
