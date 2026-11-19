@@ -22,7 +22,7 @@ export async function checkBoardLayouts(cdp, screenshot, { baseline = false } = 
           const source = { callsign: 'UAL123', hex: 'a00001', originIata: 'HNL', destIata: 'LAX', aircraftType: 'B738',
             altFt: 1200, etaMin: 2, reportTs: now, lat: 51.477, lng: -0.36, runway: '27R', sequence: 1 };
           const arrivals = Array.from({ length: scenario === 'landings' || scenario === 'go-around' ? 5 : scenario === 'long-eta' ? 3 : 0 }, (_, i) => ({
-            ...source, hex: 'a0000' + (i + 1), callsign: 'UAL' + ((scenario === 'long-eta' || scenario === 'go-around' ? 1234 : 123) + i), sequence: i + 1,
+            ...source, hex: 'a0000' + (i + 1), callsign: 'UAL' + ((scenario === 'go-around' ? 1234 : 123) + i), sequence: i + 1,
             etaMin: scenario === 'long-eta' ? [13,13,120][i] : 2 + i, touchdownAtMs: now + (scenario === 'long-eta' ? [13,13,120][i] : 2 + i) * 60000,
             goAround: scenario === 'go-around' && i === 3 }));
           const departures = scenario === 'takeoffs' ? [ { ...source, sequence: null, status: 'Departing', speedKts: 110 },
