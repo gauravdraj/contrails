@@ -1003,24 +1003,33 @@ async function budgets(origin) {
           'perf displacement disagrees with track: ' + b.hex);
     }
   }
-  const samples = await inPage((ticks, time) => {
-    const samples = [];
-    for (const t of ticks) {
-      const start = performance.now();
-      __watch.ingest(t, t.nowMs);
-      samples.push(performance.now() - start);
-    }
-    __watch.frame(time);
-    return samples;
-  }, ticks, EPOCH + 220000);
-  const p95 = percentile(samples, .95);
-  assert.ok(p95 <= 10, 'scene rebuild p95 ' + p95 + ' ms exceeds 10 ms');
+  // Shared CI runners are noisy: one cold page's p95 of 45 samples is decided by a stray GC/JIT pause. The gate is
+  // the median of three fresh-page p95s (the repo's perf rule: compare medians of >= 3 runs); the budget is unchanged.
+  const runP95s = [];
+  for (let run = 0; run < 3; run++) {
+    if (run)
+      await navigate(origin);
+    const samples = await inPage((ticks, time) => {
+      const samples = [];
+      for (const t of ticks) {
+        const start = performance.now();
+        __watch.ingest(t, t.nowMs);
+        samples.push(performance.now() - start);
+      }
+      __watch.frame(time);
+      return samples;
+    }, ticks, EPOCH + 220000);
+    runP95s.push(percentile(samples, .95));
+  }
+  const p95 = percentile(runP95s, .5);
+  assert.ok(p95 <= 10, 'scene rebuild p95 (median of 3 runs ' + JSON.stringify(runP95s) + ') ' + p95 + ' ms exceeds 10 ms');
   const roles = await cdp.evaluate('Object.fromEntries(["arrival","departure","taxi","landed","other"].map(r=>[r,__watch.scene.items.filter(a=>a.role===r).length]))');
   const histories = await cdp.evaluate('Math.min(...Object.values(extraState).map(e=>e.samples.length))');
   assert.equal(histories, 45, 'every perf aircraft must have a real 220-second history');
   console.log(JSON.stringify({
     aircraft: 300,
     sceneRebuildP95Ms: +p95.toFixed(3),
+    sceneRebuildRunP95sMs: runP95s.map(v => +v.toFixed(3)),
     roles, historyPointsPerAircraft: histories
   }));
   return '20 arrivals / 15 departures / 60 apron / 205 overflights; speed/track verified; 220 s histories; p95 ≤ 10 ms';
