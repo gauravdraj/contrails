@@ -1562,9 +1562,10 @@ var AIRLINES_DATA = {"airlines":{"AAL":{"name":"American","iata":"AA"},"AAR":{"n
         closing = Math.cos((state.track - bearingDegrees(state.lat, state.lng, nearest[1], nearest[2])) * Math.PI / 180) > 0.5;
       }
       if (!atOrigin && !atDest) {
+        // Only a real descent toward another airport counts: a "low and closing" rule without a descent also
+        // caught departures passing a neighbour (DAL->LAS near DFW), so it was removed (v2.47 review round 2).
         contradiction = !!((state.ground && nearestKm < 8) ||
-          (closing === true && destFar && ((agl != null && agl < 5000 && nearestKm < 25) ||
-            (low && state.vRate < -300))));
+          (closing === true && destFar && low && state.vRate < -300));
       }
     }
     // Distance to the minor great-circle segment, including its endpoints (not the infinite great circle).
@@ -4260,6 +4261,9 @@ function processAircraft(ac, feedNow) {
 // re-sent every poll and crowd everything else out of the 20-plane request.
 var routeRetryAt = {};
 var ROUTE_MISS_RETRY_MS = 10 * 60 * 1000;
+// Routes this client rejected as contradictory: no FR24 search sweep for them for 60 s. Kept apart from
+// routeRetryAt so an ordinary Worker miss can still be rescued by the sweep right away.
+var routeRejectedUntil = {};
 var routesetPending = null;
 var routeEvidenceMemo = new Map();
 
@@ -4358,7 +4362,7 @@ function mergeRoutesetEntries(routes, sourcePlanes) {
     var routePlane = aircraft.find(function(a) { return a.callsign === r.callsign; }) ||
       sourcePlanes.find(function(a) { return a.callsign === r.callsign; });
     var checked = routeForAircraft(routePlane, r);
-    if (checked !== r) routeRetryAt[r.callsign] = fetchedAt + 60000;
+    if (checked !== r) routeRetryAt[r.callsign] = routeRejectedUntil[r.callsign] = fetchedAt + 60000;
     if (!checked) { if (routePlane) validateCachedRoute(routePlane); continue; }
     r = checked;
     if (r.destSource === "adsbdb" || r.originSource === "adsbdb") adsbdbCallsigns.push(r.callsign);
@@ -5630,7 +5634,7 @@ function proactiveFr24SearchSweep() {
   for (var i = 0; i < aircraft.length; i++) {
     var a = aircraft[i];
     if (!a.callsign || a.private) continue;
-    if (fr24SearchPending[a.callsign] || routeRetryAt[a.callsign] > now) continue;
+    if (fr24SearchPending[a.callsign] || routeRejectedUntil[a.callsign] > now) continue;
     if (fr24SearchFailed[a.callsign] && now - fr24SearchFailed[a.callsign] < 120000) continue;
     if (isLikelyPrivateCallsign(a.callsign)) continue;
     var rc = validateCachedRoute(a);

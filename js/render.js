@@ -510,7 +510,7 @@ function proactiveFr24SearchSweep() {
   for (var i = 0; i < aircraft.length; i++) {
     var a = aircraft[i];
     if (!a.callsign || a.private) continue;
-    if (fr24SearchPending[a.callsign] || routeRetryAt[a.callsign] > now) continue;
+    if (fr24SearchPending[a.callsign] || routeRejectedUntil[a.callsign] > now) continue;
     if (fr24SearchFailed[a.callsign] && now - fr24SearchFailed[a.callsign] < 120000) continue;
     if (isLikelyPrivateCallsign(a.callsign)) continue;
     var rc = validateCachedRoute(a);

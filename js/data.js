@@ -359,6 +359,9 @@ function processAircraft(ac, feedNow) {
 // re-sent every poll and crowd everything else out of the 20-plane request.
 var routeRetryAt = {};
 var ROUTE_MISS_RETRY_MS = 10 * 60 * 1000;
+// Routes this client rejected as contradictory: no FR24 search sweep for them for 60 s. Kept apart from
+// routeRetryAt so an ordinary Worker miss can still be rescued by the sweep right away.
+var routeRejectedUntil = {};
 var routesetPending = null;
 var routeEvidenceMemo = new Map();
 
@@ -457,7 +460,7 @@ function mergeRoutesetEntries(routes, sourcePlanes) {
     var routePlane = aircraft.find(function(a) { return a.callsign === r.callsign; }) ||
       sourcePlanes.find(function(a) { return a.callsign === r.callsign; });
     var checked = routeForAircraft(routePlane, r);
-    if (checked !== r) routeRetryAt[r.callsign] = fetchedAt + 60000;
+    if (checked !== r) routeRetryAt[r.callsign] = routeRejectedUntil[r.callsign] = fetchedAt + 60000;
     if (!checked) { if (routePlane) validateCachedRoute(routePlane); continue; }
     r = checked;
     if (r.destSource === "adsbdb" || r.originSource === "adsbdb") adsbdbCallsigns.push(r.callsign);
