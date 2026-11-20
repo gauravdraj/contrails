@@ -59,6 +59,8 @@ export function fixtureFetch(calls, realFetch = null, localOrigin = null) {
       body = url.pathname.includes("/51.") ? fixtures.liveInbound.adsbGrid : fixtures.airports.SFO.traffic;
     } else if (url.hostname.includes("adsbdb")) {
       body = { response: { flightroute: {} } };
+    } else if (url.hostname === "api.planespotters.net") {
+      body = { photos: [] };
     } else if (url.hostname.includes("globe.adsb")) {
       return new Response("", { status: 404 });
     } else throw new Error("Unexpected upstream URL: " + url);

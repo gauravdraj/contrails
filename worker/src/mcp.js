@@ -1,5 +1,6 @@
 import { json, CORS_HEADERS, readBodyCapped } from "./http.js";
-import { handleNearby } from "./nearby.js";
+import { handleNearby, findRecentPasses } from "./nearby.js";
+import { photoFor } from "./photo.js";
 import { getBoard, filterBoard, boardOptions } from "./board.js";
 import { resolveFlight, makeWatchUrl } from "./flight.js";
 import { ApiError, airportFor, clean, flightQuery } from "./sp-api.js";
@@ -18,6 +19,9 @@ export const TOOLS = [
     inputSchema: schema({ ident, airport: iata }, ["ident"]), annotations },
   { name: "planes_nearby", description: "Use to identify nearby planes. Pass the phone's coordinates from the situation line. If the fix is older than 15 minutes or the owner is flying, say so instead of guessing. Coordinates are rounded to 0.01 degree; at most five planes.",
     inputSchema: schema({ lat: { type: "number", minimum: -90, maximum: 90 }, lng: { type: "number", minimum: -180, maximum: 180 } }, ["lat", "lng"]), annotations },
+  { name: "plane_just_passed", description: "Use when he says a plane just flew past, over or by him, or asks what that plane was. Pass the phone's coordinates from the situation line. Estimates each plane's closest approach over the last few minutes (and the next two) from its current heading and speed, so a plane that turned can be placed wrong. Returns up to three, already-passed first, each with a Planespotters photo when one exists. Download the photo and attach it as a file instead of sending links.",
+    inputSchema: schema({ lat: { type: "number", minimum: -90, maximum: 90 }, lng: { type: "number", minimum: -180, maximum: 180 },
+      minutes: { type: "integer", minimum: 1, maximum: 10, default: 4, description: "How far back to look." } }, ["lat", "lng"]), annotations },
   { name: "next_big", description: "Use for the next large aircraft at an airport. Big means widebody or quadjet, including cargo; named types (for example A380,747) override size. Live snapshot rows first, then upcoming schedule; at most three results.",
     inputSchema: schema({ iata, direction: { ...direction(["arrivals", "departures"]), default: "arrivals" }, types: { type: "string", maxLength: 71, description: "Up to eight comma-separated aircraft types." } }, ["iata"]), annotations },
   { name: "track_flight", description: "Use when asked to follow a flight. Resolves its current state and returns a URL watcher recipe; does not start a watch. Keep at most three flight watches, ignore lower ranks and transient 503s, and stop at the done marker. A destination is required.",
@@ -125,6 +129,28 @@ export async function callTool(name, args, url, env, ctx, deps = {}) {
     if (!planes.length) lines.push("No aircraft detected nearby.");
     const text = lines.join("\n");
     return result(text, { ...raw, planes, text });
+  }
+  if (name === "plane_just_passed") {
+    const lat = Math.round(args.lat * 100) / 100, lng = Math.round(args.lng * 100) / 100;
+    const passes = await (deps.findRecentPasses || findRecentPasses)(lat, lng, args.minutes ?? 4, env, ctx);
+    const photos = await Promise.all(passes.map(pass => (deps.photoFor || photoFor)(pass.icao24, ctx)));
+    const planes = passes.map((pass, index) => ({ ...sanitizeObject({ ...pass,
+      routeLine: typeof pass.routeLine === "string" ? pass.routeLine.replace(/->|[→⟶–—]|\s-\s/g, " to ") : pass.routeLine }),
+    photo: photos[index] ? { src: photos[index].src, photographer: clean(photos[index].photographer) } : null }));
+    const lines = ["Closest approaches, estimated from current heading."];
+    for (const [index, plane] of planes.entries()) {
+      const { offsetSec, miles, direction, altFt } = plane.closest;
+      const when = offsetSec > 0 ? `passing in about ${Math.max(1, Math.round(offsetSec / 60))} min` :
+        offsetSec >= -45 ? "closest just now" : `passed about ${Math.round(-offsetSec / 60)} min ago`;
+      const line = `${index + 1}. ` + [plane.name || plane.callsign || "Unknown", plane.type, plane.priv ? null : plane.registration,
+        plane.routeLine, `${when}, ${miles} mi ${direction} at ${altFt} ft`,
+        plane.photo ? `photo ${plane.photo.src}${plane.photo.photographer ? " by " + plane.photo.photographer : ""}` : "no photo"]
+        .filter(Boolean).join(", ") + ".";
+      if (lines.join("\n").length + line.length + 1 > 600) break;
+      lines.push(line);
+    }
+    if (!planes.length) lines.push("No aircraft passed close by in that window.");
+    return result(lines.join("\n"), { schemaVersion: 1, kind: "passes", minutes: args.minutes ?? 4, planes });
   }
   const eta = args.eta_min ?? 10;
   const resolved = await (deps.resolveFlight || resolveFlight)(args.ident, { airport: args.airport, eta, origin: url.origin }, env, ctx, deps);

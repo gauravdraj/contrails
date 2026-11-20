@@ -10,7 +10,7 @@ const request = (message, method = "POST") => new Request("http://localhost:8787
 });
 const rpc = (method, params, id = 1) => ({ jsonrpc: "2.0", id, method, ...(params ? { params } : {}) });
 const toolArgs = { airport_board: { iata: "LHR" }, flight_status: { ident: "BA305", airport: "LHR" },
-  planes_nearby: { lat: 51.47123, lng: -0.46123 }, next_big: { iata: "LHR" }, track_flight: { ident: "BA305", airport: "LHR" } };
+  planes_nearby: { lat: 51.47123, lng: -0.46123 }, plane_just_passed: { lat: 51.47123, lng: -0.46123 }, next_big: { iata: "LHR" }, track_flight: { ident: "BA305", airport: "LHR" } };
 
 for (const version of ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05", "1900-01-01"]) {
   test("MCP initialize negotiates " + version, async () => {
@@ -41,7 +41,7 @@ test("MCP preflight adds protocol headers without changing global CORS", async (
   assert.equal(mcp.status, 200); assert.match(mcp.headers.get("Access-Control-Allow-Headers"), /Mcp-Protocol-Version/);
   assert.equal(legacy.headers.get("Access-Control-Allow-Headers"), "Content-Type");
 });
-test("MCP ping and five tool schemas", async () => {
+test("MCP ping and six tool schemas", async () => {
   const ping = await (await worker.fetch(request(rpc("ping", null, "ping-id")), {}, {})).json();
   assert.deepEqual(ping, { jsonrpc: "2.0", id: "ping-id", result: {} });
   const body = await (await worker.fetch(request(rpc("tools/list")), {}, {})).json();
@@ -99,7 +99,7 @@ for (const [message, code, status] of [
 for (const [name, args] of [
   ["airport_board", { iata: "LHR", limit: 11 }], ["airport_board", { iata: "ZZZ" }], ["airport_board", { iata: "LHR", extra: 1 }],
   ["flight_status", { ident: "<script>" }], ["flight_status", {}], ["planes_nearby", { lat: "51", lng: 0 }],
-  ["planes_nearby", { lat: 91, lng: 0 }], ["next_big", { iata: "LHR", direction: "both" }],
+  ["planes_nearby", { lat: 91, lng: 0 }], ["plane_just_passed", { lat: 37.4, lng: -122, minutes: 11 }], ["next_big", { iata: "LHR", direction: "both" }],
   ["next_big", { iata: "LHR", types: "!" }], ["track_flight", { ident: "BA305", eta_min: 31 }],
 ]) test("MCP invalid arguments are tool errors: " + JSON.stringify([name, args]), async t => {
   const { ctx, calls } = installFixtures(t);

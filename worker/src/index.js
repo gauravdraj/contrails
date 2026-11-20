@@ -5,19 +5,15 @@ import { fetchCachedRouteEntry, fetchCachedAircraft, normalizeCallsign } from ".
 import { CORS_HEADERS, json, readBodyCapped } from "./http.js";
 import { handleAirport } from "./airport.js";
 import { handleNearby } from "./nearby.js";
+import { handlePhoto } from "./photo.js";
 import { mergeRoutes, detectPhase, formatRouteLabel } from "./routes.js";
 import { fetchTrace } from "./traces.js";
 import { configureRelay } from "./providers.js";
 import { loadTraffic, loadLookup, loadSchedule, loadDatis, loadSearch, normalizeDatisAirportCode, publicScheduleResponse } from "./loaders.js";
 export { snapAdsbGrid } from "./loaders.js";
 
-const PLANESPOTTERS_API = "https://api.planespotters.net/pub/photos";
-
-const PHOTO_CACHE_TTL = 86400;
 const ADSBDB_CACHE_TTL = 3600;
 const AIRCRAFT_CACHE_TTL = 2592000;
-
-const CONTACT_USER_AGENT = "contrails/1.0 (+https://gauravdraj.github.io/contrails/)";
 
 // Upstream feeds serve at most 250 NM (adsb.fi rejects anything above it).
 const ADSB_MAX_DIST_NM = 250;
@@ -128,43 +124,6 @@ async function proxyAdsbLookup(url, ctx) {
   if (!ADSB_LOOKUP_PATTERNS[kind].test(value)) return json(400, { error: "Invalid " + kind });
 
   return (await loadLookup(kind, value, ctx)).response;
-}
-
-async function handlePhoto(url, ctx) {
-  const hex = url.pathname.split("/").pop().toLowerCase();
-  if (!/^[0-9a-f]{6}$/.test(hex)) return json(400, { error: "Invalid hex" });
-
-  const cache = caches.default;
-  // Canonical key: query strings and hex case must not bust the cache.
-  const cacheKey = new Request("https://photo-cache/" + hex);
-  const cached = await cache.match(cacheKey);
-  if (cached) return cached;
-
-  try {
-    const resp = await fetch(`${PLANESPOTTERS_API}/hex/${hex}`, {
-      headers: { "User-Agent": CONTACT_USER_AGENT },
-    });
-    if (!resp.ok) throw new Error("HTTP " + resp.status);
-
-    const data = await resp.json();
-    const photo = (data.photos || [])[0];
-    const result = photo
-      ? {
-          src: (photo.thumbnail_large || photo.thumbnail || {}).src || null,
-          width: (photo.thumbnail_large || photo.thumbnail || {}).size?.width || null,
-          height: (photo.thumbnail_large || photo.thumbnail || {}).size?.height || null,
-          link: photo.link || null,
-          photographer: photo.photographer || null,
-        }
-      : null;
-
-    const response = json(200, result);
-    response.headers.set("Cache-Control", `s-maxage=${PHOTO_CACHE_TTL}`);
-    ctx.waitUntil(cache.put(cacheKey, response.clone()));
-    return response;
-  } catch (error) {
-    return json(502, { error: error.message });
-  }
 }
 
 async function handleTrack(url, env, ctx) {

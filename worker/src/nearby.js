@@ -282,8 +282,104 @@ export async function handleNearby(url, env, ctx) {
   return nearbyHtml(body, mapLink);
 }
 
+const PASS_STEP_SEC = 5;
+const PASS_AHEAD_SEC = 120;
+const PASS_MAX_SLANT_KM = 10;
+const MAX_PASS_RESULTS = 3;
+const KM_PER_DEG_LAT = 111.32;
+const PASS_MIN_ALT_FT = 100;
+
+// Straight-line dead reckoning from the latest fix: a plane that turned during the
+// window is placed where it would have been on its current heading, not its real path.
+// Points the climb or descent puts below ground are skipped: the plane was on a runway then.
+function buildPass(lat, lng, snapshot, windowSec) {
+  if (!snapshot || typeof snapshot !== "object") return null;
+  if (typeof snapshot.alt_baro !== "number" || typeof snapshot.lat !== "number" || typeof snapshot.lon !== "number") return null;
+  if (typeof snapshot.gs !== "number" || typeof snapshot.track !== "number" || isStalePosition(snapshot)) return null;
+
+  const ageSec = typeof snapshot.seen_pos === "number" ? snapshot.seen_pos : 0;
+  const kmPerSec = snapshot.gs * 1.852 / 3600;
+  const trackRad = snapshot.track * Math.PI / 180;
+  const ftPerSec = typeof snapshot.baro_rate === "number" ? snapshot.baro_rate / 60 : 0;
+  const cosLat = Math.cos(snapshot.lat * Math.PI / 180);
+  const at = offsetSec => {
+    const dt = offsetSec + ageSec;
+    const pLat = snapshot.lat + kmPerSec * dt * Math.cos(trackRad) / KM_PER_DEG_LAT;
+    const pLng = snapshot.lon + kmPerSec * dt * Math.sin(trackRad) / (KM_PER_DEG_LAT * cosLat);
+    const altFt = snapshot.alt_baro + ftPerSec * dt;
+    if (altFt < PASS_MIN_ALT_FT) return null;
+    const groundKm = haversineKm(lat, lng, pLat, pLng);
+    const altKm = altFt * 0.0003048;
+    return { lat: pLat, lng: pLng, altFt, slantKm: Math.sqrt(groundKm * groundKm + altKm * altKm) };
+  };
+
+  let best = null;
+  for (let offset = -windowSec; offset <= PASS_AHEAD_SEC; offset += PASS_STEP_SEC) {
+    const point = at(offset);
+    if (point && (!best || point.slantKm < best.slantKm)) best = { ...point, offsetSec: offset };
+  }
+  if (!best || best.slantKm > PASS_MAX_SLANT_KM) return null;
+
+  const callsign = typeof snapshot.flight === "string" ? (snapshot.flight.trim() || null) : null;
+  return {
+    callsign,
+    icao24: snapshot.hex,
+    type: snapshot.t || null,
+    registration: snapshot.r || null,
+    lat: snapshot.lat,
+    lng: snapshot.lon,
+    altFt: Math.round(snapshot.alt_baro),
+    track: Math.round(snapshot.track),
+    speedKts: Math.round(snapshot.gs),
+    vertical: verticalState(snapshot.baro_rate),
+    priv: isLikelyPrivate(callsign),
+    airline: nearbyAirlineName(callsign),
+    closest: {
+      offsetSec: best.offsetSec,
+      slantKm: Math.round(best.slantKm * 10) / 10,
+      miles: shortMiles(best.slantKm),
+      altFt: Math.round(best.altFt / 25) * 25,
+      direction: cardinalFromBearing(bearingDeg(lat, lng, best.lat, best.lng)),
+    },
+  };
+}
+
+function comparePasses(left, right) {
+  const leftAhead = left.closest.offsetSec > 0;
+  const rightAhead = right.closest.offsetSec > 0;
+  if (leftAhead !== rightAhead) return leftAhead ? 1 : -1;
+  return left.closest.slantKm - right.closest.slantKm;
+}
+
+export async function findRecentPasses(lat, lng, minutes, env, ctx) {
+  const acData = await fetchNearbyAircraft(lat, lng);
+  const passes = [];
+  for (const snapshot of acData.ac || []) {
+    try {
+      const pass = buildPass(lat, lng, snapshot, minutes * 60);
+      if (pass) passes.push(pass);
+    } catch (_) {}
+  }
+  passes.sort(comparePasses);
+  const top = passes.slice(0, MAX_PASS_RESULTS);
+
+  let routeMap = Object.create(null);
+  try {
+    routeMap = await enrichRoutes(top, env, ctx);
+  } catch (_) {
+    routeMap = Object.create(null);
+  }
+  return top.map(pass => ({
+    ...pass,
+    name: nearbyDisplayName(pass),
+    routeLine: formatRouteContext(pass, routeMap[pass.callsign?.trim().toUpperCase()]),
+  }));
+}
+
 export const __nearbyTest = {
   buildNearbyDisplay,
   buildNearbyPlane,
+  buildPass,
+  comparePasses,
   selectVisiblePlanes,
 };

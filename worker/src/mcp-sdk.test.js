@@ -8,7 +8,7 @@ import worker from "./index.js";
 import { installFixtures } from "../test-fixtures/sp-api/helpers.js";
 
 const sdkDir = process.env.MCP_SDK_DIR;
-test("official MCP SDK connects, lists tools and calls all five over HTTP", {
+test("official MCP SDK connects, lists tools and calls all six over HTTP", {
   skip: sdkDir ? false : "Set MCP_SDK_DIR to run official SDK conformance (SDK 1.32.2).",
 }, async t => {
   // A configured but missing SDK is an installation failure, never a skip.
@@ -42,9 +42,9 @@ test("official MCP SDK connects, lists tools and calls all five over HTTP", {
   await client.connect(transport);
   assert.equal(transport.sessionId, undefined);
   const listed = await client.listTools();
-  assert.equal(listed.tools.length, 5);
+  assert.equal(listed.tools.length, 6);
   const args = { airport_board: { iata: "LHR" }, flight_status: { ident: "BA305", airport: "LHR" },
-    planes_nearby: { lat: 51.47, lng: -0.46 }, next_big: { iata: "LHR", types: "A380,747" },
+    planes_nearby: { lat: 51.47, lng: -0.46 }, plane_just_passed: { lat: 51.47, lng: -0.46 }, next_big: { iata: "LHR", types: "A380,747" },
     track_flight: { ident: "BA305", airport: "LHR", eta_min: 10 } };
   for (const tool of listed.tools) {
     const result = await client.callTool({ name: tool.name, arguments: args[tool.name] });
