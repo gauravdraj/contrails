@@ -1,8 +1,15 @@
 name: CI
 
+# Branches with an open PR are covered by the pull_request run; also running on
+# push doubled every run (and every failure email) for agent branches.
 on:
   push:
+    branches: [main]
   pull_request:
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   verify:
