@@ -1,8 +1,15 @@
 name: CI
 
+# Branches with an open PR are covered by the pull_request run; also running on
+# push doubled every run (and every failure email) for agent branches.
 on:
   push:
+    branches: [main]
   pull_request:
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   verify:
@@ -19,6 +26,7 @@ jobs:
       - run: node --test worker/src/*.test.js
         env:
           MCP_SDK_DIR: ${{ runner.temp }}/mcpsdk
+      - run: node --test scripts/board-replay.test.mjs
       - run: node --test scripts/healthcheck.test.mjs
       - run: node smoke-boot.mjs
       - run: python3 -m unittest discover -s relay -p 'test_*.py'

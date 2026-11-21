@@ -30,9 +30,6 @@
     for (var src of [
       '../contrails-core.js',
       'shim.js',
-      '../js/data.js',
-      '../js/render.js',
-      '../js/airport-board.js',
       'project.js',
       'theme.js',
       'scene.js',

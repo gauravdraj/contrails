@@ -138,8 +138,10 @@ URL: `https://home-server.tail7af116.ts.net:8790/_watch/?airport=SFO`.
   it.
 
 ## Deferred
-- **Lifting the board.** Move `buildLiveScheduleData` into core as a pure function shared by the board and the watch
-  page. Until then, a rename in `airport-board.js` breaks the page; parity in CI catches it.
+- **Shoreline detail.** Done 2026-11-20: Natural Earth replaced by US Census TIGER/Line 2023 (public domain), built by
+  `scripts/build-watch-geo.mjs` and simplified in the fisheye projection; no attribution line needed.
+- **Lifting the board.** Done 2026-11-20: the board is in `contrails-core.js` and the page no longer loads the `js/`
+  scripts (`2026-11-20-shared-board-core-design.md`).
 - **Data and modes.**
   - `/routeset` origins for non-scheduled traffic;
   - an airport picker UI;
