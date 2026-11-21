@@ -17,8 +17,22 @@ function difference(expected, actual, path = '$') {
   }
   return null;
 }
+// Goldens were generated on Node 24. V8's Math.sin/cos/atan2 can differ from older majors in the last bits, so under
+// another major (CI runs Node 22) numbers may differ by a few ulps: compare structure and key order exactly and numbers
+// to a 1e-9 relative tolerance there. On the generating major the comparison stays byte-for-byte.
+export const GOLDEN_NODE_MAJOR = 24;
+const strict = Number(process.versions.node.split('.')[0]) === GOLDEN_NODE_MAJOR;
+function close(expected, actual) {
+  if (typeof expected === 'number' && typeof actual === 'number')
+    return Object.is(expected, actual) || Math.abs(expected - actual) <= 1e-9 * Math.max(1, Math.abs(expected), Math.abs(actual));
+  if (!expected || !actual || typeof expected !== 'object' || typeof actual !== 'object') return Object.is(expected, actual);
+  const ek = Object.keys(expected), ak = Object.keys(actual);
+  return ek.length === ak.length && Array.isArray(expected) === Array.isArray(actual) &&
+    ek.every((key, i) => key === ak[i] && close(expected[key], actual[key]));
+}
 export function assertBytes(actual, expected, label) {
   if (actual === expected) return;
+  if (!strict && typeof actual === 'string' && typeof expected === 'string' && close(JSON.parse(expected), JSON.parse(actual))) return;
   if (typeof actual !== 'string' || typeof expected !== 'string')
     throw new Error(`${label}: missing JSON bytes; expected ${short(expected)}, actual ${short(actual)}`);
   let at = 0;
