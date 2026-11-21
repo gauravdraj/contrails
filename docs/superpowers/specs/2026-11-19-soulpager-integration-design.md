@@ -10,15 +10,10 @@ The contrails Worker owns all aviation logic. It exposes three REST endpoints an
 the same origin (`https://contrails-api.therealgraj.workers.dev`). soul-pager adds a URL MCP entry, a keyword row
 and a small watcher rule; it implements no aviation logic.
 
-**The board is the PWA's real board code.** Workers forbid `eval`, so `worker/build-board-runtime.mjs` wraps the
-unmodified classic scripts (`js/data.js`, `js/render.js`, `js/airport-board.js`, plus the `core.*` globals from
-`js/app-core.js`) in an ES-module factory, `worker/src/board-runtime.generated.js` (committed, like
-`app.bundle.js`). Each board build makes a fresh runtime, so nothing carries over between requests. A vm parity test
-checks that the generated strict module gives the same output as the sloppy-mode scripts.
-
-**Coupling to note:** an edit to any of those four `js/` files must be followed by
-`node worker/build-board-runtime.mjs`. CI fails until it is. The regenerated file is under `worker/`, so the merge
-redeploys the Worker.
+**The board is the PWA's real board code.** Since 2026-11-20 the board computation lives in `contrails-core.js` as
+pure functions (see `2026-11-20-shared-board-core-design.md`). `worker/src/board.js` calls them with a fresh state per
+computation, so nothing carries over between requests. The former generated runtime and its regeneration step are gone;
+the replay suite (`scripts/board-replay.test.mjs`) checks the Worker against the PWA's goldens.
 
 ## Endpoints
 
