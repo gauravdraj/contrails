@@ -26,7 +26,8 @@ These are the binding decisions, merged from the Fable and Astra scoping specs.
   - **Chart.** A north-up plan view with a compressive radial scale (`asinh`), so the runways and the ~50 NM
     approach streams fit one disc. On top of it:
     - stylised runways;
-    - a vendored Natural Earth shoreline (public domain);
+    - a vendored shoreline: US Census TIGER/Line 2023 land faces, dissolved and simplified in the chart's own fisheye
+      projection (public domain; no attribution). Natural Earth 10m, used in v1, was blocky at the field (11-20);
     - aircraft darts over a ground shadow lifted by altitude.
   - **Tide strip (the ladder reborn).** Arrivals by minutes to touchdown sit on one side of a "now / runway" line,
     and departures by minutes since liftoff on the other. The same sequence numeral marks the dart and its bead.
@@ -132,8 +133,6 @@ URL: `https://home-server.tail7af116.ts.net:8790/_watch/?airport=SFO`.
   it.
 
 ## Deferred
-- **Shoreline detail.** Natural Earth 10m is coarse, and the fisheye centre magnifies its segments near the field.
-  An OSM shoreline would be sharper but needs an attribution line.
 - **Lifting the board.** Move `buildLiveScheduleData` into core as a pure function shared by the board and the watch
   page. Until then, a rename in `airport-board.js` breaks the page; parity in CI catches it.
 - **Data and modes.**
