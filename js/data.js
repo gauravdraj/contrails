@@ -198,78 +198,9 @@ function takeBootPrefetch(circle) {
 }
 
 function buildAircraftSnapshot(ac, options) {
-  options = options || {};
-  var now = options.now != null ? options.now : Date.now();
-  var positionNow = options.positionNow != null ? options.positionNow : now;
-  var includeProximity = options.includeProximity !== false;
-  var snapshot = [];
-  var activeIds = {};
-  for (var i = 0; i < ac.length; i++) {
-    var s = ac[i];
-    // One malformed row (null, non-numeric position) is skipped rather than failing the whole poll.
-    if (!isUsableTrafficRow(s)) continue;
-    var hex = normalizeAircraftHex(s.hex);
-    var isGround = s.alt_baro === "ground";
-    var typeCode = typeof s.t === "string" ? s.t : null;
-    if (!hex) continue;
-    if (!isGround && s.alt_baro == null) continue;
-    if (s.lat == null || s.lon == null) continue;
-    if (s.category && /^C/.test(s.category)) continue;
-    if (sizeClass(typeCode, s.category || null) === "heli") continue;
-    if (s.seen != null && s.seen > 15) continue;
-    var heading = s.track != null ? s.track : (s.true_heading != null ? s.true_heading : s.mag_heading);
-    if (isGround && heading == null) continue;
-    if (activeIds[hex]) continue;
-
-    var callsign = (typeof s.flight === "string" ? s.flight.trim() : "") || null;
-    var priv = isPrivate(callsign, typeCode, s.category || null);
-    var squawk = s.squawk || null;
-    var emerg = typeof s.emergency === "string" && s.emergency && s.emergency !== "none" ? s.emergency : null;
-    var baseBearing = s.dir != null ? s.dir : (heading != null ? heading : 0);
-    var metrics = includeProximity ? proximityMetrics(s.lat, s.lon, baseBearing) : null;
-    var viewDistKm = includeProximity ? viewportDistanceKm(s.lat, s.lon) : null;
-    var altFt = isGround ? null : (typeof s.alt_baro === "number" ? Math.round(s.alt_baro) : null);
-    var slantDistanceKm = includeProximity && metrics && metrics.distKm != null ? slantKm(metrics.distKm, altFt) : null;
-    var reportTs = positionNow - Math.max(0, (s.seen_pos || 0) * 1000);
-    activeIds[hex] = true;
-
-    snapshot.push({
-      icao24: hex,
-      callsign: callsign,
-      aircraftType: typeCode,
-      category: s.category || null,
-      registration: s.r || null,
-      lat: s.lat, lng: s.lon,
-      altFt: altFt,
-      ground: isGround,
-      speedKts: s.gs != null ? Math.round(s.gs) : null,
-      track: heading,
-      vRate: s.baro_rate != null ? s.baro_rate / 60 : null,
-      distKm: metrics ? metrics.distKm : null,
-      slantKm: slantDistanceKm != null ? roundTenths(slantDistanceKm) : null,
-      viewDistKm: viewDistKm != null ? roundTenths(viewDistKm) : null,
-      bearingDeg: metrics ? metrics.bearingDeg : baseBearing,
-      cardinal: metrics ? metrics.cardinal : cardinalDir(baseBearing),
-      private: priv,
-      mach: s.mach || null,
-      ias: s.ias != null ? Math.round(s.ias) : null,
-      oat: s.oat != null ? Math.round(s.oat) : null,
-      windDir: s.wd != null ? Math.round(s.wd) : null,
-      windSpd: s.ws != null ? Math.round(s.ws) : null,
-      navAlt: s.nav_altitude_mcp || s.nav_altitude_fms || null,
-      squawk: squawk,
-      emergency: emerg,
-      reportTs: reportTs,
-      seen: s.seen != null ? s.seen : null,
-      seenPos: s.seen_pos != null ? s.seen_pos : null,
-      roll: s.roll != null ? Math.round(s.roll * 10) / 10 : null
-    });
-  }
-  return {
-    aircraft: snapshot,
-    activeIds: activeIds,
-    now: now
-  };
+  return core.buildTrafficSnapshot({ now: Date.now(), isPrivate: isPrivate,
+    proximityMetrics: typeof proximityMetrics === "function" ? proximityMetrics : undefined,
+    viewportDistanceKm: typeof viewportDistanceKm === "function" ? viewportDistanceKm : undefined }, ac, options);
 }
 
 // seen_pos is relative to the feed's snapshot time, not to when the response reached us: the Worker can
@@ -365,6 +296,16 @@ var routeRejectedUntil = {};
 var routesetPending = null;
 var routeEvidenceMemo = new Map();
 
+function routeEvidenceEnvironment() {
+  return {
+    core: core, now: Date.now(), routeCache: routeCache,
+    posHistory: typeof posHistory !== "undefined" ? posHistory : undefined,
+    airportData: typeof airportData !== "undefined" ? airportData : null,
+    routeEvidenceMemo: routeEvidenceMemo, routeRetryAt: routeRetryAt, routeRejectedUntil: routeRejectedUntil,
+    routeForAircraft: routeForAircraft, formatClientRouteLabel: formatClientRouteLabel
+  };
+}
+
 function buildRouteFetchPayload(sourcePlanes, options) {
   options = options || {};
   var picked = selectRouteFetchPlanes(sourcePlanes, routeCache, {
@@ -406,46 +347,11 @@ function noteRouteMisses(needed, routes) {
 
 // Validate again against the current observation: routes can outlive a leg or arrive after a slow request.
 function routeForAircraft(a, entry) {
-  if (!a || !entry) return entry;
-  var history = typeof posHistory !== "undefined" && posHistory[a.icao24];
-  var now = Date.now();
-  var airports = typeof airportData !== "undefined" ? airportData : null;
-  var key = [a.icao24, Math.floor(a.lat * 100), Math.floor(a.lng * 100), a.altFt, a.vRate, a.track, a.ground,
-    entry.origin && entry.origin.iata, entry.destination && entry.destination.iata,
-    entry.destination && entry.destination.region, entry.originSource, entry.destSource,
-    history && history.length, history && history.length && history[history.length - 1][2]].join("|");
-  var memo = a.callsign && routeEvidenceMemo.get(a.callsign);
-  if (memo && memo.entry === entry && memo.key === key && memo.airports === airports &&
-      memo.history === history && now - memo.at < 5000) return memo.checked;
-  var previous = null;
-  for (var i = history ? history.length - 1 : -1; i >= 0; i--) {
-    if (history[i][5] || Date.now() - history[i][2] > 120000) break;
-    if (!history[i][6] && haversineKm(a.lat, a.lng, history[i][0], history[i][1]) > 0.1) {
-      previous = { lat: history[i][0], lng: history[i][1] }; break;
-    }
-  }
-  var checked = core.rejectContradictoryRoute(entry, { lat: a.lat, lng: a.lng, altFt: a.altFt,
-    ground: a.ground, track: a.track, vRate: a.vRate == null ? null : a.vRate * 60, previous: previous },
-    airports);
-  if (checked && checked !== entry) {
-    checked.display = formatClientRouteLabel(checked.origin, checked.destination, checked.phase || "cruising");
-    checked.iata = [checked.origin && checked.origin.iata, checked.destination && checked.destination.iata].filter(Boolean).join(" to ");
-  }
-  if (a.callsign) {
-    if (routeEvidenceMemo.size >= 1000) routeEvidenceMemo.delete(routeEvidenceMemo.keys().next().value);
-    routeEvidenceMemo.set(a.callsign, { entry: entry, key: key, airports: airports, history: history, at: now, checked: checked });
-  }
-  return checked;
+  return core.checkRouteEvidence(routeEvidenceEnvironment(), a, entry);
 }
 
 function validateCachedRoute(a) {
-  var entry = a && a.callsign && routeCache[a.callsign];
-  var checked = routeForAircraft(a, entry);
-  if (checked !== entry) {
-    if (checked) routeCache[a.callsign] = checked;
-    else delete routeCache[a.callsign];
-  }
-  return checked;
+  return core.validateRouteIn(routeEvidenceEnvironment(), a);
 }
 
 function mergeRoutesetEntries(routes, sourcePlanes) {
@@ -727,17 +633,7 @@ function clientConvergenceRefine() {
 }
 
 function formatClientRouteLabel(origin, destination, phase) {
-  var oLabel = origin && origin.iata ? airportDisplayName(origin.iata) : null;
-  var dLabel = null;
-  if (destination && destination.region) {
-    dLabel = destination.display || destination.region;
-  } else if (destination && destination.iata) {
-    dLabel = airportDisplayName(destination.iata);
-  }
-  if (oLabel && dLabel) return oLabel + " to " + dLabel;
-  if (oLabel) return oLabel;
-  if (dLabel) return dLabel;
-  return "";
+  return core.formatAirportRouteLabel({ airportDisplayName: airportDisplayName }, origin, destination, phase);
 }
 
 var lastProactiveFetch = 0;

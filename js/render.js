@@ -385,62 +385,12 @@ function fetchScheduleData(iata) {
 }
 
 function selectClientScheduleMatch(variants, sources, a) {
-  var located = sources.map(function(source) {
-    var lat = null, lng = null;
-    for (var i = 0; airportData && i < airportData.length; i++) {
-      if (airportData[i][0] === source.iata) { lat = airportData[i][1]; lng = airportData[i][2]; break; }
-    }
-    return { iata: source.iata, data: source.data, lat: lat, lng: lng };
-  });
-  return core.selectScheduleMatch(variants, located, a, Date.now());
+  return core.selectAirportScheduleMatch({ core: core, now: Date.now(), airportData: airportData }, variants, sources, a);
 }
 
 function applyScheduleMatch(a, match) {
-  if (!a || !match) return false;
-  var currentRc = validateCachedRoute(a);
-  var origin = null, destination = null, originSource = null, destSource = null;
-
-  // The selector has already checked direction; an arrival row cannot be reversed into an onward leg.
-  if (match.dir === "arrival") {
-    destination = { iata: match.airport, name: match.airportName };
-    destSource = "schedule";
-    if (match.from) {
-      origin = { iata: match.from, name: match.row.from_name || match.from };
-      originSource = "schedule";
-    } else if (currentRc && currentRc.origin) {
-      origin = currentRc.origin;
-      originSource = currentRc.originSource;
-    }
-  } else {
-    origin = { iata: match.airport, name: match.airportName };
-    originSource = "schedule";
-    if (match.to) {
-      destination = { iata: match.to, name: match.row.to_name || match.to };
-      destSource = "schedule";
-    } else if (currentRc && currentRc.destination) {
-      destination = currentRc.destination;
-      destSource = currentRc.destSource;
-    }
-  }
-
-  var phase = a.ground ? "landed" :
-    (a.altFt < 15000 && a.vRate != null && a.vRate * 60 < -100) ? "arriving" :
-    (a.altFt < 15000 && a.vRate != null && a.vRate * 60 > 100) ? "departing" : "cruising";
-
-  routeCache[a.callsign] = {
-    display: formatClientRouteLabel(origin, destination, phase),
-    iata: [origin ? origin.iata : null, destination ? destination.iata : null].filter(Boolean).join(" to "),
-    origin: origin,
-    destination: destination,
-    originSource: originSource || (currentRc ? currentRc.originSource : null),
-    destSource: destSource || (currentRc ? currentRc.destSource : null),
-    confidence: "high",
-    phase: phase,
-    airline_iata: match.row.airline_iata || "",
-    airline_icao: match.row.airline_icao || "",
-    fetchedAt: Date.now()
-  };
-  return true;
+  return core.applyScheduleMatchIn({ now: Date.now(), routeCache: routeCache,
+    validateCachedRoute: validateCachedRoute, formatClientRouteLabel: formatClientRouteLabel }, a, match);
 }
 
 var lastScheduleFetch = 0;

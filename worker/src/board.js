@@ -1,6 +1,5 @@
 import airportData from "../../airports.json" with { type: "json" };
 import runwayData from "../../runways.json" with { type: "json" };
-import { createBoardRuntime } from "./board-runtime.generated.js";
 import { loadTraffic, loadSchedule, loadDatis } from "./loaders.js";
 import { json, cachePut } from "./http.js";
 import { core, MAP_URL, ApiError, airportFor, clean, round1, finite, iso, delayMinutes,
@@ -76,16 +75,19 @@ async function computeBoard(airport, env, ctx, deps) {
   ]);
   if (traffic.status !== "ok") throw new ApiError(502, "Traffic data unavailable");
   const now = Date.now();
-  const runtime = createBoardRuntime({ core, runwayData, airportData });
-  const snapshot = runtime.buildAircraftSnapshot(traffic.data.ac, { includeProximity: false,
+  const boardEnv = { core, now, state: core.createAirportBoardState(), runwayData, airportData,
+    routeCache: {}, posHistory: {}, extraState: {}, routeEvidenceMemo: new Map(),
+    scheduleDataCache: {}, scheduleCacheTtl: 300000, isPrivate: core.isPrivateAircraft,
+    airportDisplayName: iata => iata };
+  const snapshot = core.buildTrafficSnapshot(boardEnv, traffic.data.ac, { includeProximity: false,
     positionNow: Number.isFinite(traffic.data.now) ? traffic.data.now : now });
-  if (schedule.data) runtime.scheduleDataCache[iata] = { data: schedule.data, ts: now };
-  runtime.applyAirportScheduleMatches(iata, schedule.data, snapshot.aircraft);
+  if (schedule.data) boardEnv.scheduleDataCache[iata] = { data: schedule.data, ts: now };
+  core.applyAirportScheduleIn(boardEnv, iata, schedule.data, snapshot.aircraft);
   const active = core.parseDatisActiveRunways(datis.data && (datis.data.datis || datis.data.text || datis.data.raw));
-  const board = runtime.buildLiveScheduleData(iata, lat, lng, snapshot.aircraft, active);
+  const board = core.buildAirportBoard(boardEnv, iata, lat, lng, snapshot.aircraft, active);
   const elevation = airportData.find(row => row[0] === iata)?.[6] || 0;
   const observed = core.deriveActiveRunways(runwayData[iata], iata, snapshot.aircraft, { maxAltFt: 1500 + elevation });
-  const runways = runtime.mergeActiveRunways(active, observed);
+  const runways = core.mergeActiveRunways(active, observed);
   const planes = new Map(snapshot.aircraft.map(plane => [plane.icao24, plane]));
   function label(row) {
     const plane = planes.get(row.hex);

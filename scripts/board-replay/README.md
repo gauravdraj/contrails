@@ -1,4 +1,4 @@
-# Board replay (phase 1)
+# Board replay
 
 Run with Node 22 or newer, without dependencies or external requests:
 
@@ -51,15 +51,15 @@ the original production capture request sequence. It is never used by tests and
 was not run to build this baseline. Its only wall clock is acquisition time;
 replay clocks and randomness are controlled independently in each driver.
 
-The phase-1 mutation proof is repeatable:
+The shared-core mutation proof is repeatable:
 
 ```
 node scripts/board-replay/mutations.mjs
 ```
 
 It copies a minimal tree to the OS temporary directory, verifies a green baseline,
-applies one mutation at a time, rebuilds the generated Worker runtime **only in
-that scratch tree**, checks for red consumer tests, then restores with file copies
-and verifies both scratch and original sources using cmp. Logs remain in the
-printed temporary directory. This tool intentionally describes the phase-1 source
-layout; the normal replay test does not depend on it or its generated-runtime build.
+applies the same five mutations one at a time to `contrails-core.js`, checks for
+red consumer tests, then restores with file copies and verifies both scratch and
+original sources using cmp. PWA and watch must catch every shared mutation; Worker
+must still catch every mutation it caught before the refactor. Logs remain in the
+printed temporary directory. The normal replay suite and its goldens are unchanged.
