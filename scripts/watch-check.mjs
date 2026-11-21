@@ -14,6 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { setTimeout as delay } from 'node:timers/promises';
 import { EPOCH, DATIS, SCHEDULE, TICKS, EMPTY, SPARSE_TICKS, perfFixture } from './watch-fixtures.mjs';
+import { BUSY_TICKS, BUSY_AT } from './watch-busy-fixture.mjs';
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const require = createRequire(import.meta.url);
 const core = require('../contrails-core.js');
@@ -660,6 +661,7 @@ async function displayChecks(origin) {
     await size(w, h);
     const list = await cdp.evaluate(`__watch.resize();__watch.frame(${EPOCH + 90000})`);
     finite(list);
+    assertWatchLayout(list, w, h, 'standard ' + w + 'x' + h);
     const labels = list.filter(p => p.kind === 'label' || p.kind === 'runwayLabel');
     const ends = labels.filter(p => p.kind === 'runwayLabel');
     assert.equal(ends.length, 8, 'all eight runway ends must remain readable');
@@ -748,6 +750,167 @@ theme: mode, bay: sample(37.60, -122.25), peninsula: sample(37.55, -122.40),
     assert.equal(await inPage(count, e.atMs + 5250 + e.duration, e.hex), 0);
   }
   return '5 viewports; flight + runway labels separated; land/water/rim pixels; runway scale; 3 moment types + expiry';
+}
+// Presentation-only acceptance: inspect the actual ink bounds, independently of the placement solver.
+function assertWatchLayout(list, w, h, context) {
+  const overlap = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+  const inside = b => b.x >= 0 && b.y >= 0 && b.x + b.w <= w && b.y + b.h <= h;
+  // Every obstacle the check relies on must be a real box: null or NaN widths would make every overlap test pass.
+  const real = (b, what) => assert.ok(b && [b.x, b.y, b.w, b.h].every(Number.isFinite) && b.w > 0 && b.h > 0,
+    context + ': invalid bounds for ' + what);
+  const chart = list.filter(p => p.zone === 'chart' && ['label', 'runwayLabel'].includes(p.kind));
+  chart.forEach(p => real(p, p.text || p.hex));
+  assert.equal(chart.filter(p => p.kind === 'runwayLabel').length, 8, context + ': all eight runway ends must be labelled');
+  const strip = [];
+  for (const p of list.filter(p => p.zone === 'strip')) {
+    if (p.semantic === 'bead' || p.kind === 'text') {
+      real(p.bounds, 'strip ' + (p.text || p.hex));
+      strip.push({ ...p.bounds, name: p.semantic === 'bead' ? 'bead ' + p.hex : p.text });
+    }
+    if (p.kind === 'label') {
+      assert.ok(p.textBounds || p.ringBounds, context + ': empty strip label');
+      // A painted callsign needs its text box, and a painted numeral its ring box.
+      if (p.text) real(p.textBounds, 'strip text ' + p.text);
+      if (p.seq) real(p.ringBounds, 'strip ring ' + p.hex);
+      if (p.textBounds) strip.push({ ...p.textBounds, name: 'text ' + p.text });
+      if (p.ringBounds) strip.push({ ...p.ringBounds, name: 'ring ' + p.hex });
+    }
+  }
+  const beadCount = strip.filter(p => p.name.startsWith('bead ')).length;
+  assert.ok(beadCount, context + ': no strip beads');
+  // Declutter may hide a callsign, never most of them: at least half of the strip beads keep a readable label.
+  const stripTexts = list.filter(p => p.zone === 'strip' && p.kind === 'label' && p.text).length;
+  assert.ok(stripTexts * 2 >= beadCount, context + ': only ' + stripTexts + ' strip labels for ' + beadCount + ' beads');
+  // Chart leaders must not run through another label's ink.
+  for (const l of list.filter(p => p.zone === 'chart' && p.semantic === 'leader'))
+    for (const b of chart.filter(p => p.hex !== l.hex))
+      for (const ink of [b.textBounds, b.ringBounds, b.kind === 'runwayLabel' ? b : null].filter(Boolean))
+        assert.ok(!crossesBox(l.points, ink), context + ': chart leader ' + l.hex + ' crosses ' + (b.text || b.hex));
+  for (const group of [chart, strip]) {
+    for (let i = 0; i < group.length; i++) {
+      const a = group[i];
+      assert.ok(inside(a), context + ': outside frame ' + (a.name || a.text));
+      for (const b of group.slice(i + 1))
+        assert.ok(!overlap(a, b), context + ': overlap ' + (a.name || a.text) + ' / ' + (b.name || b.text));
+    }
+  }
+  function crossesBox(points, b) {
+    // Independently clip the segment to a rectangle (Liang–Barsky).
+    const [a, z] = points;
+    const dx = z[0] - a[0], dy = z[1] - a[1];
+    const p = [-dx, dx, -dy, dy], q = [a[0] - b.x, b.x + b.w - a[0], a[1] - b.y, b.y + b.h - a[1]];
+    let lo = 0, hi = 1;
+    for (let i = 0; i < 4; i++) {
+      if (!p[i]) { if (q[i] < 0) return false; }
+      else if (p[i] < 0) lo = Math.max(lo, q[i] / p[i]);
+      else hi = Math.min(hi, q[i] / p[i]);
+      if (lo > hi) return false;
+    }
+    return true;
+  }
+  const leaders = list.filter(p => p.zone === 'strip' && ['leader', 'pair'].includes(p.semantic));
+  for (let i = 0; i < leaders.length; i++) {
+    const a = leaders[i];
+    assert.ok(a.bounds && inside(a.bounds), context + ': leader outside frame');
+    for (const b of strip)
+      assert.ok(!crossesBox(a.points, b), context + ': leader crosses ' + b.name);
+    for (const b of leaders.slice(i + 1)) {
+      const side = (p, q, r) => (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]);
+      const [p, q] = a.points, [r, s] = b.points;
+      const crosses = side(p, q, r) * side(p, q, s) < 0 && side(r, s, p) * side(r, s, q) < 0;
+      assert.ok(!crosses, context + ': crossed strip leaders');
+    }
+  }
+  for (const dart of list.filter(p => p.kind === 'dart' && p.role === 'arrival' && p.seq === 1)) {
+    const label = chart.find(p => p.hex === dart.hex);
+    assert.ok(label && /\d+:\d{2}|min/.test(label.text), context + ': number one lost its countdown ' + dart.hex);
+  }
+}
+async function busyDisplayChecks(origin) {
+  await navigate(origin);
+  const checkpoints = new Set([.25, .5, .75, 1].map(f => Math.min(BUSY_TICKS.length - 1, Math.floor(BUSY_TICKS.length * f))));
+  let frames = 0;
+  for (let i = 0; i < BUSY_TICKS.length; i++) {
+    await ingest(BUSY_TICKS[i]);
+    if (!checkpoints.has(i)) continue;
+    const at = i === BUSY_TICKS.length - 1 ? BUSY_AT : BUSY_TICKS[i].nowMs;
+    const samePlayback = await inPage(at => {
+      const cached = __watch.frame(at);
+      const fresh = Watch.Display.buildDisplayList(__watch.scene, __watch.view, at,
+        (text, size) => text.length * size * .68);
+      const geometry = list => list.filter(p => p.kind === 'dart' || p.kind === 'trail' || p.semantic === 'shadow');
+      return JSON.stringify(geometry(cached)) === JSON.stringify(geometry(fresh));
+    }, at + 1250);
+    assert.ok(samePlayback, 'presentation cache changed playback geometry at busy tick ' + i);
+    for (const [w, h] of [[1440, 900], [1280, 800], [1920, 1080], [1024, 1366], [1366, 1024]]) {
+      await size(w, h);
+      for (const theme of ['night', 'day']) {
+        // Include motion between polls, exercising the cached preferred slots as the points move.
+        for (const offset of [0, 1250, 3500]) {
+          const list = await inPage((theme, at, resize) => {
+            if (resize) __watch.resize();
+            __watch.setTheme(theme);
+            return __watch.frame(at);
+          }, theme, at + offset, offset === 0);
+          finite(list);
+          assertWatchLayout(list, w, h, 'busy tick ' + i + ' +' + offset + ' ' + theme + ' ' + w + 'x' + h);
+          frames++;
+        }
+      }
+    }
+  }
+  // The helper itself must reject broken lists, or a pass above means nothing (review of a86a259).
+  await size(1440, 900);
+  const real = await inPage(at => { __watch.resize(); __watch.setTheme('night'); return __watch.frame(at); }, BUSY_AT);
+  assertWatchLayout(real, 1440, 900, 'mutation baseline');
+  const chartLabel = real.find(p => p.zone === 'chart' && p.kind === 'label' && p.textBounds);
+  const other = real.find(p => p.zone === 'chart' && p.kind === 'label' && p.hex !== chartLabel?.hex);
+  assert.ok(chartLabel && other, 'mutation baseline needs two chart labels');
+  const mutations = {
+    'strip labels removed': l => l.filter(p => !(p.zone === 'strip' && p.kind === 'label')),
+    'runway labels removed': l => l.filter(p => p.kind !== 'runwayLabel'),
+    'sequenced strip text bounds removed': l => l.map(p => p.zone === 'strip' && p.kind === 'label' && p.text
+      ? { ...p, textBounds: null } : p),
+    'null bead widths': l => l.map(p => p.semantic === 'bead' ? { ...p, bounds: { ...p.bounds, w: null } } : p),
+    'chart leader through a label': l => l.concat([{ kind: 'path', semantic: 'leader', zone: 'chart', hex: other.hex,
+      points: [[chartLabel.textBounds.x - 5, chartLabel.textBounds.y + 7],
+        [chartLabel.textBounds.x + chartLabel.textBounds.w + 5, chartLabel.textBounds.y + 7]] }])
+  };
+  for (const [name, mutate] of Object.entries(mutations))
+    assert.throws(() => assertWatchLayout(mutate(real), 1440, 900, name), assert.AssertionError, 'accepted: ' + name);
+  return frames + ' frames + 5 rejected mutations; 4 rush epochs × 5 viewports × 2 themes × 3 sub-poll times; chart labels, strip ink/beads/rings/leaders, bounds, number-one countdowns';
+}
+async function trailDisplayChecks(origin) {
+  await navigate(origin);
+  for (const tick of BUSY_TICKS) await ingest(tick);
+  const result = await inPage(at => {
+    const scene = __watch.scene, v = __watch.view, t = at - scene.delay;
+    const candidates = structuredClone(scene.items.filter(a => a.role === 'arrival' && !a.seq));
+    candidates.forEach(a => { a.states = []; });
+    const a = candidates[0];
+    const draw = (items = [a]) => Watch.Display.buildDisplayList({ ...scene, items, moments: [] }, v, at,
+      (text, size) => text.length * size * .68).filter(p => p.kind === 'trail');
+    const vectorTails = draw(candidates).map(p => ({ cast: p.cast, length: p.points.slice(1).reduce((sum, q, i) =>
+      sum + Math.hypot(q[0] - p.points[i][0], q[1] - p.points[i][1]), 0) }));
+    a.seq = 1;
+    a.runwayAssumed = false;
+    const location = { lat: scene.field.lat + .025, lng: scene.field.lng + .06, altFt: 2000,
+      ground: false, trackDeg: 285, spdMs: 90 };
+    // The feed resets samples on a break. Playback can still precede that new first sample.
+    a.samples = [{ ...location, ts: t + 1000 }];
+    a.history = [[scene.field.lat + .1, scene.field.lng - .1, t - 35000, 5000, false, false],
+      [location.lat, location.lng, t + 1000, 2000, false, true]];
+    const gapBeforePlayback = draw().length;
+    a.samples.push({ ...location, lat: location.lat - .001, ts: t + 6000 });
+    a.history.push([location.lat - .001, location.lng, t + 6000, 2000, false, false]);
+    const gapAfterPlayback = draw().length;
+    return { vectorTails, gapBeforePlayback, gapAfterPlayback };
+  }, BUSY_AT);
+  assert.ok(result.vectorTails.length, 'busy fixture must exercise a vectoring arrival tail');
+  assert.ok(result.vectorTails.every(p => !p.cast && p.length <= 48.00001), JSON.stringify(result));
+  assert.equal(result.gapBeforePlayback, 0, 'pre-gap history connected to a post-gap held pose');
+  assert.equal(result.gapAfterPlayback, 0, 'future history crossed playback / break');
+  return 'vectoring arrivals have subdued ≤48 px tails; reset samples never join pre-gap history';
 }
 async function emptyChecks(origin) {
   await navigate(origin);
@@ -1151,6 +1314,8 @@ async function perfRun(origin) {
   };
   report.meetsLocalTargets = report.frameScriptP95Ms <= 4 && !report.longTasksOver50Ms.length;
   console.log(JSON.stringify(report, null, 2));
+  assert.ok(report.meetsLocalTargets, 'frame script p95 must be ≤4 ms with no long tasks');
+  console.log('PASS R3 frame budget: p95 ' + report.frameScriptP95Ms + ' ms ≤ 4 ms; zero long tasks');
 }
 async function screenshot(name) {
   // Test time is stopped; explicitly allow the compositor to present the canvas before capturing it.
@@ -1162,7 +1327,7 @@ async function screenshot(name) {
   console.log('SHOT ' + file);
 }
 async function shotRun(origin) {
-  async function views(prefix) {
+  async function views(prefix, at = EPOCH + 90000) {
     for (const [w, h] of [[1440, 900], [1024, 1366]]) {
       await size(w, h);
       for (const theme of ['night', 'day']) {
@@ -1171,7 +1336,7 @@ async function shotRun(origin) {
           __watch.setTheme(theme);
           __watch.frame(time || Date.now());
           return new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-        }, theme, live ? null : EPOCH + 90000);
+        }, theme, live ? null : at);
         await screenshot(prefix + theme + '-' + w + 'x' + h);
       }
     }
@@ -1188,6 +1353,14 @@ async function shotRun(origin) {
     await navigate(origin);
     for (const t of SPARSE_TICKS) await ingest(t);
     await views('sparse-');
+    await navigate(origin);
+    for (const t of BUSY_TICKS) await ingest(t);
+    await views('busy-', BUSY_AT);
+    // A second rush epoch catches threshold traffic and the beginning of the departure streams.
+    await navigate(origin);
+    const middle = Math.floor(BUSY_TICKS.length / 2);
+    for (const t of BUSY_TICKS.slice(0, middle + 1)) await ingest(t);
+    await views('busy-mid-', BUSY_TICKS[middle].nowMs);
     await navigate(origin);
     await ingest(EMPTY);
     await size(1440, 900);
@@ -1269,6 +1442,8 @@ try {
   else {
     await check('R1 independent board parity', parity);
     await check('Browser display, pixels, moments', () => displayChecks(origin));
+    await check('Busy display clearance', () => busyDisplayChecks(origin));
+    await check('Trail continuity and vectoring restraint', () => trailDisplayChecks(origin));
     await check('R4 empty sky', () => emptyChecks(origin));
     await check('D-ATIS override expiry', () => expiryChecks(origin));
     await check('Countdown and departure playback', () => timingChecks(origin));

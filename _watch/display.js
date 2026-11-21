@@ -1,4 +1,5 @@
-/* Pure display lists. No DOM, canvas, wall clock, randomness, or font dependencies. */
+/* Display geometry has no DOM, canvas, wall clock, randomness, or font dependencies.
+ * The optional painter-owned cache retains projected history and preferred label slots between frames. */
 (function (W) {
   'use strict';
   var P = W.Project;
@@ -94,8 +95,8 @@
       var dy = a[1] - b[1];
       var d = Math.hypot(dx, dy);
       var side = /L$/.test(e.designator) ? 1 : -1;
-      var x = a[0] + dx / d * 20 - dy / d * side * 8;
-      var y = a[1] + dy / d * 20 + dx / d * side * 8;
+      var x = a[0] + dx / d * 12 - dy / d * side * 20;
+      var y = a[1] + dy / d * 12 + dx / d * side * 20;
       // Stagger close parallels along their own outward axis; never move an end label to another runway.
       while (placed.some(function (q) {
         return Math.abs(q.x - x) < 25 && Math.abs(q.y - y) < 14;
@@ -266,66 +267,170 @@
     text(list, 38, v.height > v.width ? 209 : 158, coordinates, c.muted, 8, { alpha: .6 });
     return list;
   }
-  function labels(list, candidates, v, measure, bounds, obstacles) {
-    if (!candidates.length)
-      return;
-    var maxWidth = 0;
-    candidates.forEach(function (a) {
-      a.w = Math.ceil(measure(a.text, 10)) + (a.seq ? 28 : 12);
-      a.h = 22;
-      maxWidth = Math.max(maxWidth, a.w);
+  function box(x, y, w, h) {
+    return { x: x, y: y, w: w, h: h };
+  }
+  function intersects(a, b, gap) {
+    gap = gap || 0;
+    return a.x < b.x + b.w + gap && a.x + a.w + gap > b.x &&
+      a.y < b.y + b.h + gap && a.y + a.h + gap > b.y;
+  }
+  function segmentBox(points, b, gap) {
+    // Slab intersection also handles vertical and horizontal leaders.
+    var lo = 0;
+    var hi = 1;
+    for (var axis = 0; axis < 2; axis++) {
+      var start = points[0][axis];
+      var delta = points[1][axis] - start;
+      var min = (axis ? b.y : b.x) - gap;
+      var max = min + (axis ? b.h : b.w) + gap * 2;
+      if (Math.abs(delta) < .00001) {
+        if (start < min || start > max) return false;
+      }
+      else {
+        var u = (min - start) / delta;
+        var v = (max - start) / delta;
+        lo = Math.max(lo, Math.min(u, v));
+        hi = Math.min(hi, Math.max(u, v));
+        if (lo > hi) return false;
+      }
+    }
+    return true;
+  }
+  function segmentsCross(a, b) {
+    function side(p, q, r) {
+      return (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]);
+    }
+    return side(a[0], a[1], b[0]) * side(a[0], a[1], b[1]) <= 0 &&
+      side(b[0], b[1], a[0]) * side(b[0], b[1], a[1]) <= 0;
+  }
+  function lineBox(points) {
+    return box(Math.min(points[0][0], points[1][0]), Math.min(points[0][1], points[1][1]),
+      Math.abs(points[1][0] - points[0][0]), Math.abs(points[1][1] - points[0][1]));
+  }
+  function SpatialIndex() {
+    this.cells = new Map();
+  }
+  SpatialIndex.prototype.visit = function (b, fn) {
+    for (var x = Math.floor((b.x - 4) / 48); x <= Math.floor((b.x + b.w + 4) / 48); x++)
+      for (var y = Math.floor((b.y - 4) / 48); y <= Math.floor((b.y + b.h + 4) / 48); y++)
+        fn(x + ':' + y);
+  };
+  SpatialIndex.prototype.add = function (entry) {
+    var cells = this.cells;
+    this.visit(entry.bounds, function (key) {
+      if (!cells.has(key)) cells.set(key, []);
+      cells.get(key).push(entry);
     });
-    // Shift only labels into clear slots. The authoritative point never moves.
-    var placed = [];
-    candidates.sort(function (a, b) {
-      return b.rank - a.rank;
-    }).forEach(function (a) {
-      var found = null;
-      var offsets = [
-        [14, -23],
-        [14, 3],
-        [-a.w - 14, -23],
-        [-a.w - 14, 3],
-        [14, -50],
-        [14, 30],
-        [-a.w - 14, 30],
-        [14, -77]
-      ];
-      for (var j = 0; j < offsets.length; j++) {
-        var x = Math.max(bounds.left, Math.min(bounds.right - maxWidth, a.anchorX + offsets[j][0]));
-        var y = Math.max(bounds.top, Math.min(bounds.bottom - 22, a.anchorY + offsets[j][1]));
-        var tryLabel = Object.assign({}, a, { x: x, y: y });
-        var collision = (obstacles || []).some(function (b) {
-          return x < b.x + b.w + 5 && x + a.w + 5 > b.x && y < b.y + b.h + 4 && y + a.h + 4 > b.y;
-        });
-        if (!collision &&
-          core.declutterLabels(placed.concat([tryLabel]), { w: maxWidth + 5, h: 26 }).length === placed.length + 1) {
-          found = tryLabel;
+  };
+  SpatialIndex.prototype.collides = function (b, points, own) {
+    var seen = new Set();
+    var hit = false;
+    var cells = this.cells;
+    this.visit(b, function (key) {
+      if (hit) return;
+      var entries = cells.get(key) || [];
+      for (var i = 0; i < entries.length; i++) {
+        var e = entries[i];
+        if (seen.has(e) || points && e.hex === own && e.bead) continue;
+        seen.add(e);
+        if (!intersects(b, e.bounds, 3)) continue;
+        if (points ? (e.points ? segmentsCross(points, e.points) : segmentBox(points, e.bounds, 2))
+          : (e.points ? segmentBox(e.points, b, 3) : intersects(b, e.bounds, 3))) {
+          hit = true;
+          return;
+        }
+      }
+    });
+    return hit;
+  };
+  function leader(a, b) {
+    var x = Math.max(b.x, Math.min(b.x + b.w, a.anchorX));
+    var y = Math.max(b.y, Math.min(b.y + b.h, a.anchorY));
+    var dx = x - a.anchorX;
+    var dy = y - a.anchorY;
+    var d = Math.hypot(dx, dy);
+    if (d < 12) return null;
+    // Stop outside both the bead/dart and the label's ink, including its sequence ring.
+    return [[a.anchorX + dx / d * 8, a.anchorY + dy / d * 8], [x - dx / d * 3, y - dy / d * 3]];
+  }
+  function labels(list, candidates, v, measure, bounds, obstacles, cache) {
+    var index = new SpatialIndex();
+    obstacles.forEach(function (b) { index.add(b.bounds ? b : { bounds: b }); });
+    candidates.sort(function (a, b) { return b.rank - a.rank || a.hex.localeCompare(b.hex); });
+    candidates.forEach(function (a) {
+      var strip = a.zone === 'strip';
+      var compactFirst = !strip && a.seq > 1 && candidates.some(function (b) {
+        return a !== b && Math.hypot(a.anchorX - b.anchorX, a.anchorY - b.anchorY) < 75;
+      });
+      var variants = compactFirst ? [true] : a.seq > 1 ? [false, true] : a.shortText ? [false, 'time'] : [false];
+      var found;
+      var key = a.zone + ':' + a.hex;
+      var previous = cache && cache.slots.get(key);
+      // A hidden low-priority callsign gets another chance on the next poll. Re-running all of its
+      // failed candidates at 60 Hz adds work and makes it flicker at the edge of a crowded slot.
+      if (previous && previous.hidden === cache.generation && a.seq !== 1) return;
+      for (var k = 0; k < variants.length && !found; k++) {
+        var variant = variants[k];
+        var compact = variant === true;
+        var caption = variant === 'time' ? a.shortText : a.text;
+        var w = compact ? 22 : Math.ceil(measure(caption, 10)) + (a.seq ? 28 : 12);
+        var h = 22;
+        var offsets = strip
+          ? [[12, -11], [-w - 12, -11], [12, 9], [-w - 12, 9], [12, -31], [-w - 12, -31],
+            [-w / 2, 23], [-w / 2, -45], [12, 35], [-w - 12, 35]]
+          : a.side < 0
+            ? [[-w - 12, 8], [12, 12], [-w / 2, 24], [-w - 12, 32], [12, 36]]
+            : [[12, -30], [-w - 12, -30], [-w / 2, -46], [12, -54], [-w - 12, -54]];
+        if (variant === 'time') {
+          var dy = a.side < 0 ? 56 : -78;
+          offsets.push([-w / 2, dy], [12, dy], [-w - 12, dy]);
+        }
+        if (previous && previous.variant === variant &&
+          (strip || (a.side < 0 ? previous.dy >= 6 : previous.dy <= -28)))
+          offsets.unshift([previous.dx, previous.dy]);
+        for (var j = 0; j < offsets.length; j++) {
+          var left = Math.max(bounds.left, a.left == null ? bounds.left : a.left);
+          var right = Math.min(bounds.right, a.right == null ? bounds.right : a.right);
+          var x = Math.max(left, Math.min(right - w, a.anchorX + offsets[j][0]));
+          var y = Math.max(bounds.top, Math.min(bounds.bottom - h, a.anchorY + offsets[j][1]));
+          var b = box(x, y, w, h);
+          if (x < left || index.collides(b)) continue;
+          var points = compact || a.noLeader ? null : leader(a, b);
+          if (points && index.collides(lineBox(points), points, a.hex)) {
+            if (variant !== 'time') continue;
+            points = null; // A nearby numeral + clock remains readable even at the threshold.
+          }
+          found = { x: x, y: y, w: w, h: h, compact: compact, variant: variant, caption: caption, points: points };
           break;
         }
       }
-      if (found)
-        placed.push(found);
-    });
-    core.declutterLabels(placed, { w: maxWidth + 5, h: 26 }).forEach(function (a) {
-      line(list, [[a.anchorX, a.anchorY], [a.x + (a.x > a.anchorX ? 0 : a.w), a.y + 11]], a.color, .6, .3);
+      if (!found) {
+        if (cache) cache.slots.set(key, { hidden: cache.generation });
+        return; // The dot still speaks; do not fan out long leaders to force a callsign in.
+      }
+      if (cache) cache.slots.set(key, {
+        dx: found.x - a.anchorX, dy: found.y - a.anchorY, variant: found.variant
+      });
+      index.add({ bounds: found });
+      if (found.points) {
+        var b = lineBox(found.points);
+        index.add({ bounds: b, points: found.points });
+        line(list, found.points, a.color, .6, .28 * a.alpha,
+          { semantic: 'leader', zone: a.zone, hex: a.hex, bounds: b });
+      }
       list.push({
-        kind: 'label',
-        x: a.x,
-        y: a.y,
-        w: a.w,
-        h: a.h,
-        text: a.text,
-        seq: a.seq,
-        color: a.color,
-        halo: v.palette.bg,
-        alpha: a.alpha,
-        hex: a.hex,
-        zone: a.zone
+        kind: 'label', x: found.x, y: found.y, w: found.w, h: found.h,
+        text: found.compact ? '' : found.caption, seq: a.seq, color: a.color,
+        halo: strip ? v.palette.strip : v.palette.bg, alpha: a.alpha, hex: a.hex, zone: a.zone,
+        // Ink obstacles are explicit, so the harness tests the ring and text against every bead.
+        ringBounds: a.seq ? box(found.x + 3, found.y + 3, 16, 16) : null,
+        textBounds: found.compact ? null : box(found.x + (a.seq ? 23 : 5), found.y + 4,
+          found.w - (a.seq ? 26 : 10), 14)
       });
     });
   }
-  function buildDisplayList(scene, v, tMs, measureText) {
+  function buildDisplayList(scene, v, tMs, measureText, cache) {
     var out = [];
     var c = v.palette;
     var t = tMs - scene.delay;
@@ -333,7 +438,27 @@
     var stripLabels = [];
     var positions = {};
     var beads = {};
+    var stripObstacles = [];
+    var chartObstacles = [];
+    if (cache && (cache.scene !== scene || cache.view !== v)) {
+      if (cache.view !== v) cache.slots.clear();
+      cache.scene = scene;
+      cache.view = v;
+      cache.trails = new Map();
+      cache.items = new Map();
+      cache.generation = (cache.generation || 0) + 1;
+      // Retain preferred slots across polls, bounded by the current traffic.
+      var live = new Set(scene.items.map(function (a) { return a.hex; }));
+      cache.slots.forEach(function (_, key) {
+        if (!live.has(key.split(':')[1])) cache.slots.delete(key);
+      });
+    }
     var reserved = v.runwayLabels || runwayLabels(v);
+    var headings = v.runwayHeadings || {};
+    if (!v.runwayHeadings)
+      core.runwayApproachEnds(v.runways || [], { designators: true }).forEach(function (e) {
+        headings[e.designator] = core.bearingDegrees(e.thresholdLat, e.thresholdLon, e.farEndLat, e.farEndLon);
+      });
     // State and countdowns share playback time, so a zero countdown meets its dart at the threshold.
     var items = scene.items.map(function (a) {
       var state = a.states && a.states[0];
@@ -341,7 +466,14 @@
         if (a.states[i].atMs <= t)
           state = a.states[i];
       }
-      return state ? Object.assign({}, a, state) : a;
+      if (!state) return a;
+      // Snapshots carry many board-only fields. Copy them only when playback enters a new state,
+      // not 300 times per animation frame. The selected state still changes on display time.
+      var prior = cache && cache.items.get(a.hex);
+      if (prior && prior.source === a && prior.state === state) return prior.item;
+      var item = Object.assign({}, a, state);
+      if (cache) cache.items.set(a.hex, { source: a, state: state, item: item });
+      return item;
     });
     var ladder = core.layoutApproachLadder(
       items.filter(function (a) {
@@ -391,7 +523,7 @@
       var lift = ground ? 0 : Math.min(14, Math.sqrt(Math.max(0, alt - scene.field.elev)) * .16);
       var dist = core.haversineKm(pose.lat, pose.lng, scene.field.lat, scene.field.lng);
       var lane = role === 'arrival' && !a.runwayAssumed
-        ? P.laneOffset(a.runway, dist, heading)
+        ? P.laneOffset(a.runway, dist, headings[a.runway] == null ? heading : headings[a.runway])
         : { x: 0, y: 0 };
       var x = loc.x + lane.x;
       var y = loc.y - lift + lane.y;
@@ -411,33 +543,55 @@
           );
       }
       if (!v.reduced && a.history.length > 1) {
-        var windowMs = cast ? 240000 : 90000;
-        var points = [];
-        for (var i = 0; i < a.history.length; i++) {
-          var h = a.history[i];
-          if (h[2] > t || h[2] < t - windowMs)
-            continue;
-          if (h[5]) {
-            points = [];
-          }
-          if (!cast && i % 3 !== 0 && i < a.history.length - 2)
-            continue;
-          var p = P.project(h[0], h[1], v);
-          points.push([
-            p.x + lane.x,
-            p.y - (h[4] ? 0 : Math.min(14, Math.sqrt(Math.max(0, (h[3] || 0) - scene.field.elev)) * .16)) + lane.y
-          ]);
-        }
-        points.push([x, y]);
-        if (points.length > 1)
-          out.push({
-            kind: 'trail',
-            points: points,
-            color: color,
-            alpha: alpha,
-            cast: cast,
-            avoid: reserved
+        // An assumed, unsequenced arrival may still be crossing the field on vectors. A four-minute
+        // cast tail made that perfectly valid history look like an approach through the runways.
+        var established = cast && (role !== 'arrival' || a.seq && !a.runwayAssumed);
+        var windowMs = established ? 240000 : 90000;
+        var history = cache && cache.trails.get(a.hex);
+        if (!history) {
+          history = a.history.map(function (h) {
+            var p = P.project(h[0], h[1], v);
+            return { x: p.x, y: p.y - (h[4] ? 0 : Math.min(14,
+              Math.sqrt(Math.max(0, (h[3] || 0) - scene.field.elev)) * .16)), ts: h[2], broken: h[5] };
           });
+          if (cache) cache.trails.set(a.hex, history);
+        }
+        var points = [[x, y]];
+        var length = 0;
+        var latest = pose.ts;
+        // Walking backwards honours every break, including a reset sample newer than playback time.
+        // Never append a post-gap held pose to the previous history segment.
+        for (var i = history.length - 1; i >= 0; i--) {
+          var h = history[i];
+          if (h.ts > pose.ts) continue;
+          if (h.ts < t - windowMs || latest - h.ts > 30000) break;
+          var p = [h.x + lane.x, h.y + lane.y];
+          var last = points[0];
+          var segment = Math.hypot(p[0] - last[0], p[1] - last[1]);
+          var limit = established ? 210 : cast ? 48 : 32;
+          if (length + segment > limit) {
+            var f = (limit - length) / segment;
+            points.unshift([last[0] + (p[0] - last[0]) * f, last[1] + (p[1] - last[1]) * f]);
+            break;
+          }
+          if (segment > .1) points.unshift(p);
+          length += segment;
+          latest = h.ts;
+          if (h.broken) break;
+        }
+        if (points.length > 1) {
+          var minX = x, minY = y, maxX = x, maxY = y;
+          points.forEach(function (p) {
+            minX = Math.min(minX, p[0]); minY = Math.min(minY, p[1]);
+            maxX = Math.max(maxX, p[0]); maxY = Math.max(maxY, p[1]);
+          });
+          var bounds = box(minX, minY, maxX - minX, maxY - minY);
+          out.push({
+            kind: 'trail', points: points, color: color, hex: a.hex,
+            alpha: alpha * (established ? .8 : .42), cast: !!established,
+            avoid: reserved.filter(function (b) { return intersects(bounds, b, 5); })
+          });
+        }
       }
       out.push({
         kind: 'circle',
@@ -447,6 +601,7 @@
         fill: color,
         alpha: alpha * .25,
         semantic: 'shadow',
+        role: role,
         hex: a.hex
       });
       if (lift > 3)
@@ -471,6 +626,7 @@
         role: role,
         seq: a.seq
       });
+      chartObstacles.push({ bounds: box(x - 7, y - 7, 14, 14), hex: a.hex, bead: true });
       if (cast && (role !== 'arrival' || a.seq)) {
         var caption = a.callsign || a.hex;
         if (a.seq === 1 && role === 'arrival')
@@ -482,12 +638,15 @@
           anchorX: x,
           anchorY: y,
           text: caption,
+          shortText: role === 'arrival' && a.seq === 1 ? caption.slice((a.callsign || a.hex).length + 2) : null,
           seq: a.seq,
           color: color,
           alpha: alpha,
-          rank: role === 'go-around' ? 110 : a.seq ? 100 - a.seq : 50,
+          rank: a.seq === 1 ? 200 : role === 'go-around' ? 110 : a.seq ? 100 - a.seq : 50,
           hex: a.hex,
-          zone: 'chart'
+          zone: 'chart',
+          side: /L$/.test(a.runway || '') ? -1 : 1,
+          noLeader: reserved.some(function (b) { return intersects(box(x - 8, y - 8, 16, 16), b); })
         });
       }
     });
@@ -520,7 +679,7 @@
     [15, 10, 5, 0].forEach(function (m) {
       var x = nowX - m / 15 * (nowX - left);
       line(out, [[x, top + 5], [x, base + 7]], c.ring, .6, .6, { dash: m ? [2, 5] : [] });
-      text(out, x, base + 22, m ? m + ' MIN' : 'NOW / RUNWAY', c.muted, 8, { align: m ? 'center' : 'right' });
+      text(out, x, base + 22, m ? m + (m === 15 ? '+ MIN' : ' MIN') : 'NOW / RUNWAY', c.muted, 8, { align: m ? 'center' : 'right' });
     });
     [1, 3, 5].forEach(function (m) {
       var x = nowX + m / 5 * (right - nowX);
@@ -532,7 +691,37 @@
     items.forEach(function (a) {
       byHex[a.hex] = a;
     });
-    ladder.beads.forEach(function (b) {
+    function addBead(mark, candidate) {
+      // Never merge an arrival with a departure. Arrival beads are placed first, so a departure dart that lands on
+      // one slides right, away from the runway line, keeping both symbols and both roles.
+      for (var guard = 0; guard < 8; guard++) {
+        var clash = stripObstacles.find(function (o) {
+          return o.bead && o.mark.kind !== mark.kind && intersects(o.bounds, mark.bounds, 1);
+        });
+        if (!clash)
+          break;
+        var dx = clash.bounds.x + clash.bounds.w + 2 - mark.bounds.x;
+        mark.x += dx;
+        mark.bounds = box(mark.bounds.x + dx, mark.bounds.y, mark.bounds.w, mark.bounds.h);
+        candidate.anchorX = mark.x;
+      }
+      var overlap = stripObstacles.find(function (o) {
+        return o.bead && o.mark.kind === mark.kind && intersects(o.bounds, mark.bounds, 1);
+      });
+      if (overlap) {
+        overlap.mark.members.push(mark.hex);
+        overlap.label.text = overlap.label.baseText + ' +' + (overlap.mark.members.length - 1);
+        return;
+      }
+      mark.members = [mark.hex];
+      candidate.baseText = candidate.text;
+      out.push(mark);
+      stripObstacles.push({ bounds: mark.bounds, hex: mark.hex, bead: true, mark: mark, label: candidate });
+      stripLabels.push(candidate);
+    }
+    ladder.beads.sort(function (a, b) {
+      return (byHex[a.hex].seq || 100) - (byHex[b.hex].seq || 100) || a.hex.localeCompare(b.hex);
+    }).forEach(function (b) {
       var a = byHex[b.hex];
       if (!a)
         return;
@@ -544,7 +733,7 @@
       var x = nowX - Math.min(15, eta) / 15 * (nowX - left);
       var y = base - Math.min(1, Math.sqrt(Math.max(0, alt || 0) / 10000)) * span - (b.lane % 2) * 9;
       beads[a.hex] = [x, y];
-      out.push({
+      addBead({
         kind: 'circle',
         x: x,
         y: y,
@@ -552,9 +741,11 @@
         fill: eta < 2 ? c.near : c.arrival,
         alpha: fade,
         semantic: 'bead',
+        zone: 'strip',
+        bounds: box(x - 3.9, y - 3.9, 7.8, 7.8),
         hex: a.hex
-      });
-      stripLabels.push({
+      }, {
+        right: nowX - 12,
         anchorX: x,
         anchorY: y,
         text: (a.callsign || a.hex) + (coarse(a, t) ? ' · ' + formatLandingEta(etaMinutes(a, t, b.etaMin)) : ''),
@@ -580,7 +771,7 @@
           : (t - a.departureAtMs) / 60000;
         var x = nowX + Math.min(5, mins) / 5 * (right - nowX);
         var y = base - Math.min(1, Math.sqrt(Math.max(0, alt) / 10000)) * span;
-        out.push({
+        addBead({
           kind: 'dart',
           x: x,
           y: y,
@@ -589,9 +780,11 @@
           color: c.departure,
           alpha: fade,
           semantic: 'bead',
+          zone: 'strip',
+          bounds: box(x - 5.5, y - 5.5, 11, 11),
           hex: a.hex
-        });
-        stripLabels.push({
+        }, {
+          left: nowX + 12,
           anchorX: x,
           anchorY: y,
           text: (a.callsign || a.hex) + (estimated ? ' · EST' : ''),
@@ -627,25 +820,55 @@
       }
     });
     ladder.pairs.forEach(function (pair) {
-      if (beads[pair.a] && beads[pair.b])
-        line(out, [beads[pair.a], beads[pair.b]], c.arrival, 1, .4, { semantic: 'pair' });
-      if (positions[pair.a] && positions[pair.b])
-        line(out, [positions[pair.a], positions[pair.b]], c.arrival, .7, .3);
+      if (beads[pair.a] && beads[pair.b]) {
+        var a = beads[pair.a];
+        var b = beads[pair.b];
+        var d = Math.hypot(b[0] - a[0], b[1] - a[1]);
+        if (d > 12 && d < 60) {
+          var points = [[a[0] + (b[0] - a[0]) / d * 6, a[1] + (b[1] - a[1]) / d * 6],
+            [b[0] - (b[0] - a[0]) / d * 6, b[1] - (b[1] - a[1]) / d * 6]];
+          if (!stripObstacles.some(function (o) { return segmentBox(points, o.bounds, 1); })) {
+            var bounds = lineBox(points);
+            line(out, points, c.arrival, .7, .25, { semantic: 'pair', zone: 'strip', bounds: bounds });
+            stripObstacles.push({ bounds: bounds, points: points });
+          }
+        }
+      }
+      if (positions[pair.a] && positions[pair.b] &&
+        Math.hypot(positions[pair.a][0] - positions[pair.b][0], positions[pair.a][1] - positions[pair.b][1]) < 55)
+        line(out, [positions[pair.a], positions[pair.b]], c.arrival, .6, .2);
     });
+    out.forEach(function (p) {
+      if (p.kind !== 'text' || p.y < v.chartH) return;
+      var w = measureText(p.text, p.size) + Math.max(0, p.text.length - 1) * (p.spacing || 0);
+      p.zone = 'strip';
+      p.bounds = box(p.x - (p.align === 'center' ? w / 2 : p.align === 'right' ? w : 0),
+        p.y - p.size - 1, w, p.size + 3);
+      stripObstacles.push({ bounds: p.bounds });
+    });
+    reserved.forEach(function (b) { chartObstacles.push({ bounds: b }); });
+    (v.runways || []).forEach(function (r) {
+      var points = [pt(r[0], r[1], v), pt(r[3], r[4], v)];
+      chartObstacles.push({ bounds: lineBox(points), points: points });
+    });
+    chartObstacles.push({ bounds: box(26, v.chartH - 184, 220, 168) });
     labels(
       out,
       chartLabels,
       v,
       measureText,
       { left: 26, right: v.width - 30, top: 180, bottom: v.chartH - 28 },
-      reserved
+      chartObstacles,
+      cache
     );
     labels(
       out,
       stripLabels,
       v,
       measureText,
-      { left: left - 12, right: right, top: v.chartH + 31, bottom: base + 3 }
+      { left: left - 12, right: right, top: v.chartH + 33, bottom: base + 3 },
+      stripObstacles,
+      cache
     );
     if (!v.reduced)
       W.Moments.active(scene, t).forEach(function (e) {

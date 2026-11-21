@@ -69,21 +69,28 @@
   function trail(ctx, p) {
     ctx.save();
     // Keep departure tails out of the runway designators, without moving either the aircraft or the end labels.
-    ctx.beginPath();
-    ctx.rect(0, 0, ctx.canvas.width, ctx.canvas.height);
-    p.avoid.forEach(function (b) {
-      ctx.rect(b.x - 2, b.y - 2, b.w + 4, b.h + 4);
-    });
-    ctx.clip('evenodd');
+    if (p.avoid.length) {
+      ctx.beginPath();
+      ctx.rect(0, 0, ctx.canvas.width, ctx.canvas.height);
+      p.avoid.forEach(function (b) {
+        ctx.rect(b.x - 2, b.y - 2, b.w + 4, b.h + 4);
+      });
+      ctx.clip('evenodd');
+    }
     if (p.cast) {
-      // Segment widths and opacity both rise toward the dart. Only the short luminous head needs a glow.
-      for (var i = 1; i < p.points.length; i++) {
-        var weight = i / (p.points.length - 1);
+      // Six taper bands preserve the comet shape with a bounded number of strokes. History can
+      // contain 120 observations; it must not turn into 120 separate glowing canvas paths per dart.
+      var segments = p.points.length - 1;
+      var bands = Math.min(6, segments);
+      for (var i = 0; i < bands; i++) {
+        var start = Math.floor(i * segments / bands);
+        var end = Math.floor((i + 1) * segments / bands);
+        var weight = (start + end + 1) / 2 / segments;
         ctx.lineWidth = .3 + weight * 1.3;
         ctx.globalAlpha = p.alpha * weight * weight * .5;
         ctx.shadowColor = p.color;
         ctx.shadowBlur = weight > .8 ? 3 : 0;
-        path(ctx, [p.points[i - 1], p.points[i]]);
+        path(ctx, p.points.slice(start, end + 1));
         ctx.stroke();
       }
     }
@@ -157,6 +164,50 @@
     }
     ctx.restore();
   }
+  function backgroundGlyph(p) {
+    return (p.kind === 'dart' || p.semantic === 'shadow') && p.role &&
+      !['arrival', 'departure', 'go-around'].includes(p.role);
+  }
+  function dartPath(ctx, p) {
+    var h = p.angle * Math.PI / 180;
+    var sine = Math.sin(h);
+    var cosine = Math.cos(h);
+    var r = p.size;
+    var points = [[0, -r * 1.3], [r * .5, r * .75], [0, r * .3], [-r * .5, r * .75]];
+    points.forEach(function (q, i) {
+      var x = p.x + q[0] * cosine - q[1] * sine;
+      var y = p.y + q[0] * sine + q[1] * cosine;
+      if (i) ctx.lineTo(x, y);
+      else ctx.moveTo(x, y);
+    });
+    ctx.closePath();
+  }
+  function backgroundTraffic(ctx, list) {
+    var groups = new Map();
+    list.forEach(function (p) {
+      if (!backgroundGlyph(p)) return;
+      var key = p.kind + '|' + (p.fill || p.color) + '|' + p.alpha;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(p);
+    });
+    ctx.save();
+    // Background traffic shares a handful of inks. One fill per ink keeps hundreds of subdued
+    // overflights / apron glyphs cheap and places the named cast consistently above them.
+    groups.forEach(function (items) {
+      ctx.fillStyle = items[0].fill || items[0].color;
+      ctx.globalAlpha = items[0].alpha;
+      ctx.beginPath();
+      items.forEach(function (p) {
+        if (p.kind === 'dart') dartPath(ctx, p);
+        else {
+          ctx.moveTo(p.x + p.r, p.y);
+          ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+        }
+      });
+      ctx.fill();
+    });
+    ctx.restore();
+  }
   function paint(ctx, list) {
     var alpha = -1;
     var width = -1;
@@ -168,6 +219,7 @@
     ctx.letterSpacing = '0px';
     for (var i = 0; i < list.length; i++) {
       var p = list[i];
+      if (backgroundGlyph(p)) continue;
       var a = p.alpha == null ? 1 : p.alpha;
       var w = p.width || 1;
       var s = p.color || 'transparent';
@@ -200,6 +252,7 @@
         ctx.beginPath();
         ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
         ctx.clip();
+        backgroundTraffic(ctx, list);
       }
       else if (p.kind === 'restore') {
         ctx.restore();
@@ -241,20 +294,8 @@
           ctx.stroke();
       }
       else if (p.kind === 'dart') {
-        var h = p.angle * Math.PI / 180;
-        var sine = Math.sin(h);
-        var cosine = Math.cos(h);
-        var r = p.size;
-        var points = [[0, -r * 1.3], [r * .5, r * .75], [0, r * .3], [-r * .5, r * .75]];
-        path(
-          ctx,
-          points.map(function (q) {
-            return [
-              p.x + q[0] * cosine - q[1] * sine, p.y + q[0] * sine + q[1] * cosine
-            ];
-          }),
-          true
-        );
+        ctx.beginPath();
+        dartPath(ctx, p);
         ctx.fill();
       }
       else if (p.kind === 'text') {
@@ -280,6 +321,7 @@
     this.ctx = dynamicCanvas.getContext('2d');
     this.key = '';
     this.widths = new Map();
+    this.displayCache = { slots: new Map(), trails: new Map() };
   }
   Painter.prototype.resize = function (v) {
     var dpr = Math.min(2, devicePixelRatio || 1);
@@ -301,6 +343,10 @@
     if (key !== this.key) {
       this.staticList = W.Display.staticList(scene, v, geo);
       v.runwayLabels = W.Display.runwayLabels(v);
+      v.runwayHeadings = {};
+      core.runwayApproachEnds(v.runways || [], { designators: true }).forEach(function (e) {
+        v.runwayHeadings[e.designator] = core.bearingDegrees(e.thresholdLat, e.thresholdLon, e.farEndLat, e.farEndLon);
+      });
       paint(this.staticCtx, this.staticList);
       this.key = key;
     }
@@ -319,7 +365,8 @@
           self.widths.set(key, self.ctx.measureText(text).width);
         }
         return self.widths.get(key);
-      }
+      },
+      this.displayCache
     );
     this.ctx.clearRect(0, 0, v.width, v.height);
     paint(this.ctx, list);
