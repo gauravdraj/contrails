@@ -21,6 +21,9 @@ const Project = require('../_watch/project.js');
 const FIELD = { lat: 37.62, lng: -122.375 };
 // Just beyond the 100 km disc. Long bbox edges are fill closures, never coastline (display.js skips them).
 const bbox = [-123.6, 36.68, -121.15, 38.56];
+// Output of `counties` for this bbox (cb_2023_us_county_500k). The build refuses a partial or different set.
+const COUNTIES = ['06001', '06013', '06041', '06047', '06053', '06055', '06067', '06069', '06075',
+  '06077', '06081', '06085', '06087', '06095', '06097', '06099', '06113'];
 // Reference view: the largest chart radius (iPad portrait, 527 CSS px) at device-pixel ratio 2.
 const REF = { radius: 1, k: 2.1, dMax: 100, cx: 0, cy: 0, field: FIELD };
 const DEVICE_PX = 1 / (527 * 2);
@@ -115,9 +118,13 @@ function dissolve(faces) {
       while (e.b !== start && guard++ < 5e6) {
         ring.push(e.pb);
         const out = next.get(e.b);
-        if (!out || !out.length) break;
+        // A boundary that does not close means the faces were not topological; never invent a closing edge.
+        if (!out || !out.length)
+          throw new Error('Open land boundary at ' + e.b + ' (incomplete or inconsistent FACES input)');
         e = out.pop();
       }
+      if (e.b !== start)
+        throw new Error('Land boundary walk did not close from ' + start);
       ring.push(ring[0]);
       if (ring.length > 3) rings.push(ring);
     }
@@ -186,7 +193,9 @@ function area(ring) {
 
 async function build(dir, dest) {
   const files = (await readdir(dir)).filter(f => /_faces\.shp$/.test(f)).sort();
-  if (!files.length) throw new Error('No tl_2023_*_faces.shp in ' + dir);
+  const found = files.map(f => (f.match(/^tl_2023_(\d{5})_faces\.shp$/) || [])[1]).filter(Boolean);
+  if (found.join() !== COUNTIES.join() || found.length !== files.length)
+    throw new Error('Expected exactly tl_2023_{' + COUNTIES.join(',') + '}_faces.shp in ' + dir + '; found ' + files.join(' '));
   const faces = [];
   for (const f of files) {
     const s = shapes(await readFile(join(dir, f)));
@@ -217,7 +226,8 @@ async function build(dir, dest) {
   for (const face of faces) {
     let isLand = !face.water;
     if (!isLand) {
-      const outer = face.rings[0];
+      // Shapefile ring order carries no exterior-first guarantee: the exterior is the ring with the largest area.
+      const outer = face.rings.reduce((best, r) => area(r) > area(best) ? r : best);
       const a = area(outer);
       if (a < MIN_WATER_AREA || 2 * a / perimeter(outer) < MIN_WATER_WIDTH) {
         let shared = 0;
@@ -251,7 +261,7 @@ async function build(dir, dest) {
   }
   // Even-odd fill: one polygon entry with every boundary ring draws land, lakes and islands correctly.
   const out = JSON.stringify({
-    source: 'US Census Bureau TIGER/Line 2023 FACES (land faces dissolved); ' + files.length + ' counties',
+    source: 'US Census Bureau TIGER/Line 2023 FACES (land faces dissolved); counties ' + COUNTIES.join(' '),
     license: 'public domain (US Government work)',
     bbox,
     polygons: [rings]

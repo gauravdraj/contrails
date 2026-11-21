@@ -692,7 +692,22 @@
       byHex[a.hex] = a;
     });
     function addBead(mark, candidate) {
-      var overlap = stripObstacles.find(function (o) { return o.bead && intersects(o.bounds, mark.bounds, 1); });
+      // Never merge an arrival with a departure. Arrival beads are placed first, so a departure dart that lands on
+      // one slides right, away from the runway line, keeping both symbols and both roles.
+      for (var guard = 0; guard < 8; guard++) {
+        var clash = stripObstacles.find(function (o) {
+          return o.bead && o.mark.kind !== mark.kind && intersects(o.bounds, mark.bounds, 1);
+        });
+        if (!clash)
+          break;
+        var dx = clash.bounds.x + clash.bounds.w + 2 - mark.bounds.x;
+        mark.x += dx;
+        mark.bounds = box(mark.bounds.x + dx, mark.bounds.y, mark.bounds.w, mark.bounds.h);
+        candidate.anchorX = mark.x;
+      }
+      var overlap = stripObstacles.find(function (o) {
+        return o.bead && o.mark.kind === mark.kind && intersects(o.bounds, mark.bounds, 1);
+      });
       if (overlap) {
         overlap.mark.members.push(mark.hex);
         overlap.label.text = overlap.label.baseText + ' +' + (overlap.mark.members.length - 1);

@@ -93,16 +93,21 @@ These are the binding decisions, merged from the Fable and Astra scoping specs.
   - pause while hidden.
 - **Budgets.**
   - Gated in CI: first-load transfer ≤ 400 kB, as the real bytes `_watch/serve.py` sends for the browser's
-    cold-load request list (about 204 kB).
+    cold-load request list (about 233 kB since the 11-20 shoreline; 204 kB before).
   - Gated in `--perf`, local on Metal:
     - scene rebuild p95 ≤ 10 ms with a representative 300-aircraft mix, as the median of 3 fresh pages (3.2 ms on
       M4);
-    - frame-script p95 ≤ 4 ms (3.9 ms) and no long tasks.
+    - frame-script p95 ≤ 4 ms (3.9 ms at v1; 2.6 ms after the 11-20 polish) and no long tasks.
 
     CI still measures the rebuild time and reports it, but doesn't gate on it. Shared runners measured the same
     commit at 5.9 ms and 11.2 ms, so a wall-clock threshold there only flakes. This amends the pre-declared rubric.
-- **Public-site guard.** The diff against `live/main` stays within an allowlist, and existing app, core, Worker and
-  relay files are byte-identical.
+- **Public-site guard.** Structural: `_watch/index.html` exists, there is no `.nojekyll`, and no `_config.yml`
+  includes `_watch` (Jekyll never publishes `_`-prefixed paths). It replaced an earlier diff-vs-main allowlist that
+  failed every later PR.
+- **Busy traffic (11-20).** A recorded real SFO Friday evening rush (`scripts/watch-busy-sfo.json.gz`, 48 ticks,
+  ~125 aircraft each) is replayed at 4 epochs × 5 viewports × 2 themes × 3 sub-poll times. No overlap is allowed
+  among chart labels, strip text, beads, rings and leaders. Five deliberately broken display lists must be rejected,
+  so the check cannot pass vacuously.
 - **Modes:** `--perf`, `--shots DIR`, `--live --shots DIR` (for humans, never in CI) and `--update-snapshot`.
 
 ## Hosting

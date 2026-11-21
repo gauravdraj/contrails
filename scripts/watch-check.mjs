@@ -755,20 +755,37 @@ theme: mode, bay: sample(37.60, -122.25), peninsula: sample(37.55, -122.40),
 function assertWatchLayout(list, w, h, context) {
   const overlap = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
   const inside = b => b.x >= 0 && b.y >= 0 && b.x + b.w <= w && b.y + b.h <= h;
+  // Every obstacle the check relies on must be a real box: null or NaN widths would make every overlap test pass.
+  const real = (b, what) => assert.ok(b && [b.x, b.y, b.w, b.h].every(Number.isFinite) && b.w > 0 && b.h > 0,
+    context + ': invalid bounds for ' + what);
   const chart = list.filter(p => p.zone === 'chart' && ['label', 'runwayLabel'].includes(p.kind));
+  chart.forEach(p => real(p, p.text || p.hex));
+  assert.equal(chart.filter(p => p.kind === 'runwayLabel').length, 8, context + ': all eight runway ends must be labelled');
   const strip = [];
   for (const p of list.filter(p => p.zone === 'strip')) {
     if (p.semantic === 'bead' || p.kind === 'text') {
-      assert.ok(p.bounds, context + ': missing strip obstacle bounds');
+      real(p.bounds, 'strip ' + (p.text || p.hex));
       strip.push({ ...p.bounds, name: p.semantic === 'bead' ? 'bead ' + p.hex : p.text });
     }
     if (p.kind === 'label') {
       assert.ok(p.textBounds || p.ringBounds, context + ': empty strip label');
+      // A painted callsign needs its text box, and a painted numeral its ring box.
+      if (p.text) real(p.textBounds, 'strip text ' + p.text);
+      if (p.seq) real(p.ringBounds, 'strip ring ' + p.hex);
       if (p.textBounds) strip.push({ ...p.textBounds, name: 'text ' + p.text });
       if (p.ringBounds) strip.push({ ...p.ringBounds, name: 'ring ' + p.hex });
     }
   }
-  assert.ok(strip.some(p => p.name.startsWith('bead ')), context + ': no strip beads');
+  const beadCount = strip.filter(p => p.name.startsWith('bead ')).length;
+  assert.ok(beadCount, context + ': no strip beads');
+  // Declutter may hide a callsign, never most of them: at least half of the strip beads keep a readable label.
+  const stripTexts = list.filter(p => p.zone === 'strip' && p.kind === 'label' && p.text).length;
+  assert.ok(stripTexts * 2 >= beadCount, context + ': only ' + stripTexts + ' strip labels for ' + beadCount + ' beads');
+  // Chart leaders must not run through another label's ink.
+  for (const l of list.filter(p => p.zone === 'chart' && p.semantic === 'leader'))
+    for (const b of chart.filter(p => p.hex !== l.hex))
+      for (const ink of [b.textBounds, b.ringBounds, b.kind === 'runwayLabel' ? b : null].filter(Boolean))
+        assert.ok(!crossesBox(l.points, ink), context + ': chart leader ' + l.hex + ' crosses ' + (b.text || b.hex));
   for (const group of [chart, strip]) {
     for (let i = 0; i < group.length; i++) {
       const a = group[i];
@@ -842,9 +859,26 @@ async function busyDisplayChecks(origin) {
       }
     }
   }
-  // Restore the existing harness viewport so later pixel/perf scenarios keep their original baseline.
+  // The helper itself must reject broken lists, or a pass above means nothing (review of a86a259).
   await size(1440, 900);
-  return frames + ' frames; 4 rush epochs × 5 viewports × 2 themes × 3 sub-poll times; chart labels, strip ink/beads/rings/leaders, bounds, number-one countdowns';
+  const real = await inPage(at => { __watch.resize(); __watch.setTheme('night'); return __watch.frame(at); }, BUSY_AT);
+  assertWatchLayout(real, 1440, 900, 'mutation baseline');
+  const chartLabel = real.find(p => p.zone === 'chart' && p.kind === 'label' && p.textBounds);
+  const other = real.find(p => p.zone === 'chart' && p.kind === 'label' && p.hex !== chartLabel?.hex);
+  assert.ok(chartLabel && other, 'mutation baseline needs two chart labels');
+  const mutations = {
+    'strip labels removed': l => l.filter(p => !(p.zone === 'strip' && p.kind === 'label')),
+    'runway labels removed': l => l.filter(p => p.kind !== 'runwayLabel'),
+    'sequenced strip text bounds removed': l => l.map(p => p.zone === 'strip' && p.kind === 'label' && p.text
+      ? { ...p, textBounds: null } : p),
+    'null bead widths': l => l.map(p => p.semantic === 'bead' ? { ...p, bounds: { ...p.bounds, w: null } } : p),
+    'chart leader through a label': l => l.concat([{ kind: 'path', semantic: 'leader', zone: 'chart', hex: other.hex,
+      points: [[chartLabel.textBounds.x - 5, chartLabel.textBounds.y + 7],
+        [chartLabel.textBounds.x + chartLabel.textBounds.w + 5, chartLabel.textBounds.y + 7]] }])
+  };
+  for (const [name, mutate] of Object.entries(mutations))
+    assert.throws(() => assertWatchLayout(mutate(real), 1440, 900, name), assert.AssertionError, 'accepted: ' + name);
+  return frames + ' frames + 5 rejected mutations; 4 rush epochs × 5 viewports × 2 themes × 3 sub-poll times; chart labels, strip ink/beads/rings/leaders, bounds, number-one countdowns';
 }
 async function trailDisplayChecks(origin) {
   await navigate(origin);
