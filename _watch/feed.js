@@ -5,6 +5,11 @@
     this.changed = changed;
     this.clock = clock || Date.now;
     this.delay = core.computePlaybackDelayMs(5000, 0, { minMs: 3200, maxMs: 8000 });
+    this.boardState = core.createAirportBoardState();
+    this.routeCache = {};
+    this.scheduleDataCache = {};
+    this.routeEvidenceMemo = new Map();
+    this.feedClockOffsetMs = null;
     this.schedule = null;
     this.datis = null;
     this.datisCache = { datisTs: 0, datisActiveRunways: null };
@@ -18,9 +23,14 @@
     this.running = false;
   }
   Feed.prototype.ingest = function (payload, now) {
+    var env = { core: core, now: now, state: this.boardState,
+      airportData: airportData, runwayData: runwayData, posHistory: posHistory, extraState: extraState,
+      routeCache: this.routeCache, scheduleDataCache: this.scheduleDataCache,
+      routeEvidenceMemo: this.routeEvidenceMemo, scheduleCacheTtl: SCHEDULE_CACHE_TTL,
+      isPrivate: core.isPrivateAircraft, airportDisplayName: function (iata) { return iata; } };
     if (payload.schedule) {
       this.schedule = payload.schedule;
-      scheduleDataCache[this.field.iata] = { data: payload.schedule, ts: now };
+      this.scheduleDataCache[this.field.iata] = { data: payload.schedule, ts: now };
     }
     if (Object.prototype.hasOwnProperty.call(payload, 'datis')) {
       this.datisCache.datisActiveRunways = payload.datis
@@ -31,13 +41,13 @@
     if (payload.traffic) {
       var traffic = payload.traffic;
       var feedNow = Number.isFinite(traffic.now) ? traffic.now : now;
-      feedClockOffsetMs = core.updateClockOffset(feedClockOffsetMs, now, feedNow);
+      this.feedClockOffsetMs = core.updateClockOffset(this.feedClockOffsetMs, now, feedNow);
       if (this.lastFeedNow == null || feedNow > this.lastFeedNow) {
         this.lastNew = now;
         this.lastFeedNow = feedNow;
       }
-      var positionNow = Math.min(now, feedNow + feedClockOffsetMs);
-      var snap = buildAircraftSnapshot(traffic.ac || [], {
+      var positionNow = Math.min(now, feedNow + this.feedClockOffsetMs);
+      var snap = core.buildTrafficSnapshot(env, traffic.ac || [], {
         includeProximity: false, now: now, positionNow: positionNow
       });
       var self = this;
@@ -88,8 +98,8 @@
       this.lastOk = now;
       this.failures = 0;
     }
-    applyAirportScheduleMatches(this.field.iata, this.schedule, aircraft);
-    var board = buildLiveScheduleData(this.field.iata, this.field.lat, this.field.lng, aircraft, this.datis);
+    core.applyAirportScheduleIn(env, this.field.iata, this.schedule, aircraft);
+    var board = core.buildAirportBoard(env, this.field.iata, this.field.lat, this.field.lng, aircraft, this.datis);
     W.Scene.syncCountdowns(board, now - this.delay);
     this.board = board;
     this.changed(board, now);
@@ -111,7 +121,7 @@
         ? trafficUrl(this.field.lat, this.field.lng, 120)
         : WORKER_URL + '/' + kind + '/' + this.field.iata;
       if (kind === 'datis') {
-        // The real board helper is popup-independent; give it a feed-owned cache entry.
+        // Give the D-ATIS helper a feed-owned cache entry.
         // Its in-flight request can finish while hidden, but the aborted generation is never applied.
         var cache = Object.assign({}, this.datisCache);
         await fetchAirportDatisActiveRunways(this.field.iata, cache);

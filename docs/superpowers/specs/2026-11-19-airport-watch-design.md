@@ -134,8 +134,8 @@ URL: `https://home-server.tail7af116.ts.net:8790/_watch/?airport=SFO`.
 ## Deferred
 - **Shoreline detail.** Natural Earth 10m is coarse, and the fisheye centre magnifies its segments near the field.
   An OSM shoreline would be sharper but needs an attribution line.
-- **Lifting the board.** Move `buildLiveScheduleData` into core as a pure function shared by the board and the watch
-  page. Until then, a rename in `airport-board.js` breaks the page; parity in CI catches it.
+- **Lifting the board.** Done 2026-11-20: the board is in `contrails-core.js` and the page no longer loads the `js/`
+  scripts (`2026-11-20-shared-board-core-design.md`).
 - **Data and modes.**
   - `/routeset` origins for non-scheduled traffic;
   - an airport picker UI;

@@ -26,6 +26,7 @@ jobs:
       - run: node --test worker/src/*.test.js
         env:
           MCP_SDK_DIR: ${{ runner.temp }}/mcpsdk
+      - run: node --test scripts/board-replay.test.mjs
       - run: node --test scripts/healthcheck.test.mjs
       - run: node smoke-boot.mjs
       - run: python3 -m unittest discover -s relay -p 'test_*.py'
